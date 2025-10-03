@@ -33,13 +33,25 @@ python -m venv .venv
 - **Windows (PowerShell):** `.\.venv\Scripts\Activate.ps1`
 - **Windows (CMD):** `.\.venv\Scripts\activate.bat`
 
+> **Importante (Windows):** si ves advertencias indicando que `pip.exe` o `uvicorn.exe` no están en el PATH, aún no se ha
+> activado el entorno virtual. Actívalo y utiliza siempre `python -m pip` para asegurarte de instalar en la misma versión de
+> Python con la que ejecutarás la aplicación.
+
 ### Instalar dependencias y preparar la base de datos
 
 ```bash
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 python -m scripts.init_db
 ```
+
+Para comprobar que todo está listo puedes ejecutar:
+
+```bash
+python -m scripts.doctor
+```
+
+El comando revisa las dependencias clave (FastAPI, SQLAlchemy, WhisperX, etc.) y muestra cómo resolver cualquier ausencia.
 
 ### Arrancar la API en modo desarrollo
 

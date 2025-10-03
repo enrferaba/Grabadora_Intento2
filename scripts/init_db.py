@@ -1,7 +1,23 @@
 from __future__ import annotations
 
-from app.database import Base, get_session, sync_engine
-from app.models import PricingTier
+try:
+    import app.compat  # noqa: F401  # aplica los parches de compatibilidad antes de otras importaciones
+    from app.database import Base, get_session, sync_engine
+    from app.models import PricingTier
+except ModuleNotFoundError as exc:  # pragma: no cover - depende del entorno del usuario final
+    missing = exc.name or ""
+    instructions = [
+        "No se pudieron importar las dependencias necesarias para inicializar la base de datos.",
+        "Asegúrate de activar tu entorno virtual y reinstalar los requisitos:",
+        "  python -m venv .venv",
+        "  # PowerShell: .\\.venv\\Scripts\\Activate.ps1",
+        "  # CMD: .\\.venv\\Scripts\\activate.bat",
+        "  python -m pip install --upgrade pip",
+        "  python -m pip install -r requirements.txt",
+    ]
+    if missing:
+        instructions.insert(1, f"Módulo faltante: {missing}")
+    raise SystemExit("\n".join(instructions)) from exc
 
 
 def main() -> None:

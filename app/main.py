@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import app.compat  # noqa: F401  # ensure compatibility patches are applied early
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
