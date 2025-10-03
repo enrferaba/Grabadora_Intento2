@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    Form,
     File,
     HTTPException,
     Query,
@@ -22,6 +23,7 @@ from ..config import settings
 from ..database import get_session
 from ..models import Transcription, TranscriptionStatus
 from ..schemas import (
+    BatchTranscriptionCreateResponse,
     HealthResponse,
     SearchResponse,
     TranscriptionCreateResponse,
@@ -54,21 +56,24 @@ def _validate_upload_size(upload: UploadFile) -> None:
         raise HTTPException(status_code=413, detail="Archivo demasiado grande")
 
 
-@router.post("/", response_model=TranscriptionCreateResponse, status_code=201)
-def create_transcription(
+def _enqueue_transcription(
+    session: Session,
     background_tasks: BackgroundTasks,
-    upload: UploadFile = File(...),
-    language: Optional[str] = None,
-    subject: Optional[str] = None,
-    session: Session = Depends(_get_session),
-) -> TranscriptionCreateResponse:
+    upload: UploadFile,
+    language: Optional[str],
+    subject: Optional[str],
+    price_cents: Optional[int] = None,
+    currency: Optional[str] = None,
+) -> Transcription:
     _validate_upload_size(upload)
     transcription = Transcription(
         original_filename=upload.filename,
         stored_path="",
         language=language,
         subject=subject,
-        status=TranscriptionStatus.PENDING.value,
+        status=TranscriptionStatus.PROCESSING.value,
+        price_cents=price_cents,
+        currency=currency,
     )
     session.add(transcription)
     session.flush()
@@ -76,14 +81,75 @@ def create_transcription(
     storage_dir = ensure_storage_subdir(str(transcription.id))
     dest_path = storage_dir / upload.filename
     save_upload_file(upload, dest_path)
+    upload.file.close()
 
     transcription.stored_path = str(dest_path)
-    transcription.status = TranscriptionStatus.PROCESSING.value
     session.commit()
 
     background_tasks.add_task(process_transcription, transcription.id, language)
+    return transcription
 
-    return TranscriptionCreateResponse(id=transcription.id, status=transcription.status)
+
+@router.post("", response_model=TranscriptionCreateResponse, status_code=201)
+def create_transcription(
+    background_tasks: BackgroundTasks,
+    upload: UploadFile = File(...),
+    language: Optional[str] = Form(default=None),
+    subject: Optional[str] = Form(default=None),
+    price_cents: Optional[int] = Form(default=None),
+    currency: Optional[str] = Form(default=None),
+    session: Session = Depends(_get_session),
+) -> TranscriptionCreateResponse:
+    transcription = _enqueue_transcription(
+        session,
+        background_tasks,
+        upload,
+        language,
+        subject,
+        price_cents,
+        currency,
+    )
+
+    return TranscriptionCreateResponse(
+        id=transcription.id,
+        status=TranscriptionStatus(transcription.status),
+        original_filename=transcription.original_filename,
+    )
+
+
+@router.post("/batch", response_model=BatchTranscriptionCreateResponse, status_code=201)
+def create_batch_transcriptions(
+    background_tasks: BackgroundTasks,
+    uploads: List[UploadFile] = File(...),
+    language: Optional[str] = Form(default=None),
+    subject: Optional[str] = Form(default=None),
+    price_cents: Optional[int] = Form(default=None),
+    currency: Optional[str] = Form(default=None),
+    session: Session = Depends(_get_session),
+) -> BatchTranscriptionCreateResponse:
+    if not uploads:
+        raise HTTPException(status_code=400, detail="Debes adjuntar al menos un archivo")
+
+    responses: List[TranscriptionCreateResponse] = []
+    for upload in uploads:
+        transcription = _enqueue_transcription(
+            session,
+            background_tasks,
+            upload,
+            language,
+            subject,
+            price_cents,
+            currency,
+        )
+        responses.append(
+            TranscriptionCreateResponse(
+                id=transcription.id,
+                status=TranscriptionStatus(transcription.status),
+                original_filename=transcription.original_filename,
+            )
+        )
+
+    return BatchTranscriptionCreateResponse(items=responses)
 
 
 def process_transcription(transcription_id: int, language: Optional[str]) -> None:
@@ -119,15 +185,18 @@ def process_transcription(transcription_id: int, language: Optional[str]) -> Non
             transcription.error_message = str(exc)
 
 
-@router.get("/", response_model=SearchResponse)
+@router.get("", response_model=SearchResponse)
 def list_transcriptions(
     q: Optional[str] = Query(default=None, description="Texto a buscar"),
     status: Optional[TranscriptionStatus] = Query(default=None),
+    premium_only: bool = Query(default=False, description="Solo resultados premium"),
     session: Session = Depends(_get_session),
 ) -> SearchResponse:
     query = session.query(Transcription)
     if status:
         query = query.filter(Transcription.status == status.value)
+    if premium_only:
+        query = query.filter(Transcription.premium_enabled.is_(True))
     if q:
         pattern = f"%{q.lower()}%"
         query = query.filter(

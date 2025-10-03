@@ -1,12 +1,14 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   font-family: "Inter", "Segoe UI", system-ui, sans-serif;
-  background: linear-gradient(180deg, #121826 0%, #1f2937 100%);
+  background: radial-gradient(circle at top left, #3b82f6 0%, #18181b 45%, #0f172a 100%);
   color: #f8fafc;
-  --accent: #7c3aed;
-  --accent-hover: #a855f7;
-  --card-bg: rgba(15, 23, 42, 0.85);
-  --card-border: rgba(148, 163, 184, 0.2);
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-soft: rgba(99, 102, 241, 0.12);
+  --card-bg: rgba(15, 23, 42, 0.82);
+  --card-border: rgba(148, 163, 184, 0.18);
+  --success: #22d3ee;
 }
 
 * {
@@ -21,30 +23,65 @@ body {
   gap: 2rem;
 }
 
-header {
-  padding: 2rem;
-  text-align: center;
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--card-border);
+.hero {
+  padding: 3rem 5vw 1rem;
+  background: transparent;
 }
 
-header h1 {
-  margin: 0 0 0.5rem 0;
-  font-size: clamp(2rem, 5vw, 3rem);
+.hero-content {
+  max-width: 960px;
+  margin: 0 auto;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid var(--card-border);
+  border-radius: 24px;
+  padding: 2.5rem 3rem;
+  box-shadow: 0 30px 80px rgba(12, 18, 36, 0.45);
 }
 
-header p {
+.hero h1 {
+  margin: 0 0 1rem;
+  font-size: clamp(2.4rem, 5vw, 3.4rem);
+}
+
+.hero p {
   margin: 0;
-  color: #cbd5f5;
+  font-size: 1.1rem;
+  color: #dbeafe;
+  line-height: 1.7;
 }
 
-main {
-  width: min(1100px, 92vw);
+.hero-tags {
+  margin-top: 1.5rem;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.hero-tags span {
+  background: var(--accent-soft);
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  letter-spacing: 0.03em;
+}
+
+.layout {
+  width: min(1150px, 94vw);
   margin: 0 auto 4rem;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+@media (max-width: 960px) {
+  .span-2 {
+    grid-column: span 1;
+  }
 }
 
 .card {
@@ -59,9 +96,29 @@ main {
   margin-top: 0;
 }
 
+.section-lead {
+  margin-top: 0.25rem;
+  color: #cbd5f5;
+  line-height: 1.6;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem 1.25rem;
+  align-items: end;
+}
+
 form {
   display: grid;
-  gap: 1rem;
+  gap: 1.25rem;
+}
+
+.form-label {
+  font-size: 0.9rem;
+  color: #cbd5f5;
+  letter-spacing: 0.02em;
+  font-weight: 600;
 }
 
 input[type="file"],
@@ -95,9 +152,38 @@ button:hover {
   transform: translateY(-1px);
 }
 
+.primary {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+  color: #f9fafb;
+}
+
+.ghost {
+  background: rgba(15, 23, 42, 0.2);
+  border: 1px solid var(--card-border);
+  color: #e2e8f0;
+}
+
+.ghost:hover {
+  background: rgba(99, 102, 241, 0.18);
+}
+
 #upload-status {
   min-height: 1.5rem;
   font-size: 0.95rem;
+}
+
+#upload-status.error {
+  color: #f87171;
+}
+
+.checkout-status {
+  margin-top: 1rem;
+  font-size: 0.95rem;
+  color: #f9fafb;
+}
+
+.checkout-status.success {
+  color: var(--success);
 }
 
 .list-header {
@@ -106,6 +192,22 @@ button:hover {
   align-items: center;
   gap: 1rem;
   flex-wrap: wrap;
+}
+
+.filters {
+  margin: 0.5rem 0 1rem;
+  color: #cbd5f5;
+  display: flex;
+  gap: 1rem;
+}
+
+.filters input {
+  margin-right: 0.5rem;
+}
+
+.transcription-list {
+  display: grid;
+  gap: 1.25rem;
 }
 
 .transcription {
@@ -150,6 +252,20 @@ button:hover {
   line-height: 1.6;
 }
 
+.premium {
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.4);
+  border-radius: 10px;
+  color: #cffafe;
+}
+
+.premium strong {
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
 .actions {
   display: flex;
   gap: 0.75rem;
@@ -159,6 +275,11 @@ button:hover {
 .actions a,
 .actions button {
   flex: none;
+}
+
+.actions a {
+  text-decoration: none;
+  color: inherit;
 }
 
 .speakers ul {
@@ -175,6 +296,64 @@ button:hover {
   border-radius: 10px;
   border: 1px solid var(--card-border);
   font-size: 0.95rem;
+}
+
+.file-preview {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  border: 1px dashed rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.08);
+  color: #dbeafe;
+}
+
+.file-preview span {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.plans {
+  display: grid;
+  gap: 1rem;
+}
+
+.plan-card {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 16px;
+  padding: 1.25rem;
+  background: rgba(15, 23, 42, 0.6);
+  display: grid;
+  gap: 0.6rem;
+}
+
+.plan-card h3 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.plan-meta {
+  margin: 0;
+  color: #e2e8f0;
+}
+
+.plan-price {
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.plan-perks {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #cbd5f5;
+}
+
+.plan-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .modal {
@@ -221,11 +400,15 @@ button:hover {
 }
 
 @media (max-width: 600px) {
-  header {
-    padding: 1.5rem 1rem;
+  .hero {
+    padding: 2rem 5vw 0.5rem;
   }
 
-  main {
-    width: min(94vw, 520px);
+  .hero-content {
+    padding: 2rem 1.5rem;
+  }
+
+  .layout {
+    width: min(96vw, 520px);
   }
 }

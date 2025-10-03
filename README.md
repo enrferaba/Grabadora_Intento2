@@ -4,11 +4,12 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 
 ## Características principales
 
-- **API FastAPI** con endpoints para subir audios, consultar, descargar y eliminar transcripciones.
+- **API FastAPI** con endpoints para subir audios en lote, consultar, descargar y eliminar transcripciones.
 - **Integración con WhisperX** para transcripción rápida y diarización de hablantes (fallback configurable a modo simulado para entornos sin GPU).
 - **Base de datos SQLite / SQLAlchemy** con búsqueda por texto, asignatura y estado.
 - **Generación automática de archivos `.txt`** y estructura extensible para futuros planes premium con IA externa.
-- **Interfaz web** en `/` construida con HTML, CSS y JavaScript moderno que permite subir audios, consultar resultados y revisar hablantes.
+- **Interfaz web** en `/` construida con HTML, CSS y JavaScript moderno que permite subir varios audios a la vez, consultar resultados y revisar hablantes.
+- **Pasarela de pago simulada** con planes configurables, checkout y confirmación de compras que desbloquean contenido premium por transcripción.
 - **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
 - **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado.
 
@@ -62,12 +63,16 @@ La interfaz quedará disponible en http://127.0.0.1:8000/ y la API en http://127
 
 ## Uso de la API
 
-- `POST /api/transcriptions`: Subir un audio (`multipart/form-data`) con campos opcionales `language` y `subject`.
-- `GET /api/transcriptions`: Listar y buscar transcripciones (`q`, `status`).
+- `POST /api/transcriptions`: Subir un audio (`multipart/form-data`) con campos opcionales `language`, `subject`, `price_cents` y `currency`.
+- `POST /api/transcriptions/batch`: Subida múltiple (`uploads[]`) aplicando la misma configuración a todos los archivos.
+- `GET /api/transcriptions`: Listar y buscar transcripciones (`q`, `status`, `premium_only`).
 - `GET /api/transcriptions/{id}`: Detalle con segmentos y hablantes.
 - `GET /api/transcriptions/{id}/download`: Descarga del `.txt` generado.
 - `DELETE /api/transcriptions/{id}`: Eliminación.
 - `GET /api/transcriptions/health`: Comprobación rápida del servicio.
+- `GET /api/payments/plans`: Listado de planes activos.
+- `POST /api/payments/checkout`: Crea un checkout para un plan y una transcripción concreta.
+- `POST /api/payments/{id}/confirm`: Marca la compra como completada y desbloquea las notas premium.
 
 ## Docker
 
@@ -96,15 +101,11 @@ docker compose -f docker-compose.yml --profile gpu up --build
 pytest
 ```
 
-Las pruebas activan el transcriptor simulado para validar el ciclo completo sin depender de WhisperX real.
+Las pruebas activan el transcriptor simulado para validar el ciclo completo sin depender de WhisperX real e incluyen el flujo de pagos premium.
 
-## Futuras integraciones IA
+## Contenido premium y notas IA
 
-La arquitectura está preparada para añadir un servicio externo (por ejemplo, GPT) que genere resúmenes o apuntes premium:
-
-- Añade un nuevo campo `premium_notes` a `Transcription`.
-- Implementa un servicio en `app/utils/ai.py` que consuma tu API favorita.
-- Expón un endpoint `POST /api/transcriptions/{id}/notes` que encola una tarea asíncrona para generar los apuntes.
+Al confirmar una compra, la API genera notas premium automáticamente (`app/utils/notes.py`). Sustituye esta lógica por tu integración favorita (OpenAI, Azure, etc.) y marca los planes para ofrecer ventajas adicionales.
 
 ## Estructura de carpetas
 
@@ -116,9 +117,12 @@ app/
   models.py
   routers/
     transcriptions.py
+    payments.py
   schemas.py
   utils/
     storage.py
+    payments.py
+    notes.py
   whisper_service.py
 frontend/
   index.html

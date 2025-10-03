@@ -32,6 +32,29 @@ def client(test_env):
         yield test_client
 
 
+@pytest.fixture()
+def pricing_plan(test_env):
+    from app.database import get_session
+    from app.models import PricingTier
+
+    with get_session() as session:
+        existing = session.query(PricingTier).filter_by(slug="pro-60").first()
+        if existing:
+            return existing.slug
+        plan = PricingTier(
+            slug="pro-60",
+            name="Plan Pro 60",
+            description="Incluye diarización avanzada y notas premium.",
+            price_cents=1499,
+            currency="EUR",
+            max_minutes=60,
+            perks=["Notas IA", "Diarización avanzada"],
+        )
+        session.add(plan)
+        session.commit()
+        return plan.slug
+
+
 def _upload_sample(client: TestClient) -> int:
     files = {
         "upload": ("sample.wav", b"fake audio data", "audio/wav"),
@@ -69,3 +92,37 @@ def test_frontend_served(client: TestClient):
     response = client.get("/")
     assert response.status_code == 200
     assert "Grabadora Pro" in response.text
+
+
+def test_batch_upload_and_payment_flow(client: TestClient, pricing_plan: str):
+    files = [
+        ("uploads", ("clase1.wav", b"audio", "audio/wav")),
+        ("uploads", ("clase2.wav", b"audio", "audio/wav")),
+    ]
+    response = client.post(
+        "/api/transcriptions/batch",
+        files=files,
+        data={"language": "es", "subject": "Física"},
+    )
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["items"]
+    first_id = payload["items"][0]["id"]
+
+    checkout = client.post(
+        "/api/payments/checkout",
+        json={"tier_slug": pricing_plan, "transcription_id": first_id, "customer_email": "demo@example.com"},
+    )
+    assert checkout.status_code == 201
+    purchase = checkout.json()
+    assert purchase["payment_url"].startswith("https://")
+
+    confirm = client.post(f"/api/payments/{purchase['id']}/confirm")
+    assert confirm.status_code == 200
+    purchase_detail = confirm.json()
+    assert purchase_detail["status"] == "completed"
+
+    transcription_detail = client.get(f"/api/transcriptions/{first_id}")
+    assert transcription_detail.status_code == 200
+    transcription_payload = transcription_detail.json()
+    assert transcription_payload["premium_enabled"] is True
