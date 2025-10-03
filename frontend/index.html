@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grabadora Pro</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Grabadora Pro</h1>
+      <p>Sube tus audios, identifica hablantes y gestiona tus transcripciones en segundos.</p>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>Subir nuevo audio</h2>
+        <form id="upload-form">
+          <label class="form-label" for="audio-file">Selecciona un archivo de audio</label>
+          <input id="audio-file" type="file" name="upload" accept="audio/*" required />
+
+          <label class="form-label" for="language">Idioma (opcional)</label>
+          <input id="language" type="text" name="language" placeholder="Auto" />
+
+          <label class="form-label" for="subject">Asignatura / carpeta</label>
+          <input id="subject" type="text" name="subject" placeholder="Ej: Matemáticas" />
+
+          <button type="submit">Subir y transcribir</button>
+        </form>
+        <div id="upload-status" aria-live="polite"></div>
+      </section>
+
+      <section class="card">
+        <div class="list-header">
+          <h2>Transcripciones recientes</h2>
+          <input id="search" type="search" placeholder="Buscar por texto o asignatura" />
+        </div>
+        <div id="transcription-list"></div>
+      </section>
+    </main>
+
+    <template id="transcription-template">
+      <article class="transcription">
+        <header>
+          <h3 class="transcription-title"></h3>
+          <span class="status"></span>
+        </header>
+        <p class="meta"></p>
+        <p class="excerpt"></p>
+        <div class="actions">
+          <a class="download" href="#" target="_blank" rel="noopener">Descargar TXT</a>
+          <button class="view">Ver detalles</button>
+          <button class="delete" data-id="">Eliminar</button>
+        </div>
+        <details class="speakers">
+          <summary>Hablantes detectados</summary>
+          <ul></ul>
+        </details>
+      </article>
+    </template>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal-content">
+        <button id="modal-close" aria-label="Cerrar">×</button>
+        <pre id="modal-text"></pre>
+      </div>
+    </div>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
