@@ -4,7 +4,16 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -152,8 +161,8 @@ def download_transcription(transcription_id: int, session: Session = Depends(_ge
     return FileResponse(txt_path, media_type="text/plain", filename=f"{transcription.original_filename}.txt")
 
 
-@router.delete("/{transcription_id}", status_code=204)
-def delete_transcription(transcription_id: int, session: Session = Depends(_get_session)) -> None:
+@router.delete("/{transcription_id}", status_code=204, response_class=Response)
+def delete_transcription(transcription_id: int, session: Session = Depends(_get_session)) -> Response:
     transcription = session.get(Transcription, transcription_id)
     if not transcription:
         raise HTTPException(status_code=404, detail="Transcripción no encontrada")
@@ -165,3 +174,4 @@ def delete_transcription(transcription_id: int, session: Session = Depends(_get_
         stored_path.unlink()
     if txt_path.exists():  # pragma: no cover - filesystem side effects
         txt_path.unlink()
+    return Response(status_code=204)
