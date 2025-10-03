@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .database import Base, sync_engine
+from .routers import auth as auth_router
 from .routers import payments as payments_router
 from .routers import transcriptions as transcription_router
 
@@ -30,6 +31,7 @@ def create_app() -> FastAPI:
 
     app.include_router(transcription_router.router, prefix=settings.api_prefix)
     app.include_router(payments_router.router, prefix=settings.api_prefix)
+    app.include_router(auth_router.router, prefix=settings.api_prefix)
 
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     if frontend_dir.exists():

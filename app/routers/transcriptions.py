@@ -72,6 +72,20 @@ def _validate_upload_size(upload: UploadFile) -> None:
         raise HTTPException(status_code=413, detail="Archivo demasiado grande")
 
 
+def _resolve_model_choice(value: Optional[str]) -> str:
+    if not value:
+        return settings.whisper_model_size
+    choice = MODEL_ALIASES.get(value.lower())
+    return choice or settings.whisper_model_size
+
+
+def _resolve_device_choice(value: Optional[str]) -> str:
+    if not value:
+        return settings.whisper_device or "cuda"
+    resolved = DEVICE_ALIASES.get(value.lower())
+    return resolved or settings.whisper_device or "cuda"
+
+
 def _enqueue_transcription(
     session: Session,
     background_tasks: BackgroundTasks,
@@ -80,6 +94,8 @@ def _enqueue_transcription(
     subject: Optional[str],
     price_cents: Optional[int] = None,
     currency: Optional[str] = None,
+    model_size: Optional[str] = None,
+    device_preference: Optional[str] = None,
 ) -> Transcription:
     if not _is_supported_media(upload):
         raise HTTPException(
@@ -87,10 +103,14 @@ def _enqueue_transcription(
             detail="Solo se permiten archivos de audio o video",
         )
     _validate_upload_size(upload)
+    resolved_model = _resolve_model_choice(model_size)
+    resolved_device = _resolve_device_choice(device_preference)
     transcription = Transcription(
         original_filename=upload.filename,
         stored_path="",
         language=language,
+        model_size=resolved_model,
+        device_preference=resolved_device,
         subject=subject,
         status=TranscriptionStatus.PROCESSING.value,
         price_cents=price_cents,
@@ -107,7 +127,13 @@ def _enqueue_transcription(
     transcription.stored_path = str(dest_path)
     session.commit()
 
-    background_tasks.add_task(process_transcription, transcription.id, language)
+    background_tasks.add_task(
+        process_transcription,
+        transcription.id,
+        language,
+        resolved_model,
+        resolved_device,
+    )
     return transcription
 
 
@@ -132,6 +158,8 @@ def create_transcription(
     subject: Optional[str] = Form(default=None),
     price_cents: Optional[int] = Form(default=None),
     currency: Optional[str] = Form(default=None),
+    model_size: Optional[str] = Form(default=None),
+    device_preference: Optional[str] = Form(default=None),
     session: Session = Depends(_get_session),
 ) -> TranscriptionCreateResponse:
     transcription = _enqueue_transcription(
@@ -142,6 +170,8 @@ def create_transcription(
         subject,
         price_cents,
         currency,
+        model_size,
+        device_preference,
     )
 
     return TranscriptionCreateResponse(
@@ -159,6 +189,8 @@ def create_batch_transcriptions(
     subject: Optional[str] = Form(default=None),
     price_cents: Optional[int] = Form(default=None),
     currency: Optional[str] = Form(default=None),
+    model_size: Optional[str] = Form(default=None),
+    device_preference: Optional[str] = Form(default=None),
     session: Session = Depends(_get_session),
 ) -> BatchTranscriptionCreateResponse:
     if not uploads:
@@ -174,6 +206,8 @@ def create_batch_transcriptions(
             subject,
             price_cents,
             currency,
+            model_size,
+            device_preference,
         )
         responses.append(
             TranscriptionCreateResponse(
@@ -186,8 +220,15 @@ def create_batch_transcriptions(
     return BatchTranscriptionCreateResponse(items=responses)
 
 
-def process_transcription(transcription_id: int, language: Optional[str]) -> None:
-    transcriber = get_transcriber()
+def process_transcription(
+    transcription_id: int,
+    language: Optional[str],
+    model_size: Optional[str],
+    device_preference: Optional[str],
+) -> None:
+    resolved_model = _resolve_model_choice(model_size)
+    resolved_device = _resolve_device_choice(device_preference)
+    transcriber = get_transcriber(resolved_model, resolved_device)
     try:
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
@@ -203,6 +244,8 @@ def process_transcription(transcription_id: int, language: Optional[str]) -> Non
                 return
             transcription.text = result.text
             transcription.language = result.language or language
+            transcription.model_size = resolved_model
+            transcription.device_preference = resolved_device
             transcription.duration = result.duration
             transcription.speakers = serialize_segments(result.segments)
             transcription.status = TranscriptionStatus.COMPLETED.value

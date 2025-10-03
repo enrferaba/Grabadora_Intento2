@@ -58,32 +58,51 @@ class DummyTranscriber(BaseTranscriber):
 
 
 class WhisperXTranscriber(BaseTranscriber):
-    def __init__(self) -> None:
+    def __init__(self, model_size: str, device_preference: str) -> None:
         if whisperx is None:
             raise RuntimeError("whisperx is not installed")
         self._model = None
         self._align_model = None
         self._diarize_pipeline = None
         self._lock = Lock()
+        self.model_size = model_size
+        self.device_preference = device_preference
+
+    @staticmethod
+    def _normalize_device(device: str) -> str:
+        if device.lower() in {"cuda", "gpu"}:
+            return "cuda"
+        return "cpu"
+
+    @staticmethod
+    def _compute_type_for_device(device: str) -> str:
+        normalized = WhisperXTranscriber._normalize_device(device)
+        if normalized == "cuda":
+            return settings.whisper_compute_type or "float16"
+        return "int8"
 
     def _ensure_model(self):
         if self._model is None:
-            device = settings.whisper_device
+            device = self._normalize_device(self.device_preference or settings.whisper_device)
             if device == "cuda" and torch is not None and not torch.cuda.is_available():
                 logger.warning("CUDA not available, falling back to CPU")
                 device = "cpu"
-            logger.info("Loading whisperx model %s on %s", settings.whisper_model_size, device)
+            compute_type = self._compute_type_for_device(device)
+            logger.info("Loading whisperx model %s on %s", self.model_size, device)
             self._model = whisperx.load_model(  # type: ignore[attr-defined]
-                settings.whisper_model_size,
+                self.model_size,
                 device=device,
-                compute_type=settings.whisper_compute_type,
+                compute_type=compute_type,
                 language=settings.whisper_language,
             )
             if settings.whisper_use_faster and hasattr(whisperx, "transcribe_with_vad"):
                 logger.info("Enabled faster VAD transcription")
         if settings.whisper_enable_speaker_diarization and self._diarize_pipeline is None:
             logger.info("Loading diarization pipeline")
-            self._diarize_pipeline = whisperx.DiarizationPipeline(use_auth_token=None, device=settings.whisper_device)
+            self._diarize_pipeline = whisperx.DiarizationPipeline(
+                use_auth_token=None,
+                device=self._normalize_device(self.device_preference or settings.whisper_device),
+            )
 
     def _estimate_duration(self, audio_path: Path) -> Optional[float]:
         try:
@@ -132,20 +151,30 @@ class WhisperXTranscriber(BaseTranscriber):
         )
 
 
-_transcriber: Optional[BaseTranscriber] = None
+_transcriber_cache: dict[tuple[str, str], BaseTranscriber] = {}
 _transcriber_lock = Lock()
 
 
-def get_transcriber() -> BaseTranscriber:
-    global _transcriber
-    if _transcriber is None:
-        with _transcriber_lock:
-            if _transcriber is None:
-                if settings.enable_dummy_transcriber or whisperx is None:
-                    _transcriber = DummyTranscriber()
-                else:
-                    _transcriber = WhisperXTranscriber()
-    return _transcriber
+def get_transcriber(
+    model_size: Optional[str] = None,
+    device_preference: Optional[str] = None,
+) -> BaseTranscriber:
+    if settings.enable_dummy_transcriber or whisperx is None:
+        key = ("dummy", "dummy")
+    else:
+        resolved_model = model_size or settings.whisper_model_size
+        resolved_device = (device_preference or settings.whisper_device or "cuda").lower()
+        key = (resolved_model, resolved_device)
+
+    with _transcriber_lock:
+        transcriber = _transcriber_cache.get(key)
+        if transcriber is None:
+            if settings.enable_dummy_transcriber or whisperx is None:
+                transcriber = DummyTranscriber()
+            else:
+                transcriber = WhisperXTranscriber(key[0], key[1])
+            _transcriber_cache[key] = transcriber
+    return transcriber
 
 
 def serialize_segments(segments: List[SegmentResult]) -> List[dict]:

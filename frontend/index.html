@@ -12,49 +12,111 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="hero">
-      <div class="hero-content">
-        <h1>Grabadora Pro</h1>
-        <p>
-          Transcribe varias clases a la vez, identifica a los ponentes con WhisperX y desbloquea notas premium impulsadas por IA.
-        </p>
-        <div class="hero-tags">
-          <span>WhisperX</span>
-          <span>Diarización</span>
-          <span>Pagos premium</span>
-        </div>
+    <header class="app-bar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">🎙️</span>
+        <span class="brand-name">Grabadora Pro</span>
       </div>
+      <nav class="app-nav" aria-label="Secciones">
+        <a href="#upload" class="nav-link">Subir</a>
+        <a href="#recientes" class="nav-link">Transcripciones</a>
+        <a href="#planes" class="nav-link">Planes</a>
+        <a href="https://github.com/" target="_blank" rel="noopener" class="nav-link">Docs</a>
+      </nav>
+      <button id="google-login" type="button" class="google-btn">
+        <span class="icon">🔐</span>
+        Iniciar sesión con Google
+      </button>
     </header>
 
+    <section class="hero" id="upload">
+      <div class="hero-content">
+        <h1>Transcripciones rápidas con IA premium</h1>
+        <p>
+          Procesa audio y video en paralelo, identifica ponentes con WhisperX y ofrece notas de valor a tus clientes en cuestión de minutos.
+        </p>
+        <div class="hero-tags">
+          <span>WhisperX + CUDA</span>
+          <span>Diarización avanzada</span>
+          <span>Pagos recurrentes</span>
+        </div>
+      </div>
+      <div class="hero-visual" aria-hidden="true">
+        <div class="wave"></div>
+        <div class="wave"></div>
+        <div class="wave"></div>
+      </div>
+    </section>
+
     <main class="layout">
-      <section class="card span-2">
-        <h2>Subir nuevos audios</h2>
-        <p class="section-lead">Arrastra varios archivos o selecciónalos manualmente. Se procesarán en paralelo.</p>
-        <form id="upload-form">
+      <section class="card span-2 upload-card" aria-labelledby="upload-heading">
+        <div class="card-header">
+          <h2 id="upload-heading">Subir nuevos audios</h2>
+          <p class="section-lead">Arrastra varios archivos o selecciónalos manualmente. Los procesamos en paralelo.</p>
+        </div>
+        <form id="upload-form" class="upload-form">
+          <div class="file-picker">
+            <input
+              id="audio-file"
+              type="file"
+              accept="audio/*,video/*"
+              multiple
+              hidden
+            />
+            <label for="audio-file" class="file-trigger" role="button" tabindex="0">
+              <span class="icon">📁</span>
+              Elegir archivos
+            </label>
+            <p class="hint">Formatos compatibles: mp3, wav, m4a, mp4, webm y más.</p>
+          </div>
+          <div id="file-preview" class="file-preview" hidden></div>
+          <div id="file-error" class="form-error" hidden></div>
+
           <div class="form-grid">
             <label class="form-label" for="audio-file">Archivos de audio o video</label>
             <input id="audio-file" type="file" accept="audio/*,video/*" multiple required />
 
-            <label class="form-label" for="language">Idioma preferido</label>
-            <input id="language" type="text" name="language" placeholder="Auto" />
+            <div class="field">
+              <label class="form-label" for="device-preference">Dispositivo preferido</label>
+              <select id="device-preference" name="device_preference" data-default="gpu">
+                <option value="gpu" selected>GPU / CUDA (recomendado)</option>
+                <option value="cpu">CPU</option>
+              </select>
+            </div>
 
-            <label class="form-label" for="subject">Asignatura / carpeta</label>
-            <input id="subject" type="text" name="subject" placeholder="Ej: Matemáticas" />
+            <div class="field">
+              <label class="form-label" for="subject">Asignatura / carpeta</label>
+              <input id="subject" type="text" name="subject" placeholder="Ej: Matemáticas" />
+            </div>
 
-            <label class="form-label" for="price">Precio personalizado (centavos)</label>
-            <input id="price" type="number" min="0" step="1" name="price_cents" placeholder="Opcional" />
+            <div class="field">
+              <label class="form-label" for="price">Precio personalizado (opcional)</label>
+              <input id="price" type="number" min="0" step="1" name="price_cents" placeholder="Introduce el precio en centavos si lo necesitas" />
+            </div>
 
-            <label class="form-label" for="currency">Moneda</label>
-            <input id="currency" type="text" name="currency" placeholder="EUR" maxlength="8" />
+            <div class="field">
+              <label class="form-label" for="currency">Moneda</label>
+              <input id="currency" type="text" name="currency" placeholder="EUR" maxlength="8" />
+            </div>
           </div>
           <div id="file-preview" class="file-preview" hidden></div>
           <div id="file-error" class="form-error" hidden></div>
           <button type="submit" class="primary">Subir y transcribir</button>
         </form>
-        <div id="upload-status" aria-live="polite"></div>
+        <div id="upload-status" class="upload-status" aria-live="polite"></div>
       </section>
 
-      <section class="card">
+      <section class="card span-2 live-card" aria-labelledby="live-heading">
+        <div class="card-header">
+          <h2 id="live-heading">Vista en vivo estilo ChatGPT</h2>
+          <p class="section-lead">Selecciona una transcripción para ver cómo se despliega el texto con un efecto de tipeo fluido.</p>
+        </div>
+        <div id="live-output" class="live-output" aria-live="polite">
+          Selecciona cualquier transcripción para previsualizarla aquí.
+        </div>
+      </section>
+
+      <section class="card" id="recientes">
         <div class="list-header">
           <h2>Transcripciones recientes</h2>
           <input id="search" type="search" placeholder="Buscar por texto, asignatura o estado" />
@@ -65,7 +127,7 @@
         <div id="transcription-list" class="transcription-list"></div>
       </section>
 
-      <section class="card">
+      <section class="card" id="planes">
         <div class="list-header">
           <h2>Planes premium</h2>
           <button id="refresh-plans" type="button" class="ghost">Actualizar</button>

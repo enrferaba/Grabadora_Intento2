@@ -121,6 +121,8 @@ def test_transcription_lifecycle(test_env):
             subject="Historia",
             price_cents=None,
             currency=None,
+            model_size="large",
+            device_preference="gpu",
             session=session,
         )
         transcription_id = response.id
@@ -133,6 +135,8 @@ def test_transcription_lifecycle(test_env):
             TranscriptionStatus.COMPLETED,
             TranscriptionStatus.FAILED,
         }
+        assert detail.model_size is not None
+        assert detail.device_preference is not None
 
     txt_path = compute_txt_path(transcription_id)
     assert txt_path.exists()
@@ -211,6 +215,8 @@ def test_batch_upload_and_payment_flow(test_env):
             subject="Física",
             price_cents=None,
             currency=None,
+            model_size="medium",
+            device_preference="gpu",
             session=session,
         )
     assert batch.items
@@ -250,3 +256,26 @@ def test_frontend_mount_available(test_env):
         isinstance(route, Mount) and route.path in {"", "/"}
         for route in app.routes
     )
+
+
+def test_google_login_endpoint(test_env):
+    _prepare_database()
+    from fastapi import HTTPException
+
+    from app.routers import auth
+
+    with pytest.raises(HTTPException):
+        auth.google_login()
+
+    os.environ["GOOGLE_CLIENT_ID"] = "demo-client"
+    os.environ["GOOGLE_REDIRECT_URI"] = "https://example.com/callback"
+
+    # recargar configuración para reflejar nuevas variables
+    from app import config
+
+    config.get_settings.cache_clear()
+    config.settings = config.get_settings()
+
+    payload = auth.google_login()
+    assert "authorization_url" in payload
+    assert "client_id=demo-client" in payload["authorization_url"]

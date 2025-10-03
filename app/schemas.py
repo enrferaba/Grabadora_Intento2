@@ -19,6 +19,8 @@ class TranscriptionBase(BaseModel):
     id: int
     original_filename: str
     language: Optional[str]
+    model_size: Optional[str]
+    device_preference: Optional[str]
     duration: Optional[float]
     status: TranscriptionStatus
     subject: Optional[str]
