@@ -9,10 +9,6 @@ from threading import Lock
 from typing import Callable, Dict, List, Optional
 from urllib.error import HTTPError
 
-from pydub import AudioSegment
-
-from .config import settings
-
 try:
     import torch
 except Exception:  # pragma: no cover - torch might not be available in tests
@@ -22,6 +18,15 @@ try:
     import whisperx  # type: ignore
 except Exception:  # pragma: no cover - optional dependency in CI
     whisperx = None  # type: ignore
+
+try:  # pragma: no cover - faster_whisper is an optional dependency in CI
+    from faster_whisper import WhisperModel as FasterWhisperModel  # type: ignore
+except Exception:  # pragma: no cover - handled gracefully in runtime
+    FasterWhisperModel = None  # type: ignore
+
+from pydub import AudioSegment
+
+from .config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +84,10 @@ class DummyTranscriber(BaseTranscriber):
         )
 
 
+class WhisperXVADUnavailableError(RuntimeError):
+    """Raised when WhisperX cannot obtain the VAD model due to authentication issues."""
+
+
 class WhisperXTranscriber(BaseTranscriber):
     def __init__(self, model_size: str, device_preference: str) -> None:
         if whisperx is None:
@@ -91,6 +100,7 @@ class WhisperXTranscriber(BaseTranscriber):
         self.device_preference = device_preference
         self._cached_asr_options: Optional[dict] = None
         self._vad_patch_done = False
+        self._fallback_transcriber: Optional["FasterWhisperTranscriber"] = None
 
     @staticmethod
     def _normalize_device(device: str) -> str:
@@ -274,12 +284,15 @@ class WhisperXTranscriber(BaseTranscriber):
                         {"code": err.code, "url": getattr(vad_module, "VAD_SEGMENTATION_URL", "")},
                         "warning",
                     )
-                if err.code in {301, 302, 307, 308}:
+                if err.code in {301, 302, 307, 308, 401, 403}:
                     fallback_path = self._download_vad_weights(debug_callback=debug_callback)
                     if fallback_path:
                         options = dict(options)
                         options["segmentation_path"] = str(fallback_path)
                         return original_loader(device, use_auth_token=use_auth_token, **options)
+                    raise WhisperXVADUnavailableError(
+                        f"VAD model requires authentication (HTTP {err.code})"
+                    ) from err
                 logger.error("Fallo al cargar modelo VAD: %s", err)
                 raise
 
@@ -320,13 +333,24 @@ class WhisperXTranscriber(BaseTranscriber):
                 )
             self._patch_default_asr_options()
             self._patch_vad_loader(debug_callback=debug_callback)
-            self._model = whisperx.load_model(  # type: ignore[attr-defined]
-                self.model_size,
-                device=device,
-                compute_type=compute_type,
-                language=settings.whisper_language,
-                asr_options=self._build_asr_options(),
-            )
+            try:
+                self._model = whisperx.load_model(  # type: ignore[attr-defined]
+                    self.model_size,
+                    device=device,
+                    compute_type=compute_type,
+                    language=settings.whisper_language,
+                    asr_options=self._build_asr_options(),
+                )
+            except WhisperXVADUnavailableError:
+                self._model = None
+                if debug_callback:
+                    debug_callback(
+                        "load-model",
+                        "VAD protegido: usando fallback faster-whisper",
+                        {"model": self.model_size, "device": device},
+                        "warning",
+                    )
+                raise
             if settings.whisper_use_faster and hasattr(whisperx, "transcribe_with_vad"):
                 logger.info("Enabled faster VAD transcription")
                 if debug_callback:
@@ -361,8 +385,19 @@ class WhisperXTranscriber(BaseTranscriber):
             if debug_callback:
                 debug_callback(stage, message, extra, level)
 
-        with self._lock:
-            self._ensure_model(debug_callback=emit)
+        try:
+            with self._lock:
+                self._ensure_model(debug_callback=emit)
+        except WhisperXVADUnavailableError as exc:
+            emit(
+                "load-model",
+                "WhisperX no disponible (VAD restringido); usando fallback",
+                {"error": str(exc)},
+                "warning",
+            )
+            fallback = self._get_fallback_transcriber()
+            return fallback.transcribe(audio_path, language=language, debug_callback=debug_callback)
+
         assert self._model is not None
 
         logger.info("Starting transcription for %s", audio_path)
@@ -426,6 +461,15 @@ class WhisperXTranscriber(BaseTranscriber):
             runtime_seconds=runtime,
         )
 
+    def _get_fallback_transcriber(self) -> "FasterWhisperTranscriber":
+        with self._lock:
+            if self._fallback_transcriber is None:
+                self._fallback_transcriber = FasterWhisperTranscriber(
+                    self.model_size,
+                    self.device_preference,
+                )
+        return self._fallback_transcriber
+
 
 _transcriber_cache: dict[tuple[str, str], BaseTranscriber] = {}
 _transcriber_lock = Lock()
@@ -463,3 +507,100 @@ def serialize_segments(segments: List[SegmentResult]) -> List[dict]:
         }
         for segment in segments
     ]
+
+
+class FasterWhisperTranscriber(BaseTranscriber):
+    """Fallback transcriber that relies solely on faster-whisper."""
+
+    def __init__(self, model_size: str, device_preference: str) -> None:
+        if FasterWhisperModel is None:
+            raise RuntimeError("faster_whisper is not installed")
+        self.model_size = model_size
+        self.device_preference = device_preference
+        self._model: Optional[FasterWhisperModel] = None  # type: ignore[type-arg]
+        self._lock = Lock()
+
+    def _resolve_device(self) -> str:
+        preferred = (self.device_preference or settings.whisper_device or "cpu").lower()
+        if preferred in {"cuda", "gpu"} and torch is not None and torch.cuda.is_available():
+            return "cuda"
+        return "cpu"
+
+    def _resolve_compute_type(self, device: str) -> str:
+        if device == "cuda":
+            return settings.whisper_compute_type or "float16"
+        return "int8"
+
+    def _ensure_model(self, debug_callback=None) -> None:
+        if self._model is not None:
+            return
+        device = self._resolve_device()
+        compute_type = self._resolve_compute_type(device)
+        if debug_callback:
+            debug_callback(
+                "load-model",
+                "Cargando modelo faster-whisper de respaldo",
+                {"model": self.model_size, "device": device, "compute_type": compute_type},
+                "info",
+            )
+        self._model = FasterWhisperModel(  # type: ignore[call-arg]
+            self.model_size,
+            device=device,
+            compute_type=compute_type,
+            download_root=str(settings.models_cache_dir),
+        )
+
+    def transcribe(
+        self,
+        audio_path: Path,
+        language: Optional[str] = None,
+        debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
+    ) -> TranscriptionResult:
+        def emit(stage: str, message: str, extra: Optional[Dict[str, object]] = None, level: str = "info") -> None:
+            if debug_callback:
+                debug_callback(stage, message, extra, level)
+
+        with self._lock:
+            self._ensure_model(debug_callback=emit)
+        assert self._model is not None
+
+        start = time.perf_counter()
+        segments, info = self._model.transcribe(  # type: ignore[attr-defined]
+            str(audio_path),
+            language=language or settings.whisper_language,
+            beam_size=5,
+            vad_filter=True,
+        )
+        runtime = time.perf_counter() - start
+        emit(
+            "transcribe.completed",
+            "Transcripción con faster-whisper completada",
+            {"runtime_seconds": runtime},
+        )
+
+        segment_results: List[SegmentResult] = []
+        collected_text: List[str] = []
+        for segment in segments:
+            text = getattr(segment, "text", "").strip()
+            if not text:
+                continue
+            collected_text.append(text)
+            segment_results.append(
+                SegmentResult(
+                    start=float(getattr(segment, "start", 0.0)),
+                    end=float(getattr(segment, "end", 0.0)),
+                    speaker="SPEAKER_00",
+                    text=text,
+                )
+            )
+
+        language_result = getattr(info, "language", language)
+        duration = getattr(info, "duration", None)
+
+        return TranscriptionResult(
+            text=" ".join(collected_text).strip(),
+            language=language_result,
+            duration=duration,
+            segments=segment_results,
+            runtime_seconds=runtime,
+        )

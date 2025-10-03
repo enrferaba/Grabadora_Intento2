@@ -169,3 +169,77 @@ def test_vad_loader_redirect_fallback(monkeypatch, tmp_path):
     assert any(stage == "vad-download" for stage, *_ in events)
     # También debe haberse actualizado la referencia en whisperx.asr
     assert fake_whisperx.asr.load_vad_model is patched_loader
+
+
+def test_transcribe_falls_back_to_faster_whisper(monkeypatch, tmp_path):
+    """Cuando el VAD está restringido se debe usar faster-whisper como respaldo."""
+
+    events = []
+
+    fake_transcribe = types.ModuleType("faster_whisper.transcribe")
+
+    class DummyTranscriptionOptions:
+        def __init__(self, **kwargs):
+            pass
+
+    fake_transcribe.TranscriptionOptions = DummyTranscriptionOptions
+
+    class FakeFWModel:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def transcribe(self, *args, **kwargs):
+            class Segment:
+                start = 0.0
+                end = 1.0
+                text = "Hola mundo"
+
+            info = types.SimpleNamespace(language="es", duration=1.0)
+            return [Segment()], info
+
+    fake_fw = types.ModuleType("faster_whisper")
+    fake_fw.transcribe = fake_transcribe
+    fake_fw.WhisperModel = FakeFWModel
+
+    def failing_load_model(*args, **kwargs):
+        raise whisper_service.WhisperXVADUnavailableError("auth required")
+
+    fake_whisperx = types.SimpleNamespace(
+        load_model=failing_load_model,
+        asr=types.SimpleNamespace(DEFAULT_ASR_OPTIONS={}),
+        vad=types.SimpleNamespace(load_vad_model=lambda *a, **k: None, VAD_SEGMENTATION_URL="http://old"),
+        DiarizationPipeline=lambda **kwargs: None,
+        load_audio=lambda path: [],
+        assign_word_speakers=lambda diarize_segments, segments: segments,
+    )
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+    monkeypatch.setitem(sys.modules, "faster_whisper.transcribe", fake_transcribe)
+    monkeypatch.setattr(whisper_service, "FasterWhisperModel", FakeFWModel, raising=False)
+    monkeypatch.setattr(whisper_service, "whisperx", fake_whisperx, raising=False)
+    monkeypatch.setattr(whisper_service, "torch", None, raising=False)
+
+    # Ajustar settings para evitar accesos reales al disco
+    monkeypatch.setattr(whisper_service.settings, "whisper_language", "es", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_compute_type", "int8", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_device", "cpu", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_use_faster", False, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_enable_speaker_diarization", False, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_batch_size", 4, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "models_cache_dir", tmp_path, raising=False)
+
+    audio_path = tmp_path / "demo.wav"
+    audio_path.write_bytes(b"fake")
+
+    transcriber = whisper_service.WhisperXTranscriber("small", "cpu")
+
+    result = transcriber.transcribe(
+        audio_path,
+        language="es",
+        debug_callback=lambda *args: events.append(args),
+    )
+
+    assert result.text == "Hola mundo"
+    assert result.language == "es"
+    assert any("fallback" in message.lower() for _, message, *_ in events)
