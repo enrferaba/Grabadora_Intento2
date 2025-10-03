@@ -1,0 +1,29 @@
+services:
+  grabadora:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - ENABLE_DUMMY_TRANSCRIBER=${ENABLE_DUMMY_TRANSCRIBER:-true}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-base}
+      - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-300}
+
+  grabadora-gpu:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - ENABLE_DUMMY_TRANSCRIBER=${ENABLE_DUMMY_TRANSCRIBER:-false}
+      - WHISPER_DEVICE=cuda
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-large-v2}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    profiles: [gpu]
