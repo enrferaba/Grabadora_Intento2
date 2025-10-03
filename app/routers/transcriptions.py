@@ -48,19 +48,6 @@ ALLOWED_MEDIA_EXTENSIONS = {
 }
 ALLOWED_MEDIA_PREFIXES = ("audio/", "video/")
 
-MODEL_ALIASES = {
-    "large": "large-v2",
-    "large-v2": "large-v2",
-    "medium": "medium",
-    "small": "small",
-}
-
-DEVICE_ALIASES = {
-    "gpu": "cuda",
-    "cuda": "cuda",
-    "cpu": "cpu",
-}
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])

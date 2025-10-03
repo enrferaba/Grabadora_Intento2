@@ -73,24 +73,8 @@
           <div id="file-error" class="form-error" hidden></div>
 
           <div class="form-grid">
-            <div class="field">
-              <label class="form-label" for="language">Idioma preferido</label>
-              <select id="language" name="language">
-                <option value="">Detección automática</option>
-                <option value="es" selected>Español</option>
-                <option value="en">Inglés</option>
-                <option value="fr">Francés</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="form-label" for="model-size">Modelo WhisperX</label>
-              <select id="model-size" name="model_size" data-default="large">
-                <option value="large" selected>large (máxima precisión)</option>
-                <option value="medium">medium (equilibrado)</option>
-                <option value="small">small (más veloz)</option>
-              </select>
-            </div>
+            <label class="form-label" for="audio-file">Archivos de audio o video</label>
+            <input id="audio-file" type="file" accept="audio/*,video/*" multiple required />
 
             <div class="field">
               <label class="form-label" for="device-preference">Dispositivo preferido</label>
@@ -115,11 +99,9 @@
               <input id="currency" type="text" name="currency" placeholder="EUR" maxlength="8" />
             </div>
           </div>
-
-          <button type="submit" class="primary upload-button">
-            <span class="glow"></span>
-            <span class="label">Subir y transcribir</span>
-          </button>
+          <div id="file-preview" class="file-preview" hidden></div>
+          <div id="file-error" class="form-error" hidden></div>
+          <button type="submit" class="primary">Subir y transcribir</button>
         </form>
         <div id="upload-status" class="upload-status" aria-live="polite"></div>
       </section>

@@ -39,6 +39,22 @@ const MEDIA_EXTENSIONS = [
   '.wma',
 ];
 
+const MEDIA_PREFIXES = ['audio/', 'video/'];
+const MEDIA_EXTENSIONS = [
+  '.aac',
+  '.flac',
+  '.m4a',
+  '.m4v',
+  '.mkv',
+  '.mov',
+  '.mp3',
+  '.mp4',
+  '.ogg',
+  '.wav',
+  '.webm',
+  '.wma',
+];
+
 let searchTimer;
 let pollingHandle = null;
 let currentQuery = '';
@@ -146,13 +162,13 @@ function renderSpeakers(container, speakers) {
   if (!list) return;
   list.innerHTML = '';
   const safeSegments = Array.isArray(speakers) ? speakers : [];
-  for (const segment of safeSegments) {
+  safeSegments.forEach((segment) => {
     const item = document.createElement('li');
     const start = segment.start?.toFixed(2) ?? '0.00';
     const end = segment.end?.toFixed(2) ?? '0.00';
     item.textContent = `[${start}s - ${end}s] ${segment.speaker}: ${segment.text}`;
     list.appendChild(item);
-  }
+  });
   container.hidden = safeSegments.length === 0;
 }
 
