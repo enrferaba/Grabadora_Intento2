@@ -10,6 +10,7 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Generación automática de archivos `.txt`** y estructura extensible para futuros planes premium con IA externa.
 - **Interfaz web** en `/` construida con HTML, CSS y JavaScript moderno que permite subir varios audios a la vez, consultar resultados y revisar hablantes.
 - **Pasarela de pago simulada** con planes configurables, checkout y confirmación de compras que desbloquean contenido premium por transcripción.
+- **Inicio de sesión con Google (OAuth 2.0)** listo para conectar con tus credenciales y personalizar la experiencia del dashboard.
 - **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
 - **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado.
 

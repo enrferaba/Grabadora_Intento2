@@ -40,9 +40,13 @@ def _patch_forward_ref() -> None:
 
     def _patched(self, *args, **kwargs):  # type: ignore[override]
         if positional_slot is not None and len(args) > positional_slot:
+            updated_args = list(args)
+            if updated_args[positional_slot] is None:
+                updated_args[positional_slot] = set()
             kwargs.pop("recursive_guard", None)
-        else:
-            kwargs.setdefault("recursive_guard", set())
+            return original(self, *updated_args, **kwargs)
+
+        kwargs.setdefault("recursive_guard", set())
         return original(self, *args, **kwargs)
 
     forward_ref._evaluate = _patched  # type: ignore[assignment]

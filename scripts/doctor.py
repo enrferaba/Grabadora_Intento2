@@ -63,6 +63,8 @@ def print_report(statuses: Iterable[ModuleStatus]) -> int:
         print("Todo listo. Puedes inicializar la base de datos y arrancar la API:")
         print("  python -m scripts.init_db")
         print("  python -m uvicorn app.main:app --reload")
+        print()
+        print("Inicio de sesión con Google opcional: exporta GOOGLE_CLIENT_ID y GOOGLE_REDIRECT_URI si quieres habilitarlo.")
         return 0
 
     print()

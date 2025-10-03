@@ -35,6 +35,8 @@ class Transcription(Base):
     original_filename = Column(String(255), nullable=False)
     stored_path = Column(String(500), nullable=False)
     language = Column(String(32), nullable=True)
+    model_size = Column(String(64), nullable=True)
+    device_preference = Column(String(32), nullable=True)
     duration = Column(Float, nullable=True)
     text = Column(Text, nullable=True)
     speakers = Column(JSON, nullable=True)
@@ -68,6 +70,8 @@ class Transcription(Base):
             f"Archivo original: {self.original_filename}",
             f"Estado: {self.status}",
             f"Duración (s): {self.duration if self.duration is not None else 'N/A'}",
+            f"Modelo: {self.model_size or 'predeterminado'}",
+            f"Dispositivo: {self.device_preference or 'automático'}",
             ""
         ]
         body = self.text or ""

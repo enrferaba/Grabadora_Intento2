@@ -30,9 +30,13 @@ if ForwardRef is not None and hasattr(ForwardRef, "_evaluate"):
 
             def _patched_evaluate(self, *args, **kwargs):
                 if slot is not None and len(args) > slot:
+                    updated_args = list(args)
+                    if updated_args[slot] is None:
+                        updated_args[slot] = set()
                     kwargs.pop("recursive_guard", None)
-                else:
-                    kwargs.setdefault("recursive_guard", set())
+                    return _original_evaluate(self, *updated_args, **kwargs)
+
+                kwargs.setdefault("recursive_guard", set())
                 return _original_evaluate(self, *args, **kwargs)
 
             ForwardRef._evaluate = _patched_evaluate

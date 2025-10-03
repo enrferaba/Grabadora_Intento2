@@ -25,16 +25,27 @@ def _ensure_forward_ref_default() -> None:
 
     original = forward_ref._evaluate
 
-    def _patched(self, globalns, localns, type_params=None, recursive_guard=None):
-        if recursive_guard is None:
-            recursive_guard = set()
-        return original(
-            self,
-            globalns,
-            localns,
-            type_params,
-            recursive_guard=recursive_guard,
-        )
+    accepts_positional = parameter.kind in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    param_names = list(signature.parameters.keys())
+    try:
+        param_index = param_names.index("recursive_guard")
+    except ValueError:
+        param_index = -1
+    positional_slot = param_index - 1 if accepts_positional and param_index > 0 else None
+
+    def _patched(self, *args, **kwargs):
+        if positional_slot is not None and len(args) > positional_slot:
+            mutable_args = list(args)
+            if mutable_args[positional_slot] is None:
+                mutable_args[positional_slot] = set()
+            kwargs.pop("recursive_guard", None)
+            return original(self, *mutable_args, **kwargs)
+
+        kwargs.setdefault("recursive_guard", set())
+        return original(self, *args, **kwargs)
 
     forward_ref._evaluate = _patched
 
@@ -49,11 +60,15 @@ fastapi = pytest.importorskip("fastapi")
 from fastapi import BackgroundTasks, UploadFile
 
 
-def _make_upload(filename: str, data: bytes = b"demo audio") -> UploadFile:
+def _make_upload(
+    filename: str,
+    data: bytes = b"demo audio",
+    content_type: str = "audio/wav",
+) -> UploadFile:
     buffer = SpooledTemporaryFile()
     buffer.write(data)
     buffer.seek(0)
-    return UploadFile(file=buffer, filename=filename, headers={"content-type": "audio/wav"})
+    return UploadFile(file=buffer, filename=filename, headers={"content-type": content_type})
 
 
 def _run_background_tasks(background_tasks: BackgroundTasks) -> None:
@@ -106,6 +121,8 @@ def test_transcription_lifecycle(test_env):
             subject="Historia",
             price_cents=None,
             currency=None,
+            model_size="large",
+            device_preference="gpu",
             session=session,
         )
         transcription_id = response.id
@@ -118,6 +135,8 @@ def test_transcription_lifecycle(test_env):
             TranscriptionStatus.COMPLETED,
             TranscriptionStatus.FAILED,
         }
+        assert detail.model_size is not None
+        assert detail.device_preference is not None
 
     txt_path = compute_txt_path(transcription_id)
     assert txt_path.exists()
@@ -136,6 +155,31 @@ def test_transcription_lifecycle(test_env):
         transcriptions.delete_transcription(transcription_id, session=session)
 
     assert not txt_path.exists()
+
+
+def test_reject_non_media_upload(test_env):
+    _prepare_database()
+    from fastapi import HTTPException
+
+    from app.database import get_session
+    from app.routers import transcriptions
+
+    background = BackgroundTasks()
+    upload = _make_upload("document.pdf", content_type="application/pdf")
+
+    with get_session() as session, pytest.raises(HTTPException) as excinfo:
+        transcriptions.create_transcription(
+            background_tasks=background,
+            upload=upload,
+            language=None,
+            subject=None,
+            price_cents=None,
+            currency=None,
+            session=session,
+        )
+
+    assert excinfo.value.status_code == 400
+    assert "audio" in excinfo.value.detail.lower() or "video" in excinfo.value.detail.lower()
 
 
 def test_batch_upload_and_payment_flow(test_env):
@@ -171,6 +215,8 @@ def test_batch_upload_and_payment_flow(test_env):
             subject="Física",
             price_cents=None,
             currency=None,
+            model_size="medium",
+            device_preference="gpu",
             session=session,
         )
     assert batch.items
@@ -210,3 +256,26 @@ def test_frontend_mount_available(test_env):
         isinstance(route, Mount) and route.path in {"", "/"}
         for route in app.routes
     )
+
+
+def test_google_login_endpoint(test_env):
+    _prepare_database()
+    from fastapi import HTTPException
+
+    from app.routers import auth
+
+    with pytest.raises(HTTPException):
+        auth.google_login()
+
+    os.environ["GOOGLE_CLIENT_ID"] = "demo-client"
+    os.environ["GOOGLE_REDIRECT_URI"] = "https://example.com/callback"
+
+    # recargar configuración para reflejar nuevas variables
+    from app import config
+
+    config.get_settings.cache_clear()
+    config.settings = config.get_settings()
+
+    payload = auth.google_login()
+    assert "authorization_url" in payload
+    assert "client_id=demo-client" in payload["authorization_url"]

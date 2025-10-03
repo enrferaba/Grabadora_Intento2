@@ -38,6 +38,9 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    google_client_id: Optional[str] = None
+    google_redirect_uri: Optional[str] = None
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,5 +1,6 @@
 const API_BASE = '/api/transcriptions';
 const PAYMENTS_BASE = '/api/payments';
+const AUTH_BASE = '/api/auth';
 
 const uploadForm = document.querySelector('#upload-form');
 const uploadStatus = document.querySelector('#upload-status');
@@ -12,15 +13,81 @@ const modalClose = document.querySelector('#modal-close');
 const template = document.querySelector('#transcription-template');
 const fileInput = document.querySelector('#audio-file');
 const filePreview = document.querySelector('#file-preview');
+const fileError = document.querySelector('#file-error');
 const plansContainer = document.querySelector('#plans');
 const checkoutStatus = document.querySelector('#checkout-status');
 const refreshPlansBtn = document.querySelector('#refresh-plans');
+const googleLoginBtn = document.querySelector('#google-login');
+const languageSelect = document.querySelector('#language');
+const modelSelect = document.querySelector('#model-size');
+const deviceSelect = document.querySelector('#device-preference');
+const liveOutput = document.querySelector('#live-output');
+
+const MEDIA_PREFIXES = ['audio/', 'video/'];
+const MEDIA_EXTENSIONS = [
+  '.aac',
+  '.flac',
+  '.m4a',
+  '.m4v',
+  '.mkv',
+  '.mov',
+  '.mp3',
+  '.mp4',
+  '.ogg',
+  '.wav',
+  '.webm',
+  '.wma',
+];
 
 let searchTimer;
 let pollingHandle = null;
 let currentQuery = '';
 let premiumOnly = false;
 let selectedTranscriptionId = null;
+const typewriterControllers = new Map();
+
+function typewriterEffect(element, text, speed = 18) {
+  if (!element) return;
+  const controller = typewriterControllers.get(element);
+  if (controller?.cancel) {
+    controller.cancel();
+  }
+
+  const finalText = text ?? '';
+  if (!finalText) {
+    element.textContent = '';
+    element.dataset.typing = 'false';
+    typewriterControllers.set(element, null);
+    return;
+  }
+
+  let index = 0;
+  let timeoutId;
+  let cancelled = false;
+  element.textContent = '';
+  element.dataset.typing = 'true';
+
+  const tick = () => {
+    if (cancelled) return;
+    element.textContent += finalText[index];
+    index += 1;
+    if (index < finalText.length) {
+      timeoutId = setTimeout(tick, speed);
+    } else {
+      element.dataset.typing = 'false';
+    }
+  };
+
+  tick();
+
+  typewriterControllers.set(element, {
+    cancel() {
+      cancelled = true;
+      clearTimeout(timeoutId);
+      element.dataset.typing = 'false';
+    },
+  });
+}
 
 async function fetchJSON(url, options = {}) {
   const response = await fetch(url, options);
@@ -73,27 +140,36 @@ function formatCurrency(cents, currency = 'EUR') {
   }
 }
 
-function renderSpeakers(container, speakers = []) {
+function renderSpeakers(container, speakers) {
+  if (!container) return;
   const list = container.querySelector('ul');
+  if (!list) return;
   list.innerHTML = '';
-  speakers.forEach((segment) => {
+  const safeSegments = Array.isArray(speakers) ? speakers : [];
+  for (const segment of safeSegments) {
     const item = document.createElement('li');
     const start = segment.start?.toFixed(2) ?? '0.00';
     const end = segment.end?.toFixed(2) ?? '0.00';
     item.textContent = `[${start}s - ${end}s] ${segment.speaker}: ${segment.text}`;
     list.appendChild(item);
-  });
-  container.hidden = speakers.length === 0;
+  }
+  container.hidden = safeSegments.length === 0;
 }
 
-function renderTranscriptions(data) {
+function renderTranscriptions(items) {
+  if (!transcriptionList) return;
+  if (!template || !('content' in template)) {
+    console.warn('Plantilla de transcripción no disponible.');
+    return;
+  }
   transcriptionList.innerHTML = '';
-  if (!data.total) {
+  const results = Array.isArray(items) ? items : [];
+  if (!results.length) {
     transcriptionList.innerHTML = '<p>No se encontraron transcripciones.</p>';
     return;
   }
 
-  data.results.forEach((item) => {
+  for (const item of results) {
     const node = template.content.cloneNode(true);
     node.querySelector('.transcription-title').textContent = item.original_filename;
     node.querySelector('.status').textContent = formatStatus(item.status);
@@ -125,7 +201,7 @@ function renderTranscriptions(data) {
     renderSpeakers(node.querySelector('.speakers'), item.speakers);
 
     transcriptionList.appendChild(node);
-  });
+  }
 }
 
 async function refreshTranscriptions() {
@@ -137,8 +213,9 @@ async function refreshTranscriptions() {
     url.searchParams.set('premium_only', 'true');
   }
   const data = await fetchJSON(url);
-  renderTranscriptions(data);
-  const pending = data.results.some((item) => item.status === 'processing');
+  const results = Array.isArray(data?.results) ? data.results : [];
+  renderTranscriptions(results);
+  const pending = results.some((item) => item.status === 'processing');
   if (pending && !pollingHandle) {
     startPolling();
   }
@@ -162,16 +239,6 @@ function stopPolling() {
   }
 }
 
-async function openModal(id) {
-  try {
-    const data = await fetchJSON(`${API_BASE}/${id}`);
-    modalText.textContent = data.text ?? 'Transcripción no disponible aún.';
-    modal.hidden = false;
-  } catch (error) {
-    alert(`No se pudo obtener la transcripción: ${error.message}`);
-  }
-}
-
 async function deleteTranscription(id) {
   if (!confirm('¿Eliminar esta transcripción?')) return;
   try {
@@ -192,20 +259,55 @@ function handleSearch(event) {
   }, 300);
 }
 
+function isSupportedMediaFile(file) {
+  if (!file) return false;
+  const type = (file.type || '').toLowerCase();
+  if (MEDIA_PREFIXES.some((prefix) => type.startsWith(prefix))) {
+    return true;
+  }
+  const name = (file.name || '').toLowerCase();
+  return MEDIA_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
 function updateFilePreview() {
   const files = Array.from(fileInput?.files ?? []);
   if (!files.length) {
     filePreview.hidden = true;
     filePreview.innerHTML = '';
+    if (fileError) {
+      fileError.hidden = true;
+      fileError.textContent = '';
+    }
     return;
   }
+
+  const invalid = files.filter((file) => !isSupportedMediaFile(file));
+  if (invalid.length) {
+    if (fileError) {
+      const names = invalid.map((file) => file.name).join(', ');
+      fileError.textContent = `Los siguientes archivos no son audio/video válidos: ${names}`;
+      fileError.hidden = false;
+    }
+    if (fileInput) {
+      fileInput.value = '';
+    }
+    filePreview.hidden = true;
+    filePreview.innerHTML = '';
+    return;
+  }
+
+  if (fileError) {
+    fileError.hidden = true;
+    fileError.textContent = '';
+  }
+
   filePreview.hidden = false;
   filePreview.innerHTML = '';
-  files.forEach((file) => {
+  for (const file of files) {
     const row = document.createElement('span');
     row.textContent = `${file.name} • ${formatBytes(file.size)}`;
     filePreview.appendChild(row);
-  });
+  }
 }
 
 async function loadPlans() {
@@ -219,13 +321,15 @@ async function loadPlans() {
 }
 
 function renderPlans(plans = []) {
+  if (!plansContainer) return;
   plansContainer.innerHTML = '';
-  if (!plans.length) {
+  const safePlans = Array.isArray(plans) ? plans : [];
+  if (!safePlans.length) {
     plansContainer.innerHTML = '<p>No hay planes disponibles actualmente.</p>';
     return;
   }
 
-  plans.forEach((plan) => {
+  for (const plan of safePlans) {
     const card = document.createElement('article');
     card.className = 'plan-card';
     card.innerHTML = `
@@ -238,7 +342,7 @@ function renderPlans(plans = []) {
       </div>
     `;
     plansContainer.appendChild(card);
-  });
+  }
 }
 
 async function createCheckout(planSlug) {
@@ -280,15 +384,26 @@ uploadForm?.addEventListener('submit', async (event) => {
     return;
   }
 
+  if (files.some((file) => !isSupportedMediaFile(file))) {
+    uploadStatus.textContent = 'Solo se permiten archivos de audio o video.';
+    uploadStatus.classList.add('error');
+    updateFilePreview();
+    return;
+  }
+
   const language = uploadForm.querySelector('#language')?.value?.trim();
   const subject = uploadForm.querySelector('#subject')?.value?.trim();
   const priceCents = uploadForm.querySelector('#price')?.value?.trim();
   const currency = uploadForm.querySelector('#currency')?.value?.trim();
+  const modelSize = uploadForm.querySelector('#model-size')?.value?.trim();
+  const devicePreference = uploadForm.querySelector('#device-preference')?.value?.trim();
 
   const endpoint = files.length > 1 ? `${API_BASE}/batch` : API_BASE;
   const formData = new FormData();
   if (files.length > 1) {
-    files.forEach((file) => formData.append('uploads', file));
+    for (const file of files) {
+      formData.append('uploads', file);
+    }
   } else {
     formData.append('upload', files[0]);
   }
@@ -296,8 +411,11 @@ uploadForm?.addEventListener('submit', async (event) => {
   if (subject) formData.append('subject', subject);
   if (priceCents) formData.append('price_cents', priceCents);
   if (currency) formData.append('currency', currency);
+  if (modelSize) formData.append('model_size', modelSize);
+  if (devicePreference) formData.append('device_preference', devicePreference);
 
   uploadStatus.textContent = files.length > 1 ? `Subiendo ${files.length} archivos...` : 'Subiendo archivo...';
+  uploadStatus.classList.remove('error');
 
   try {
     const response = await fetchJSON(endpoint, {
@@ -308,6 +426,15 @@ uploadForm?.addEventListener('submit', async (event) => {
     uploadStatus.textContent = `${queuedCount} archivo(s) en cola. Procesando transcripciones...`;
     uploadStatus.classList.remove('error');
     uploadForm.reset();
+    if (modelSelect && modelSelect.dataset.default) {
+      modelSelect.value = modelSelect.dataset.default;
+    }
+    if (deviceSelect && deviceSelect.dataset.default) {
+      deviceSelect.value = deviceSelect.dataset.default;
+    }
+    if (languageSelect) {
+      languageSelect.value = languageSelect.querySelector('option[selected]')?.value ?? '';
+    }
     updateFilePreview();
     await refreshTranscriptions();
     startPolling();
@@ -339,3 +466,39 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshTranscriptions();
   loadPlans();
 });
+
+googleLoginBtn?.addEventListener('click', async () => {
+  googleLoginBtn.disabled = true;
+  try {
+    const data = await fetchJSON(`${AUTH_BASE}/google/login`);
+    if (data?.authorization_url) {
+      window.location.href = data.authorization_url;
+    }
+  } catch (error) {
+    alert(`Configura las variables de entorno de Google en el servidor para continuar. Detalle: ${error.message}`);
+  } finally {
+    googleLoginBtn.disabled = false;
+  }
+});
+
+function showTypewriterText(text) {
+  const safeText = text && text.trim() ? text : 'Transcripción no disponible aún.';
+  typewriterEffect(modalText, safeText);
+  typewriterEffect(liveOutput, safeText);
+}
+
+async function openModal(id) {
+  try {
+    const data = await fetchJSON(`${API_BASE}/${id}`);
+    modal.hidden = false;
+    showTypewriterText(data.text ?? 'Transcripción no disponible aún.');
+  } catch (error) {
+    modal.hidden = false;
+    const message = `No se pudo obtener la transcripción: ${error.message}`;
+    modalText.textContent = message;
+    if (liveOutput) {
+      liveOutput.textContent = message;
+      liveOutput.dataset.typing = 'false';
+    }
+  }
+}
