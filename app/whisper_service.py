@@ -7,7 +7,7 @@ from inspect import signature
 from pathlib import Path
 from threading import Lock
 from typing import Callable, Dict, List, Optional
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 try:
     import torch
@@ -295,6 +295,28 @@ class WhisperXTranscriber(BaseTranscriber):
                     ) from err
                 logger.error("Fallo al cargar modelo VAD: %s", err)
                 raise
+            except URLError as err:
+                if debug_callback:
+                    debug_callback(
+                        "vad-download",
+                        "Error de red descargando VAD",
+                        {"error": str(err)},
+                        "warning",
+                    )
+                raise WhisperXVADUnavailableError("Unable to download VAD model (network error)") from err
+            except Exception as err:
+                # Cualquier otra excepción inesperada (por ejemplo, errores de socket en
+                # entornos sin red) debería activar igualmente el modo fallback para
+                # evitar que la aplicación se quede bloqueada intentando obtener el VAD.
+                logger.warning("Error inesperado descargando VAD: %s", err)
+                if debug_callback:
+                    debug_callback(
+                        "vad-download",
+                        "Error inesperado descargando VAD",
+                        {"error": str(err)},
+                        "warning",
+                    )
+                raise WhisperXVADUnavailableError("Unexpected error downloading VAD model") from err
 
         patched_loader._app_patched = True  # type: ignore[attr-defined]
         vad_module.load_vad_model = patched_loader  # type: ignore[attr-defined]
@@ -564,14 +586,46 @@ class FasterWhisperTranscriber(BaseTranscriber):
             self._ensure_model(debug_callback=emit)
         assert self._model is not None
 
-        start = time.perf_counter()
-        segments, info = self._model.transcribe(  # type: ignore[attr-defined]
-            str(audio_path),
-            language=language or settings.whisper_language,
-            beam_size=5,
-            vad_filter=True,
-        )
-        runtime = time.perf_counter() - start
+        attempts = [True, False]
+        last_error: Optional[BaseException] = None
+        runtime = 0.0
+        segments = None
+        info = None
+
+        for use_vad in attempts:
+            try:
+                start = time.perf_counter()
+                segments, info = self._model.transcribe(  # type: ignore[attr-defined]
+                    str(audio_path),
+                    language=language or settings.whisper_language,
+                    beam_size=5,
+                    vad_filter=use_vad,
+                )
+                runtime = time.perf_counter() - start
+                if not use_vad:
+                    emit(
+                        "transcribe.retry",
+                        "Reintento completado sin filtro VAD",
+                        {"runtime_seconds": runtime},
+                        "warning",
+                    )
+                break
+            except (HTTPError, URLError) as exc:
+                last_error = exc
+                if use_vad:
+                    emit(
+                        "transcribe.retry",
+                        "Fallo al aplicar VAD remoto, reintentando sin VAD",
+                        {"error": str(exc)},
+                        "warning",
+                    )
+                    continue
+                raise
+
+        if segments is None or info is None:
+            assert last_error is not None
+            raise last_error
+
         emit(
             "transcribe.completed",
             "Transcripción con faster-whisper completada",

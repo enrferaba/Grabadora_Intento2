@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sys
 import types
-from urllib.error import HTTPError
+from typing import List, Optional
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -243,3 +244,134 @@ def test_transcribe_falls_back_to_faster_whisper(monkeypatch, tmp_path):
     assert result.text == "Hola mundo"
     assert result.language == "es"
     assert any("fallback" in message.lower() for _, message, *_ in events)
+
+
+def test_vad_network_error_triggers_fallback(monkeypatch, tmp_path):
+    events = []
+
+    fake_transcribe = types.ModuleType("faster_whisper.transcribe")
+
+    class DummyTranscriptionOptions:
+        def __init__(self, **kwargs):
+            pass
+
+    fake_transcribe.TranscriptionOptions = DummyTranscriptionOptions
+
+    class FakeFWModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def transcribe(self, *args, **kwargs):
+            class Segment:
+                start = 0.0
+                end = 1.0
+                text = "Hola"
+
+            info = types.SimpleNamespace(language="es", duration=1.0)
+            return [Segment()], info
+
+    fake_fw = types.ModuleType("faster_whisper")
+    fake_fw.transcribe = fake_transcribe
+    fake_fw.WhisperModel = FakeFWModel
+
+    def failing_loader(*args, **kwargs):
+        raise URLError("temporary failure")
+
+    fake_vad = types.SimpleNamespace(load_vad_model=failing_loader, VAD_SEGMENTATION_URL="https://example")
+
+    fake_whisperx = types.SimpleNamespace(
+        vad=fake_vad,
+        asr=types.SimpleNamespace(DEFAULT_ASR_OPTIONS={}, load_vad_model=failing_loader),
+        DiarizationPipeline=lambda **kwargs: None,
+        load_audio=lambda path: [],
+        assign_word_speakers=lambda diarize_segments, segments: segments,
+        transcribe_with_vad=None,
+    )
+
+    def fake_load_model(*args, **kwargs):
+        # La ruta feliz no debería alcanzarse porque el cargador VAD fallará.
+        loader = fake_whisperx.vad.load_vad_model
+        loader("cpu")
+        # Si el cargador no lanza (p. ej. si el parche se rompe) dejamos constancia.
+        raise AssertionError("VAD loader no lanzó como se esperaba")
+
+    fake_whisperx.load_model = fake_load_model
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+    monkeypatch.setitem(sys.modules, "faster_whisper.transcribe", fake_transcribe)
+    monkeypatch.setattr(whisper_service, "FasterWhisperModel", FakeFWModel, raising=False)
+    monkeypatch.setattr(whisper_service, "whisperx", fake_whisperx, raising=False)
+    monkeypatch.setattr(whisper_service, "torch", None, raising=False)
+
+    monkeypatch.setattr(whisper_service.settings, "whisper_language", "es", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_compute_type", "int8", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_device", "cpu", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_use_faster", False, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_enable_speaker_diarization", False, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_batch_size", 4, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "models_cache_dir", tmp_path, raising=False)
+
+    audio_path = tmp_path / "demo.wav"
+    audio_path.write_bytes(b"fake")
+
+    transcriber = whisper_service.WhisperXTranscriber("small", "cpu")
+
+    result = transcriber.transcribe(
+        audio_path,
+        language="es",
+        debug_callback=lambda *args: events.append(args),
+    )
+
+    assert result.text == "Hola"
+    assert any("fallback" in message.lower() for _, message, *_ in events)
+
+
+def test_faster_whisper_retries_without_vad(monkeypatch, tmp_path):
+    events = []
+    call_history: List[Optional[bool]] = []
+
+    class FakeFWModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def transcribe(self, *args, **kwargs):
+            call_history.append(kwargs.get("vad_filter"))
+            if kwargs.get("vad_filter"):
+                raise URLError("blocked")
+
+            class Segment:
+                start = 0.0
+                end = 1.0
+                text = "Hola"
+
+            info = types.SimpleNamespace(language="es", duration=1.0)
+            return [Segment()], info
+
+    fake_fw = types.ModuleType("faster_whisper")
+    fake_fw.WhisperModel = FakeFWModel
+    fake_fw.transcribe = types.ModuleType("faster_whisper.transcribe")
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+    monkeypatch.setitem(sys.modules, "faster_whisper.transcribe", fake_fw.transcribe)
+    monkeypatch.setattr(whisper_service, "FasterWhisperModel", FakeFWModel, raising=False)
+    monkeypatch.setattr(whisper_service, "torch", None, raising=False)
+
+    monkeypatch.setattr(whisper_service.settings, "whisper_language", "es", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_compute_type", "int8", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_device", "cpu", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "models_cache_dir", tmp_path, raising=False)
+
+    audio_path = tmp_path / "demo.wav"
+    audio_path.write_bytes(b"fake")
+
+    transcriber = whisper_service.FasterWhisperTranscriber("small", "cpu")
+
+    result = transcriber.transcribe(
+        audio_path,
+        language="es",
+        debug_callback=lambda *args: events.append(args),
+    )
+
+    assert result.text == "Hola"
+    assert call_history == [True, False]
+    assert any("reintentando sin VAD" in message for _, message, *_ in events)
