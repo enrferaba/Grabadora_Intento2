@@ -12,6 +12,7 @@ const modalText = document.querySelector('#modal-text');
 const modalClose = document.querySelector('#modal-close');
 const template = document.querySelector('#transcription-template');
 const fileInput = document.querySelector('#audio-file');
+const fileTrigger = document.querySelector('.file-trigger');
 const filePreview = document.querySelector('#file-preview');
 const fileError = document.querySelector('#file-error');
 const plansContainer = document.querySelector('#plans');
@@ -22,22 +23,13 @@ const languageSelect = document.querySelector('#language');
 const modelSelect = document.querySelector('#model-size');
 const deviceSelect = document.querySelector('#device-preference');
 const liveOutput = document.querySelector('#live-output');
-
-const MEDIA_PREFIXES = ['audio/', 'video/'];
-const MEDIA_EXTENSIONS = [
-  '.aac',
-  '.flac',
-  '.m4a',
-  '.m4v',
-  '.mkv',
-  '.mov',
-  '.mp3',
-  '.mp4',
-  '.ogg',
-  '.wav',
-  '.webm',
-  '.wma',
-];
+const copyTranscriptBtn = document.querySelector('#copy-transcript');
+const metricTotal = document.querySelector('[data-metric="total"]');
+const metricCompleted = document.querySelector('[data-metric="completed"]');
+const metricProcessing = document.querySelector('[data-metric="processing"]');
+const metricPremium = document.querySelector('[data-metric="premium"]');
+const metricMinutes = document.querySelector('[data-metric="minutes"]');
+const uploadProgress = document.querySelector('#upload-progress');
 
 const MEDIA_PREFIXES = ['audio/', 'video/'];
 const MEDIA_EXTENSIONS = [
@@ -61,6 +53,17 @@ let currentQuery = '';
 let premiumOnly = false;
 let selectedTranscriptionId = null;
 const typewriterControllers = new Map();
+const progressControllers = new Map();
+const metricSnapshot = {
+  total: 0,
+  completed: 0,
+  processing: 0,
+  premium: 0,
+  minutes: 0,
+};
+let uploadProgressTimer = null;
+let uploadProgressValue = 0;
+let currentLiveTranscriptionId = null;
 
 function typewriterEffect(element, text, speed = 18) {
   if (!element) return;
@@ -147,13 +150,79 @@ function formatBytes(bytes) {
   return `${value.toFixed(1)} ${units[idx]}`;
 }
 
-function formatCurrency(cents, currency = 'EUR') {
-  const amount = (cents ?? 0) / 100;
-  try {
-    return new Intl.NumberFormat('es-ES', { style: 'currency', currency }).format(amount);
-  } catch (error) {
-    return `${amount.toFixed(2)} ${currency}`;
+function showUploadProgress() {
+  if (!uploadProgress) return;
+  uploadProgress.hidden = false;
+  uploadProgress.dataset.active = 'true';
+  const bar = uploadProgress.querySelector('.progress-bar');
+  if (!bar) return;
+  if (uploadProgressTimer) {
+    clearInterval(uploadProgressTimer);
   }
+  uploadProgressValue = 0;
+  bar.style.width = '0%';
+  uploadProgressTimer = setInterval(() => {
+    uploadProgressValue = Math.min(uploadProgressValue + Math.random() * 12, 92);
+    bar.style.width = `${uploadProgressValue.toFixed(1)}%`;
+  }, 420);
+}
+
+function hideUploadProgress() {
+  if (!uploadProgress) return;
+  if (uploadProgressTimer) {
+    clearInterval(uploadProgressTimer);
+    uploadProgressTimer = null;
+  }
+  uploadProgress.hidden = true;
+  uploadProgress.dataset.active = 'false';
+  const bar = uploadProgress.querySelector('.progress-bar');
+  if (bar) {
+    bar.style.width = '0%';
+  }
+}
+
+function completeUploadProgress(success = true) {
+  if (!uploadProgress) return;
+  const bar = uploadProgress.querySelector('.progress-bar');
+  if (bar) {
+    bar.style.width = success ? '100%' : '0%';
+  }
+  setTimeout(() => hideUploadProgress(), success ? 600 : 0);
+}
+
+function toggleCardProgress(id, isProcessing, element) {
+  const controller = progressControllers.get(id);
+  if (controller) {
+    controller();
+    progressControllers.delete(id);
+  }
+  if (!isProcessing || !element) {
+    if (element) element.hidden = true;
+    return;
+  }
+
+  element.hidden = false;
+  element.dataset.active = 'true';
+  const bar = element.querySelector('.progress-bar');
+  if (!bar) return;
+
+  let width = 0;
+  bar.style.width = '0%';
+
+  const tick = () => {
+    width = (width + Math.random() * 18) % 100;
+    bar.style.width = `${Math.max(width, 10).toFixed(1)}%`;
+  };
+
+  const interval = setInterval(tick, 650);
+  progressControllers.set(id, () => {
+    clearInterval(interval);
+    bar.style.width = '100%';
+    setTimeout(() => {
+      bar.style.width = '0%';
+      element.dataset.active = 'false';
+    }, 400);
+  });
 }
 
 function renderSpeakers(container, speakers) {
@@ -162,13 +231,13 @@ function renderSpeakers(container, speakers) {
   if (!list) return;
   list.innerHTML = '';
   const safeSegments = Array.isArray(speakers) ? speakers : [];
-  safeSegments.forEach((segment) => {
+  for (const segment of safeSegments) {
     const item = document.createElement('li');
     const start = segment.start?.toFixed(2) ?? '0.00';
     const end = segment.end?.toFixed(2) ?? '0.00';
     item.textContent = `[${start}s - ${end}s] ${segment.speaker}: ${segment.text}`;
     list.appendChild(item);
-  });
+  }
   container.hidden = safeSegments.length === 0;
 }
 
@@ -185,12 +254,23 @@ function renderTranscriptions(items) {
     return;
   }
 
-  for (const item of results) {
+  for (const [index, item] of results.entries()) {
     const node = template.content.cloneNode(true);
+    const card = node.querySelector('.transcription');
+    if (card) {
+      card.style.setProperty('--card-delay', `${index * 60}ms`);
+      card.dataset.status = item.status;
+    }
     node.querySelector('.transcription-title').textContent = item.original_filename;
-    node.querySelector('.status').textContent = formatStatus(item.status);
+    const statusBadge = node.querySelector('.status');
+    if (statusBadge) {
+      statusBadge.textContent = formatStatus(item.status);
+      statusBadge.dataset.status = item.status;
+    }
     node.querySelector('.meta').textContent = `Asignatura: ${item.subject ?? '—'} • Estado: ${item.status} • Creado: ${formatDate(item.created_at)}`;
     node.querySelector('.excerpt').textContent = item.text?.slice(0, 220) ?? 'Transcripción no disponible aún.';
+    const cardProgress = node.querySelector('.card-progress');
+    toggleCardProgress(item.id, item.status === 'processing', cardProgress);
     node.querySelector('.download').href = `${API_BASE}/${item.id}/download`;
 
     const premiumContainer = node.querySelector('.premium');
@@ -208,6 +288,7 @@ function renderTranscriptions(items) {
     deleteButton.addEventListener('click', () => deleteTranscription(item.id));
 
     const checkoutButton = node.querySelector('.checkout');
+    checkoutButton.textContent = 'Activar premium';
     checkoutButton.addEventListener('click', () => {
       selectedTranscriptionId = item.id;
       checkoutStatus.textContent = `Transcripción seleccionada: ${item.original_filename}. Ahora elige un plan.`;
@@ -231,6 +312,7 @@ async function refreshTranscriptions() {
   const data = await fetchJSON(url);
   const results = Array.isArray(data?.results) ? data.results : [];
   renderTranscriptions(results);
+  updateMetrics(results);
   const pending = results.some((item) => item.status === 'processing');
   if (pending && !pollingHandle) {
     startPolling();
@@ -238,6 +320,10 @@ async function refreshTranscriptions() {
   if (!pending && pollingHandle) {
     stopPolling();
   }
+  if (!pending) {
+    completeUploadProgress(true);
+  }
+  updateLivePreview(results);
   return data;
 }
 
@@ -348,13 +434,14 @@ function renderPlans(plans = []) {
   for (const plan of safePlans) {
     const card = document.createElement('article');
     card.className = 'plan-card';
+    const perks = (plan.perks ?? []).map((perk) => `<li>${perk}</li>`).join('');
     card.innerHTML = `
       <h3>${plan.name}</h3>
-      <div class="plan-price">${formatCurrency(plan.price_cents, plan.currency)}</div>
-      <p class="plan-meta">Hasta ${plan.max_minutes} minutos por archivo.</p>
-      <ul class="plan-perks">${(plan.perks ?? []).map((perk) => `<li>${perk}</li>`).join('')}</ul>
+      <p class="plan-meta">${plan.description ?? 'Notas premium, resúmenes y recordatorios inteligentes incluidos.'}</p>
+      <p class="plan-minutes">Cobertura recomendada: hasta ${plan.max_minutes} minutos por archivo.</p>
+      <ul class="plan-perks">${perks}</ul>
       <div class="plan-actions">
-        <button type="button" class="primary" data-plan="${plan.slug}">Comprar</button>
+        <button type="button" class="primary" data-plan="${plan.slug}">Activar premium</button>
       </div>
     `;
     plansContainer.appendChild(card);
@@ -379,7 +466,7 @@ async function createCheckout(planSlug) {
       }),
     });
 
-    checkoutStatus.innerHTML = `Checkout creado. Enlace de pago: <a href="${payload.payment_url}" target="_blank" rel="noopener">${payload.payment_url}</a>`;
+    checkoutStatus.innerHTML = `Checkout creado. Completa el pago aquí: <a href="${payload.payment_url}" target="_blank" rel="noopener">${payload.payment_url}</a>`;
     checkoutStatus.classList.remove('success');
 
     const confirmation = await fetchJSON(`${PAYMENTS_BASE}/${payload.id}/confirm`, { method: 'POST' });
@@ -409,8 +496,6 @@ uploadForm?.addEventListener('submit', async (event) => {
 
   const language = uploadForm.querySelector('#language')?.value?.trim();
   const subject = uploadForm.querySelector('#subject')?.value?.trim();
-  const priceCents = uploadForm.querySelector('#price')?.value?.trim();
-  const currency = uploadForm.querySelector('#currency')?.value?.trim();
   const modelSize = uploadForm.querySelector('#model-size')?.value?.trim();
   const devicePreference = uploadForm.querySelector('#device-preference')?.value?.trim();
 
@@ -425,13 +510,12 @@ uploadForm?.addEventListener('submit', async (event) => {
   }
   if (language) formData.append('language', language);
   if (subject) formData.append('subject', subject);
-  if (priceCents) formData.append('price_cents', priceCents);
-  if (currency) formData.append('currency', currency);
   if (modelSize) formData.append('model_size', modelSize);
   if (devicePreference) formData.append('device_preference', devicePreference);
 
   uploadStatus.textContent = files.length > 1 ? `Subiendo ${files.length} archivos...` : 'Subiendo archivo...';
   uploadStatus.classList.remove('error');
+  showUploadProgress();
 
   try {
     const response = await fetchJSON(endpoint, {
@@ -453,11 +537,16 @@ uploadForm?.addEventListener('submit', async (event) => {
     }
     updateFilePreview();
     await refreshTranscriptions();
-    startPolling();
   } catch (error) {
-    uploadStatus.textContent = `Error: ${error.message}`;
+    uploadStatus.textContent = `Error al subir: ${error.message}`;
     uploadStatus.classList.add('error');
+    completeUploadProgress(false);
   }
+});
+
+fileTrigger?.addEventListener('click', (event) => {
+  event.preventDefault();
+  fileInput?.click();
 });
 
 fileInput?.addEventListener('change', updateFilePreview);
@@ -479,8 +568,10 @@ plansContainer?.addEventListener('click', (event) => {
 });
 
 document.addEventListener('DOMContentLoaded', () => {
+  resetCopyFeedback();
   refreshTranscriptions();
   loadPlans();
+  updateMetrics([]);
 });
 
 googleLoginBtn?.addEventListener('click', async () => {
@@ -497,10 +588,72 @@ googleLoginBtn?.addEventListener('click', async () => {
   }
 });
 
+function animateMetric(element) {
+  if (!element) return;
+  element.classList.remove('metric-pulse');
+  void element.offsetWidth;
+  element.classList.add('metric-pulse');
+}
+
+function updateMetricValue(element, key, value, formatter = (val) => val) {
+  if (!element) return;
+  const previous = metricSnapshot[key];
+  if (previous === value) return;
+  metricSnapshot[key] = value;
+  element.textContent = formatter(value);
+  animateMetric(element);
+}
+
+function updateMetrics(items) {
+  if (!metricTotal && !metricCompleted && !metricProcessing && !metricPremium && !metricMinutes) {
+    return;
+  }
+  const safeItems = Array.isArray(items) ? items : [];
+  const total = safeItems.length;
+  const completed = safeItems.filter((item) => item.status === 'completed').length;
+  const processing = safeItems.filter((item) => item.status === 'processing').length;
+  const premium = safeItems.filter((item) => item.premium_enabled).length;
+  const minutes = safeItems.reduce((acc, item) => acc + ((item.duration ?? 0) / 60), 0);
+
+  updateMetricValue(metricTotal, 'total', total);
+  updateMetricValue(metricCompleted, 'completed', completed);
+  updateMetricValue(metricProcessing, 'processing', processing);
+  updateMetricValue(metricPremium, 'premium', premium);
+  updateMetricValue(metricMinutes, 'minutes', minutes, (val) => `${val.toFixed(1)} min`);
+}
+
 function showTypewriterText(text) {
   const safeText = text && text.trim() ? text : 'Transcripción no disponible aún.';
   typewriterEffect(modalText, safeText);
   typewriterEffect(liveOutput, safeText);
+}
+
+function updateLivePreview(results) {
+  if (!liveOutput) return;
+  const safeResults = Array.isArray(results) ? results : [];
+  if (selectedTranscriptionId) {
+    const selected = safeResults.find((item) => item.id === selectedTranscriptionId);
+    if (selected?.text && selected.id !== currentLiveTranscriptionId) {
+      currentLiveTranscriptionId = selected.id;
+      showTypewriterText(selected.text);
+    }
+    return;
+  }
+  const active =
+    safeResults.find((item) => item.status === 'processing' && item.text) ||
+    safeResults.find((item) => item.status === 'completed' && item.text);
+  if (active && active.text && active.id !== currentLiveTranscriptionId) {
+    currentLiveTranscriptionId = active.id;
+    showTypewriterText(active.text);
+  }
+}
+
+function resetCopyFeedback() {
+  if (!copyTranscriptBtn) return;
+  copyTranscriptBtn.disabled = false;
+  copyTranscriptBtn.classList.remove('success');
+  copyTranscriptBtn.classList.remove('error');
+  copyTranscriptBtn.textContent = 'Copiar al portapapeles';
 }
 
 async function openModal(id) {
@@ -508,6 +661,7 @@ async function openModal(id) {
     const data = await fetchJSON(`${API_BASE}/${id}`);
     modal.hidden = false;
     showTypewriterText(data.text ?? 'Transcripción no disponible aún.');
+    resetCopyFeedback();
   } catch (error) {
     modal.hidden = false;
     const message = `No se pudo obtener la transcripción: ${error.message}`;
@@ -516,5 +670,37 @@ async function openModal(id) {
       liveOutput.textContent = message;
       liveOutput.dataset.typing = 'false';
     }
+    resetCopyFeedback();
   }
 }
+
+fileTrigger?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    fileInput?.click();
+  }
+});
+
+copyTranscriptBtn?.addEventListener('click', async () => {
+  if (!modalText) return;
+  const text = modalText.textContent ?? '';
+  if (!text.trim()) {
+    copyTranscriptBtn.textContent = 'Nada que copiar';
+    copyTranscriptBtn.classList.add('error');
+    setTimeout(resetCopyFeedback, 1600);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    copyTranscriptBtn.textContent = '¡Copiado!';
+    copyTranscriptBtn.classList.remove('error');
+    copyTranscriptBtn.classList.add('success');
+  } catch (error) {
+    copyTranscriptBtn.textContent = 'No se pudo copiar';
+    copyTranscriptBtn.classList.remove('success');
+    copyTranscriptBtn.classList.add('error');
+  } finally {
+    copyTranscriptBtn.disabled = true;
+    setTimeout(resetCopyFeedback, 2000);
+  }
+});

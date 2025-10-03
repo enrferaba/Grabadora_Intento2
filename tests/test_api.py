@@ -89,6 +89,14 @@ def test_env(tmp_path_factory: pytest.TempPathFactory):
     os.environ["TRANSCRIPTS_DIR"] = str(tmp_dir / "transcripts")
     os.environ["ENABLE_DUMMY_TRANSCRIBER"] = "true"
     os.environ["WHISPER_DEVICE"] = "cpu"
+    # Refresca ajustes ya cargados por otros tests (pydantic Settings es singleton)
+    from app import config
+    from app import whisper_service
+
+    config.settings.enable_dummy_transcriber = True
+    config.settings.whisper_device = "cpu"
+    config.settings.whisper_model_size = "large-v2"
+    whisper_service._transcriber_cache.clear()
     return tmp_dir
 
 
@@ -119,8 +127,6 @@ def test_transcription_lifecycle(test_env):
             upload=upload,
             language="es",
             subject="Historia",
-            price_cents=None,
-            currency=None,
             model_size="large",
             device_preference="gpu",
             session=session,
@@ -173,8 +179,6 @@ def test_reject_non_media_upload(test_env):
             upload=upload,
             language=None,
             subject=None,
-            price_cents=None,
-            currency=None,
             session=session,
         )
 
@@ -213,8 +217,6 @@ def test_batch_upload_and_payment_flow(test_env):
             uploads=uploads,
             language="es",
             subject="Física",
-            price_cents=None,
-            currency=None,
             model_size="medium",
             device_preference="gpu",
             session=session,

@@ -26,8 +26,6 @@ class TranscriptionBase(BaseModel):
     subject: Optional[str]
     created_at: datetime
     updated_at: datetime
-    price_cents: Optional[int]
-    currency: Optional[str]
     premium_enabled: bool
     billing_reference: Optional[str]
 

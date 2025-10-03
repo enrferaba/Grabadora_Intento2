@@ -20,8 +20,8 @@
       <nav class="app-nav" aria-label="Secciones">
         <a href="#upload" class="nav-link">Subir</a>
         <a href="#recientes" class="nav-link">Transcripciones</a>
-        <a href="#planes" class="nav-link">Planes</a>
-        <a href="https://github.com/" target="_blank" rel="noopener" class="nav-link">Docs</a>
+        <a href="#planes" class="nav-link">Beneficios</a>
+        <a href="#about" class="nav-link">Sobre mí</a>
       </nav>
       <button id="google-login" type="button" class="google-btn">
         <span class="icon">🔐</span>
@@ -49,6 +49,35 @@
     </section>
 
     <main class="layout">
+      <section class="card metrics-card" aria-label="Resumen de actividad">
+        <h2 class="visually-hidden">Resumen de actividad</h2>
+        <div class="metrics-grid">
+          <article class="metric">
+            <p class="metric-label">Transcripciones</p>
+            <p class="metric-value" data-metric="total">0</p>
+            <p class="metric-sub">Historial total en la plataforma</p>
+          </article>
+          <article class="metric">
+            <p class="metric-label">Completadas</p>
+            <p class="metric-value" data-metric="completed">0</p>
+            <p class="metric-sub">Listas para descargar</p>
+          </article>
+          <article class="metric">
+            <p class="metric-label">En cola</p>
+            <p class="metric-value" data-metric="processing">0</p>
+            <p class="metric-sub">Procesándose en tiempo real</p>
+          </article>
+          <article class="metric">
+            <p class="metric-label">Premium &nbsp;|&nbsp; Minutos</p>
+            <p class="metric-value metric-stack">
+              <span data-metric="premium">0</span>
+              <span data-metric="minutes">0 min</span>
+            </p>
+            <p class="metric-sub">Clientes con IA + duración agregada</p>
+          </article>
+        </div>
+      </section>
+
       <section class="card span-2 upload-card" aria-labelledby="upload-heading">
         <div class="card-header">
           <h2 id="upload-heading">Subir nuevos audios</h2>
@@ -64,8 +93,10 @@
               hidden
             />
             <label for="audio-file" class="file-trigger" role="button" tabindex="0">
+              <span class="file-trigger__pulse"></span>
+              <span class="file-trigger__pulse"></span>
               <span class="icon">📁</span>
-              Elegir archivos
+              <span class="text">Elegir archivos</span>
             </label>
             <p class="hint">Formatos compatibles: mp3, wav, m4a, mp4, webm y más.</p>
           </div>
@@ -73,8 +104,24 @@
           <div id="file-error" class="form-error" hidden></div>
 
           <div class="form-grid">
-            <label class="form-label" for="audio-file">Archivos de audio o video</label>
-            <input id="audio-file" type="file" accept="audio/*,video/*" multiple required />
+            <div class="field">
+              <label class="form-label" for="language">Idioma preferido</label>
+              <select id="language" name="language">
+                <option value="">Detección automática</option>
+                <option value="es" selected>Español</option>
+                <option value="en">Inglés</option>
+                <option value="fr">Francés</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="form-label" for="model-size">Modelo WhisperX</label>
+              <select id="model-size" name="model_size" data-default="large">
+                <option value="large" selected>large (máxima precisión)</option>
+                <option value="medium">medium (equilibrado)</option>
+                <option value="small">small (más veloz)</option>
+              </select>
+            </div>
 
             <div class="field">
               <label class="form-label" for="device-preference">Dispositivo preferido</label>
@@ -89,21 +136,19 @@
               <input id="subject" type="text" name="subject" placeholder="Ej: Matemáticas" />
             </div>
 
-            <div class="field">
-              <label class="form-label" for="price">Precio personalizado (opcional)</label>
-              <input id="price" type="number" min="0" step="1" name="price_cents" placeholder="Introduce el precio en centavos si lo necesitas" />
-            </div>
-
-            <div class="field">
-              <label class="form-label" for="currency">Moneda</label>
-              <input id="currency" type="text" name="currency" placeholder="EUR" maxlength="8" />
-            </div>
           </div>
-          <div id="file-preview" class="file-preview" hidden></div>
-          <div id="file-error" class="form-error" hidden></div>
-          <button type="submit" class="primary">Subir y transcribir</button>
+
+          <button type="submit" class="primary upload-button">
+            <span class="glow"></span>
+            <span class="label">Subir y transcribir</span>
+          </button>
         </form>
-        <div id="upload-status" class="upload-status" aria-live="polite"></div>
+        <div class="upload-feedback">
+          <div id="upload-progress" class="progress-track" hidden>
+            <div class="progress-bar"></div>
+          </div>
+          <div id="upload-status" class="upload-status" aria-live="polite"></div>
+        </div>
       </section>
 
       <section class="card span-2 live-card" aria-labelledby="live-heading">
@@ -129,12 +174,37 @@
 
       <section class="card" id="planes">
         <div class="list-header">
-          <h2>Planes premium</h2>
+          <h2>Beneficios premium</h2>
           <button id="refresh-plans" type="button" class="ghost">Actualizar</button>
         </div>
-        <p class="section-lead">Elige un plan para desbloquear notas IA y beneficios extra en cada transcripción.</p>
+        <p class="section-lead">Desbloquea notas IA, resúmenes estructurados y recordatorios inteligentes en cada transcripción.</p>
         <div id="plans" class="plans"></div>
         <div id="checkout-status" class="checkout-status" aria-live="polite"></div>
+      </section>
+
+      <section class="card span-2 about-card" id="about">
+        <div class="card-header">
+          <h2>Sobre mí</h2>
+          <p class="section-lead">Hola, soy FERIA. Construyo herramientas que convierten tus grabaciones en apuntes claros y accionables.</p>
+        </div>
+        <div class="about-grid">
+          <article>
+            <h3>Visión</h3>
+            <p>Facilitar que estudiantes y profesionales capturen ideas sin preocuparse por el teclado. La aplicación detecta ponentes, resume y prepara notas premium listas para compartir.</p>
+          </article>
+          <article>
+            <h3>Funcionalidades destacadas</h3>
+            <ul>
+              <li>Diarización por voz con WhisperX optimizado para GPU.</li>
+              <li>Notas premium generadas automáticamente en segundos.</li>
+              <li>Panel visual con métricas animadas y vista estilo ChatGPT.</li>
+            </ul>
+          </article>
+          <article>
+            <h3>Próximos pasos</h3>
+            <p>Integrar recordatorios inteligentes, exportación a Notion y compatibilidad con más idiomas. Tus sugerencias son bienvenidas.</p>
+          </article>
+        </div>
       </section>
     </main>
 
@@ -146,6 +216,9 @@
         </header>
         <p class="meta"></p>
         <p class="excerpt"></p>
+        <div class="progress-track card-progress" hidden>
+          <div class="progress-bar"></div>
+        </div>
         <div class="premium" hidden>
           <strong>Notas premium:</strong>
           <p class="premium-notes"></p>
@@ -167,9 +240,15 @@
       <div class="modal-content">
         <button id="modal-close" aria-label="Cerrar">×</button>
         <pre id="modal-text"></pre>
+        <div class="modal-actions">
+          <button id="copy-transcript" type="button" class="ghost">Copiar al portapapeles</button>
+        </div>
       </div>
     </div>
 
     <script src="app.js" type="module"></script>
+    <footer class="app-footer">
+      <p>© 2024 FERIA · Creado con cariño para acelerar tus apuntes</p>
+    </footer>
   </body>
 </html>

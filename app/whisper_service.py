@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from inspect import signature
 from pathlib import Path
 from threading import Lock
 from typing import List, Optional
@@ -67,6 +68,7 @@ class WhisperXTranscriber(BaseTranscriber):
         self._lock = Lock()
         self.model_size = model_size
         self.device_preference = device_preference
+        self._cached_asr_options: Optional[dict] = None
 
     @staticmethod
     def _normalize_device(device: str) -> str:
@@ -81,6 +83,105 @@ class WhisperXTranscriber(BaseTranscriber):
             return settings.whisper_compute_type or "float16"
         return "int8"
 
+    def _compute_multilingual_flag(self) -> bool:
+        """Infer whether the transcription should run in multilingual mode."""
+        if settings.whisper_language:
+            return settings.whisper_language.lower() != "en"
+        return not self.model_size.endswith(".en")
+
+    def _build_asr_options(self) -> dict:
+        """Return WhisperX ASR options compatible with newer faster-whisper versions."""
+        if self._cached_asr_options is not None:
+            return self._cached_asr_options
+
+        base_options = {
+            "beam_size": 5,
+            "best_of": 5,
+            "patience": 1,
+            "length_penalty": 1,
+            "repetition_penalty": 1,
+            "no_repeat_ngram_size": 0,
+            "temperatures": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            "compression_ratio_threshold": 2.4,
+            "log_prob_threshold": -1.0,
+            "no_speech_threshold": 0.6,
+            "condition_on_previous_text": False,
+            "prompt_reset_on_temperature": 0.5,
+            "initial_prompt": None,
+            "prefix": None,
+            "suppress_blank": True,
+            "suppress_tokens": [-1],
+            "without_timestamps": True,
+            "max_initial_timestamp": 0.0,
+            "word_timestamps": False,
+            "prepend_punctuations": "\"'“¿([{-",
+            "append_punctuations": "\"'.。,，!！?？:：”)]}、",
+            "multilingual": self._compute_multilingual_flag(),
+            "max_new_tokens": None,
+            "clip_timestamps": "0",
+            "hallucination_silence_threshold": None,
+            "hotwords": None,
+            "suppress_numerals": False,
+        }
+
+        normalized = base_options.copy()
+        try:  # pragma: no cover - exercised in unit tests with monkeypatch
+            from faster_whisper.transcribe import TranscriptionOptions  # type: ignore
+
+            compat_defaults = {
+                "multilingual": base_options["multilingual"],
+                "max_new_tokens": None,
+                "clip_timestamps": "0",
+                "hallucination_silence_threshold": None,
+                "hotwords": None,
+            }
+
+            sig = signature(TranscriptionOptions.__init__)
+            assembled: dict = {}
+            for name, param in sig.parameters.items():
+                if name == "self":
+                    continue
+                if name in normalized:
+                    assembled[name] = normalized[name]
+                elif name in compat_defaults:
+                    assembled[name] = compat_defaults[name]
+                elif param.default is not param.empty:
+                    assembled[name] = param.default
+            for key, value in normalized.items():
+                assembled.setdefault(key, value)
+            normalized = assembled
+        except Exception:  # pragma: no cover - only triggered when faster-whisper not present
+            pass
+
+        self._cached_asr_options = normalized
+        return normalized
+
+    def _patch_default_asr_options(self) -> None:
+        """Ensure WhisperX module defaults include the compatibility keys."""
+        if whisperx is None:  # pragma: no cover - defensive
+            return
+        try:
+            asr_module = getattr(whisperx, "asr", None)
+            if asr_module is None:
+                return
+
+            compat = self._build_asr_options()
+            default_opts = getattr(asr_module, "DEFAULT_ASR_OPTIONS", None)
+
+            if isinstance(default_opts, dict):
+                merged = compat.copy()
+                merged.update(default_opts)
+            else:
+                merged = compat.copy()
+
+            setattr(asr_module, "DEFAULT_ASR_OPTIONS", merged)
+            logger.debug(
+                "DEFAULT_ASR_OPTIONS actualizado con claves de compatibilidad: %s",
+                ", ".join(sorted(compat.keys())),
+            )
+        except Exception as exc:  # pragma: no cover - logging para diagnósticos
+            logger.debug("No se pudo parchear DEFAULT_ASR_OPTIONS de whisperx: %s", exc)
+
     def _ensure_model(self):
         if self._model is None:
             device = self._normalize_device(self.device_preference or settings.whisper_device)
@@ -89,11 +190,13 @@ class WhisperXTranscriber(BaseTranscriber):
                 device = "cpu"
             compute_type = self._compute_type_for_device(device)
             logger.info("Loading whisperx model %s on %s", self.model_size, device)
+            self._patch_default_asr_options()
             self._model = whisperx.load_model(  # type: ignore[attr-defined]
                 self.model_size,
                 device=device,
                 compute_type=compute_type,
                 language=settings.whisper_language,
+                asr_options=self._build_asr_options(),
             )
             if settings.whisper_use_faster and hasattr(whisperx, "transcribe_with_vad"):
                 logger.info("Enabled faster VAD transcription")

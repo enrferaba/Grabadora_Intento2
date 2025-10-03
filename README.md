@@ -5,14 +5,16 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 ## Características principales
 
 - **API FastAPI** con endpoints para subir audios en lote, consultar, descargar y eliminar transcripciones.
-- **Integración con WhisperX** para transcripción rápida y diarización de hablantes (fallback configurable a modo simulado para entornos sin GPU).
+- **Integración con WhisperX** para transcripción rápida y diarización de hablantes: prioriza GPU/CUDA cuando está disponible y cae automáticamente a CPU o al transcriptor simulado en entornos sin aceleración.
 - **Base de datos SQLite / SQLAlchemy** con búsqueda por texto, asignatura y estado.
 - **Generación automática de archivos `.txt`** y estructura extensible para futuros planes premium con IA externa.
-- **Interfaz web** en `/` construida con HTML, CSS y JavaScript moderno que permite subir varios audios a la vez, consultar resultados y revisar hablantes.
-- **Pasarela de pago simulada** con planes configurables, checkout y confirmación de compras que desbloquean contenido premium por transcripción.
+- **Interfaz web** en `/` con selector multimedia animado, validación de audio/video y barra de progreso en tiempo real.
+- **Dashboard con métricas en vivo** (totales, completadas, minutos procesados, etc.) y vista estilo ChatGPT con efecto de tipeo fluido.
+- **Beneficios premium simulados** con checkout y confirmación que desbloquean notas IA enriquecidas sin mostrar importes hasta definir tu estrategia comercial.
+- **Selector de idioma** con español (predeterminado), inglés y francés, además de autodetección cuando lo necesites.
 - **Inicio de sesión con Google (OAuth 2.0)** listo para conectar con tus credenciales y personalizar la experiencia del dashboard.
 - **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
-- **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado.
+- **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado y comprueban la compatibilidad con las versiones recientes de faster-whisper.
 
 ## Requisitos
 
@@ -68,6 +70,23 @@ python -m scripts.doctor
 python -m uvicorn app.main:app --reload
 ```
 
+### Consejos para merges sin dolor
+
+Si resuelves a menudo los mismos conflictos en GitHub, puedes pedirle a Git que
+recuerde tus decisiones con `rerere` (reuse recorded resolution). Actívalo una
+sola vez en tu máquina y Git repetirá automáticamente las resoluciones que ya
+conocen:
+
+```bash
+git config --global rerere.enabled true
+git config --global rerere.autoUpdate true
+```
+
+Cuando aparezca un conflicto nuevo, resuélvelo como siempre, ejecuta `git add`
+para marcarlo como solucionado y finaliza el merge/rebase. La próxima vez que
+surja la misma colisión Git propondrá tu solución sin que tengas que revisar el
+archivo manualmente.
+
 #### Linux / macOS
 
 ```bash
@@ -102,7 +121,7 @@ La interfaz quedará disponible en http://127.0.0.1:8000/ y la API en http://127
 
 ## Uso de la API
 
-- `POST /api/transcriptions`: Subir un audio (`multipart/form-data`) con campos opcionales `language`, `subject`, `price_cents` y `currency`.
+- `POST /api/transcriptions`: Subir un audio (`multipart/form-data`) con campos opcionales `language`, `subject`, `model_size` y `device_preference`.
 - `POST /api/transcriptions/batch`: Subida múltiple (`uploads[]`) aplicando la misma configuración a todos los archivos.
 - `GET /api/transcriptions`: Listar y buscar transcripciones (`q`, `status`, `premium_only`).
 - `GET /api/transcriptions/{id}`: Detalle con segmentos y hablantes.
@@ -144,7 +163,7 @@ Las pruebas activan el transcriptor simulado para validar el ciclo completo sin 
 
 ## Contenido premium y notas IA
 
-Al confirmar una compra, la API genera notas premium automáticamente (`app/utils/notes.py`). Sustituye esta lógica por tu integración favorita (OpenAI, Azure, etc.) y marca los planes para ofrecer ventajas adicionales.
+Al confirmar una compra, la API genera notas premium automáticamente (`app/utils/notes.py`). El motor actual resume, destaca ideas y propone próximos pasos de manera heurística, listo para que sustituyas la lógica por tu integración favorita (OpenAI, Azure, etc.) cuando habilites cobros reales.
 
 ## Estructura de carpetas
 

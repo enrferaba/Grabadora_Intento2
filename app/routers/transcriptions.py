@@ -48,6 +48,19 @@ ALLOWED_MEDIA_EXTENSIONS = {
 }
 ALLOWED_MEDIA_PREFIXES = ("audio/", "video/")
 
+MODEL_ALIASES = {
+    "large": "large-v2",
+    "large-v2": "large-v2",
+    "medium": "medium",
+    "small": "small",
+}
+
+DEVICE_ALIASES = {
+    "gpu": "cuda",
+    "cuda": "cuda",
+    "cpu": "cpu",
+}
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])
@@ -92,8 +105,6 @@ def _enqueue_transcription(
     upload: UploadFile,
     language: Optional[str],
     subject: Optional[str],
-    price_cents: Optional[int] = None,
-    currency: Optional[str] = None,
     model_size: Optional[str] = None,
     device_preference: Optional[str] = None,
 ) -> Transcription:
@@ -113,8 +124,6 @@ def _enqueue_transcription(
         device_preference=resolved_device,
         subject=subject,
         status=TranscriptionStatus.PROCESSING.value,
-        price_cents=price_cents,
-        currency=currency,
     )
     session.add(transcription)
     session.flush()
@@ -156,8 +165,6 @@ def create_transcription(
     upload: UploadFile = File(...),
     language: Optional[str] = Form(default=None),
     subject: Optional[str] = Form(default=None),
-    price_cents: Optional[int] = Form(default=None),
-    currency: Optional[str] = Form(default=None),
     model_size: Optional[str] = Form(default=None),
     device_preference: Optional[str] = Form(default=None),
     session: Session = Depends(_get_session),
@@ -168,8 +175,6 @@ def create_transcription(
         upload,
         language,
         subject,
-        price_cents,
-        currency,
         model_size,
         device_preference,
     )
@@ -187,8 +192,6 @@ def create_batch_transcriptions(
     uploads: List[UploadFile] = File(...),
     language: Optional[str] = Form(default=None),
     subject: Optional[str] = Form(default=None),
-    price_cents: Optional[int] = Form(default=None),
-    currency: Optional[str] = Form(default=None),
     model_size: Optional[str] = Form(default=None),
     device_preference: Optional[str] = Form(default=None),
     session: Session = Depends(_get_session),
@@ -204,8 +207,6 @@ def create_batch_transcriptions(
             upload,
             language,
             subject,
-            price_cents,
-            currency,
             model_size,
             device_preference,
         )
