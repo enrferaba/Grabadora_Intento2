@@ -54,7 +54,7 @@ def create_checkout(
         amount_cents=tier.price_cents,
         currency=tier.currency,
         customer_email=payload.customer_email,
-        metadata={"minutes_limit": tier.max_minutes, "perks": tier.perks},
+        extra_metadata={"minutes_limit": tier.max_minutes, "perks": tier.perks},
     )
     session.add(purchase)
     session.flush()
@@ -89,7 +89,7 @@ def get_purchase(purchase_id: int, session: Session = Depends(_get_session)) -> 
         tier_slug=purchase.tier.slug,
         transcription_id=purchase.transcription_id,
         provider=purchase.provider,
-        metadata=purchase.metadata,
+        extra_metadata=purchase.extra_metadata,
     )
 
 
@@ -109,7 +109,9 @@ def confirm_purchase(purchase_id: int, session: Session = Depends(_get_session))
         transcription.premium_enabled = True
         transcription.price_cents = purchase.amount_cents
         transcription.currency = purchase.currency
-        transcription.premium_perks = purchase.metadata.get("perks") if purchase.metadata else None
+        transcription.premium_perks = (
+            purchase.extra_metadata.get("perks") if purchase.extra_metadata else None
+        )
         transcription.billing_reference = f"ORDER-{purchase.id:06d}"
         if not transcription.premium_notes:
             transcription.premium_notes = generate_premium_notes(transcription.text or "")

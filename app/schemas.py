@@ -92,7 +92,7 @@ class CheckoutRequest(BaseModel):
 
 class PurchaseDetail(PurchaseResponse):
     provider: str
-    metadata: Optional[dict]
+    extra_metadata: Optional[dict]
 
     class Config:
         orm_mode = True

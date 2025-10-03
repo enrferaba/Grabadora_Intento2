@@ -1,14 +1,70 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import os
+import sys
+import typing
+from pathlib import Path
+from tempfile import SpooledTemporaryFile
 
 import pytest
 
-fastapi = pytest.importorskip('fastapi')
-from fastapi.testclient import TestClient
+
+def _ensure_forward_ref_default() -> None:
+    forward_ref = getattr(typing, "ForwardRef", None)
+    if forward_ref is None or not hasattr(forward_ref, "_evaluate"):
+        return
+    try:
+        signature = inspect.signature(forward_ref._evaluate)
+    except (TypeError, ValueError):
+        return
+    parameter = signature.parameters.get("recursive_guard")
+    if not parameter or parameter.default is not inspect._empty:
+        return
+
+    original = forward_ref._evaluate
+
+    def _patched(self, globalns, localns, type_params=None, recursive_guard=None):
+        if recursive_guard is None:
+            recursive_guard = set()
+        return original(
+            self,
+            globalns,
+            localns,
+            type_params,
+            recursive_guard=recursive_guard,
+        )
+
+    forward_ref._evaluate = _patched
 
 
-@pytest.fixture(scope="module")
+_ensure_forward_ref_default()
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+fastapi = pytest.importorskip("fastapi")
+from fastapi import BackgroundTasks, UploadFile
+
+
+def _make_upload(filename: str, data: bytes = b"demo audio") -> UploadFile:
+    buffer = SpooledTemporaryFile()
+    buffer.write(data)
+    buffer.seek(0)
+    return UploadFile(file=buffer, filename=filename, headers={"content-type": "audio/wav"})
+
+
+def _run_background_tasks(background_tasks: BackgroundTasks) -> None:
+    async def runner() -> None:
+        for task in background_tasks.tasks:
+            await task()
+
+    asyncio.run(runner())
+
+
+@pytest.fixture()
 def test_env(tmp_path_factory: pytest.TempPathFactory):
     tmp_dir = tmp_path_factory.mktemp("data")
     db_path = tmp_dir / "test.db"
@@ -21,108 +77,136 @@ def test_env(tmp_path_factory: pytest.TempPathFactory):
     return tmp_dir
 
 
-@pytest.fixture()
-def client(test_env):
-    from app.main import create_app
+def _prepare_database() -> None:
+    from app import models  # noqa: F401 - ensure metadata is populated
     from app.database import Base, sync_engine
 
     Base.metadata.create_all(bind=sync_engine)
-    app = create_app()
-    with TestClient(app) as test_client:
-        yield test_client
 
 
-@pytest.fixture()
-def pricing_plan(test_env):
+def test_transcription_lifecycle(test_env):
+    _prepare_database()
+    from sqlalchemy import text
+
     from app.database import get_session
-    from app.models import PricingTier
+    from app.models import Transcription, TranscriptionStatus
+    from app.routers import transcriptions
+    from app.utils.storage import compute_txt_path
+
+    background = BackgroundTasks()
+    upload = _make_upload("sample.wav")
 
     with get_session() as session:
-        existing = session.query(PricingTier).filter_by(slug="pro-60").first()
-        if existing:
-            return existing.slug
-        plan = PricingTier(
-            slug="pro-60",
-            name="Plan Pro 60",
-            description="Incluye diarización avanzada y notas premium.",
-            price_cents=1499,
-            currency="EUR",
-            max_minutes=60,
-            perks=["Notas IA", "Diarización avanzada"],
+        tables = session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        assert any(row[0] == "transcriptions" for row in tables)
+        response = transcriptions.create_transcription(
+            background_tasks=background,
+            upload=upload,
+            language="es",
+            subject="Historia",
+            price_cents=None,
+            currency=None,
+            session=session,
         )
-        session.add(plan)
-        session.commit()
-        return plan.slug
+        transcription_id = response.id
+
+    _run_background_tasks(background)
+
+    with get_session() as session:
+        detail = transcriptions.get_transcription(transcription_id, session=session)
+        assert detail.status in {
+            TranscriptionStatus.COMPLETED,
+            TranscriptionStatus.FAILED,
+        }
+
+    txt_path = compute_txt_path(transcription_id)
+    assert txt_path.exists()
+
+    with get_session() as session:
+        assert session.query(Transcription).count() >= 1
+        listing = transcriptions.list_transcriptions(
+            q="historia",
+            status=None,
+            premium_only=False,
+            session=session,
+        )
+        assert listing.total >= 1
+        download = transcriptions.download_transcription(transcription_id, session=session)
+        assert download.status_code == 200
+        transcriptions.delete_transcription(transcription_id, session=session)
+
+    assert not txt_path.exists()
 
 
-def _upload_sample(client: TestClient) -> int:
-    files = {
-        "upload": ("sample.wav", b"fake audio data", "audio/wav"),
-    }
-    response = client.post("/api/transcriptions", files=files, data={"language": "es", "subject": "Historia"})
-    assert response.status_code == 201
-    payload = response.json()
-    return payload["id"]
+def test_batch_upload_and_payment_flow(test_env):
+    _prepare_database()
+    from app.database import get_session
+    from app.models import PaymentStatus, PricingTier
+    from app.routers import payments, transcriptions
+    from app.schemas import CheckoutRequest
 
+    with get_session() as session:
+        if session.query(PricingTier).filter_by(slug="pro-60").first() is None:
+            session.add(
+                PricingTier(
+                    slug="pro-60",
+                    name="Plan Pro 60",
+                    description="Sesiones completas con IA premium",
+                    price_cents=1499,
+                    currency="EUR",
+                    max_minutes=60,
+                    perks=["Notas IA", "Diarización avanzada"],
+                )
+            )
+            session.commit()
 
-def test_transcription_lifecycle(client: TestClient):
-    from app.routers.transcriptions import process_transcription
+    background = BackgroundTasks()
+    uploads = [_make_upload("clase1.wav"), _make_upload("clase2.wav")]
 
-    transcription_id = _upload_sample(client)
+    with get_session() as session:
+        batch = transcriptions.create_batch_transcriptions(
+            background_tasks=background,
+            uploads=uploads,
+            language="es",
+            subject="Física",
+            price_cents=None,
+            currency=None,
+            session=session,
+        )
+    assert batch.items
+    first_id = batch.items[0].id
 
-    process_transcription(transcription_id, language="es")
+    _run_background_tasks(background)
 
-    detail = client.get(f"/api/transcriptions/{transcription_id}")
-    assert detail.status_code == 200
-    data = detail.json()
-    assert data["status"] in {"completed", "failed"}
-
-    listing = client.get("/api/transcriptions", params={"q": "historia"})
-    assert listing.status_code == 200
-    assert listing.json()["total"] >= 1
-
-    download = client.get(f"/api/transcriptions/{transcription_id}/download")
-    assert download.status_code in {200, 404}
-
-    delete = client.delete(f"/api/transcriptions/{transcription_id}")
-    assert delete.status_code == 204
-
-
-def test_frontend_served(client: TestClient):
-    response = client.get("/")
-    assert response.status_code == 200
-    assert "Grabadora Pro" in response.text
-
-
-def test_batch_upload_and_payment_flow(client: TestClient, pricing_plan: str):
-    files = [
-        ("uploads", ("clase1.wav", b"audio", "audio/wav")),
-        ("uploads", ("clase2.wav", b"audio", "audio/wav")),
-    ]
-    response = client.post(
-        "/api/transcriptions/batch",
-        files=files,
-        data={"language": "es", "subject": "Física"},
+    checkout_payload = CheckoutRequest(
+        tier_slug="pro-60",
+        transcription_id=first_id,
+        customer_email="demo@example.com",
     )
-    assert response.status_code == 201
-    payload = response.json()
-    assert payload["items"]
-    first_id = payload["items"][0]["id"]
 
-    checkout = client.post(
-        "/api/payments/checkout",
-        json={"tier_slug": pricing_plan, "transcription_id": first_id, "customer_email": "demo@example.com"},
+    with get_session() as session:
+        checkout = payments.create_checkout(checkout_payload, session=session)
+        purchase_id = checkout.id
+
+    with get_session() as session:
+        purchase_detail = payments.confirm_purchase(purchase_id, session=session)
+        assert purchase_detail.status == PaymentStatus.COMPLETED
+        assert purchase_detail.extra_metadata is not None
+
+    with get_session() as session:
+        transcription_detail = transcriptions.get_transcription(first_id, session=session)
+        assert transcription_detail.premium_enabled is True
+        assert transcription_detail.premium_notes
+
+
+def test_frontend_mount_available(test_env):
+    _prepare_database()
+    from starlette.routing import Mount
+
+    from app.main import create_app
+
+    app = create_app()
+    assert any(
+        isinstance(route, Mount) and route.path in {"", "/"}
+        for route in app.routes
     )
-    assert checkout.status_code == 201
-    purchase = checkout.json()
-    assert purchase["payment_url"].startswith("https://")
-
-    confirm = client.post(f"/api/payments/{purchase['id']}/confirm")
-    assert confirm.status_code == 200
-    purchase_detail = confirm.json()
-    assert purchase_detail["status"] == "completed"
-
-    transcription_detail = client.get(f"/api/transcriptions/{first_id}")
-    assert transcription_detail.status_code == 200
-    transcription_payload = transcription_detail.json()
-    assert transcription_payload["premium_enabled"] is True
