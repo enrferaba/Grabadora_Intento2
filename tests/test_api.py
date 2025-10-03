@@ -63,3 +63,9 @@ def test_transcription_lifecycle(client: TestClient):
 
     delete = client.delete(f"/api/transcriptions/{transcription_id}")
     assert delete.status_code == 204
+
+
+def test_frontend_served(client: TestClient):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Grabadora Pro" in response.text

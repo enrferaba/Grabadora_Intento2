@@ -17,6 +17,7 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - Python 3.10 o superior.
 - FFmpeg disponible en la ruta (`apt install ffmpeg` o equivalente).
 - Dependencias de base de datos incluidas (por ejemplo, `aiosqlite` para el driver asíncrono de SQLite).
+- Librerías auxiliares para la interfaz (`aiofiles` para servir los archivos estáticos).
 - Para usar WhisperX real: `torch` compatible y opcionalmente GPU con CUDA.
 
 ## Instalación local
