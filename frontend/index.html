@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grabadora Pro</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' ry='14' fill='%235647f5'/%3E%3Cpath d='M18 32a14 14 0 1028 0 14 14 0 00-28 0zm14-10a10 10 0 11-10 10 10 10 0 0110-10zm-2 6v8l8-4-8-4z' fill='%23fff'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-bar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">🎙️</span>
+        <span class="brand-name">Grabadora Pro</span>
+      </div>
+      <nav class="app-nav" aria-label="Secciones">
+        <a href="#upload" class="nav-link">Subir</a>
+        <a href="#recientes" class="nav-link">Transcripciones</a>
+        <a href="#planes" class="nav-link">Planes</a>
+        <a href="https://github.com/" target="_blank" rel="noopener" class="nav-link">Docs</a>
+      </nav>
+      <button id="google-login" type="button" class="google-btn">
+        <span class="icon">🔐</span>
+        Iniciar sesión con Google
+      </button>
+    </header>
+
+    <section class="hero" id="upload">
+      <div class="hero-content">
+        <h1>Transcripciones rápidas con IA premium</h1>
+        <p>
+          Procesa audio y video en paralelo, identifica ponentes con WhisperX y ofrece notas de valor a tus clientes en cuestión de minutos.
+        </p>
+        <div class="hero-tags">
+          <span>WhisperX + CUDA</span>
+          <span>Diarización avanzada</span>
+          <span>Pagos recurrentes</span>
+        </div>
+      </div>
+      <div class="hero-visual" aria-hidden="true">
+        <div class="wave"></div>
+        <div class="wave"></div>
+        <div class="wave"></div>
+      </div>
+    </section>
+
+    <main class="layout">
+      <section class="card span-2 upload-card" aria-labelledby="upload-heading">
+        <div class="card-header">
+          <h2 id="upload-heading">Subir nuevos audios</h2>
+          <p class="section-lead">Arrastra varios archivos o selecciónalos manualmente. Los procesamos en paralelo.</p>
+        </div>
+        <form id="upload-form" class="upload-form">
+          <div class="file-picker">
+            <input
+              id="audio-file"
+              type="file"
+              accept="audio/*,video/*"
+              multiple
+              hidden
+            />
+            <label for="audio-file" class="file-trigger" role="button" tabindex="0">
+              <span class="icon">📁</span>
+              Elegir archivos
+            </label>
+            <p class="hint">Formatos compatibles: mp3, wav, m4a, mp4, webm y más.</p>
+          </div>
+          <div id="file-preview" class="file-preview" hidden></div>
+          <div id="file-error" class="form-error" hidden></div>
+
+          <div class="form-grid">
+            <div class="field">
+              <label class="form-label" for="language">Idioma preferido</label>
+              <select id="language" name="language">
+                <option value="">Detección automática</option>
+                <option value="es" selected>Español</option>
+                <option value="en">Inglés</option>
+                <option value="fr">Francés</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="form-label" for="model-size">Modelo WhisperX</label>
+              <select id="model-size" name="model_size" data-default="large">
+                <option value="large" selected>large (máxima precisión)</option>
+                <option value="medium">medium (equilibrado)</option>
+                <option value="small">small (más veloz)</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="form-label" for="device-preference">Dispositivo preferido</label>
+              <select id="device-preference" name="device_preference" data-default="gpu">
+                <option value="gpu" selected>GPU / CUDA (recomendado)</option>
+                <option value="cpu">CPU</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="form-label" for="subject">Asignatura / carpeta</label>
+              <input id="subject" type="text" name="subject" placeholder="Ej: Matemáticas" />
+            </div>
+
+            <div class="field">
+              <label class="form-label" for="price">Precio personalizado (opcional)</label>
+              <input id="price" type="number" min="0" step="1" name="price_cents" placeholder="Introduce el precio en centavos si lo necesitas" />
+            </div>
+
+            <div class="field">
+              <label class="form-label" for="currency">Moneda</label>
+              <input id="currency" type="text" name="currency" placeholder="EUR" maxlength="8" />
+            </div>
+          </div>
+
+          <button type="submit" class="primary upload-button">
+            <span class="glow"></span>
+            <span class="label">Subir y transcribir</span>
+          </button>
+        </form>
+        <div id="upload-status" class="upload-status" aria-live="polite"></div>
+      </section>
+
+      <section class="card span-2 live-card" aria-labelledby="live-heading">
+        <div class="card-header">
+          <h2 id="live-heading">Vista en vivo estilo ChatGPT</h2>
+          <p class="section-lead">Selecciona una transcripción para ver cómo se despliega el texto con un efecto de tipeo fluido.</p>
+        </div>
+        <div id="live-output" class="live-output" aria-live="polite">
+          Selecciona cualquier transcripción para previsualizarla aquí.
+        </div>
+      </section>
+
+      <section class="card" id="recientes">
+        <div class="list-header">
+          <h2>Transcripciones recientes</h2>
+          <input id="search" type="search" placeholder="Buscar por texto, asignatura o estado" />
+        </div>
+        <div class="filters">
+          <label><input type="checkbox" id="filter-premium" /> Solo premium</label>
+        </div>
+        <div id="transcription-list" class="transcription-list"></div>
+      </section>
+
+      <section class="card" id="planes">
+        <div class="list-header">
+          <h2>Planes premium</h2>
+          <button id="refresh-plans" type="button" class="ghost">Actualizar</button>
+        </div>
+        <p class="section-lead">Elige un plan para desbloquear notas IA y beneficios extra en cada transcripción.</p>
+        <div id="plans" class="plans"></div>
+        <div id="checkout-status" class="checkout-status" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <template id="transcription-template">
+      <article class="transcription">
+        <header>
+          <h3 class="transcription-title"></h3>
+          <span class="status"></span>
+        </header>
+        <p class="meta"></p>
+        <p class="excerpt"></p>
+        <div class="premium" hidden>
+          <strong>Notas premium:</strong>
+          <p class="premium-notes"></p>
+        </div>
+        <div class="actions">
+          <a class="download" href="#" target="_blank" rel="noopener">Descargar TXT</a>
+          <button class="view">Ver detalles</button>
+          <button class="delete" data-id="">Eliminar</button>
+          <button class="checkout ghost" data-id="">Comprar plan</button>
+        </div>
+        <details class="speakers">
+          <summary>Hablantes detectados</summary>
+          <ul></ul>
+        </details>
+      </article>
+    </template>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal-content">
+        <button id="modal-close" aria-label="Cerrar">×</button>
+        <pre id="modal-text"></pre>
+      </div>
+    </div>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
