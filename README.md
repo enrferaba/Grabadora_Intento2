@@ -20,13 +20,28 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 
 ## Instalación local
 
+### Crear entorno virtual
+
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # En Windows: .venv\\Scripts\\activate
+```
+
+- **Linux / macOS:** `source .venv/bin/activate`
+- **Windows (PowerShell):** `.\.venv\Scripts\Activate.ps1`
+- **Windows (CMD):** `.\.venv\Scripts\activate.bat`
+
+### Instalar dependencias y preparar la base de datos
+
+```bash
 pip install --upgrade pip
 pip install -r requirements.txt
-python scripts/init_db.py
-uvicorn app.main:app --reload
+python -m scripts.init_db
+```
+
+### Arrancar la API en modo desarrollo
+
+```bash
+python -m uvicorn app.main:app --reload
 ```
 
 La interfaz quedará disponible en http://127.0.0.1:8000/ y la API en http://127.0.0.1:8000/api/transcriptions.
