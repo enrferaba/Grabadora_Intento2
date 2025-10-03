@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from inspect import signature
 from pathlib import Path
 from threading import Lock
-from typing import List, Optional
+from typing import Callable, Dict, List, Optional
+from urllib.error import HTTPError
 
 from pydub import AudioSegment
 
@@ -39,22 +41,41 @@ class TranscriptionResult:
     language: Optional[str]
     duration: Optional[float]
     segments: List[SegmentResult]
+    runtime_seconds: Optional[float] = None
 
 
 class BaseTranscriber:
-    def transcribe(self, audio_path: Path, language: Optional[str] = None) -> TranscriptionResult:
+    def transcribe(
+        self,
+        audio_path: Path,
+        language: Optional[str] = None,
+        debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
+    ) -> TranscriptionResult:
         raise NotImplementedError
 
 
 class DummyTranscriber(BaseTranscriber):
-    def transcribe(self, audio_path: Path, language: Optional[str] = None) -> TranscriptionResult:  # pragma: no cover - trivial
+    def transcribe(
+        self,
+        audio_path: Path,
+        language: Optional[str] = None,
+        debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
+    ) -> TranscriptionResult:  # pragma: no cover - trivial
         logger.warning("Using DummyTranscriber, install whisperx to enable real transcription")
         dummy_text = f"Transcripción simulada para {audio_path.name}"
+        if debug_callback:
+            debug_callback(
+                "dummy-transcriber",
+                "Se utilizó el transcriptor simulado",
+                {"filename": audio_path.name},
+                "warning",
+            )
         return TranscriptionResult(
             text=dummy_text,
             language=language or "es",
             duration=None,
             segments=[SegmentResult(start=0, end=0, speaker="SPEAKER_00", text=dummy_text)],
+            runtime_seconds=0.0,
         )
 
 
@@ -69,6 +90,7 @@ class WhisperXTranscriber(BaseTranscriber):
         self.model_size = model_size
         self.device_preference = device_preference
         self._cached_asr_options: Optional[dict] = None
+        self._vad_patch_done = False
 
     @staticmethod
     def _normalize_device(device: str) -> str:
@@ -182,7 +204,106 @@ class WhisperXTranscriber(BaseTranscriber):
         except Exception as exc:  # pragma: no cover - logging para diagnósticos
             logger.debug("No se pudo parchear DEFAULT_ASR_OPTIONS de whisperx: %s", exc)
 
-    def _ensure_model(self):
+    def _download_vad_weights(self, debug_callback=None) -> Optional[Path]:
+        try:
+            from huggingface_hub import hf_hub_download  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logger.warning("huggingface_hub no disponible para descargar VAD: %s", exc)
+            if debug_callback:
+                debug_callback(
+                    "vad-download",
+                    "huggingface_hub no disponible",
+                    {"error": str(exc)},
+                    "warning",
+                )
+            return None
+
+        target_dir = Path(settings.models_cache_dir) / "vad"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            local_path = hf_hub_download(
+                repo_id=settings.whisper_vad_repo_id,
+                filename=settings.whisper_vad_filename,
+                cache_dir=str(target_dir),
+                token=settings.huggingface_token or None,
+                resume_download=True,
+            )
+            if debug_callback:
+                debug_callback(
+                    "vad-download",
+                    "Modelo VAD descargado desde HuggingFace",
+                    {"path": local_path},
+                    "info",
+                )
+            return Path(local_path)
+        except Exception as exc:  # pragma: no cover - network dependent
+            logger.error("No se pudo descargar el modelo VAD: %s", exc)
+            if debug_callback:
+                debug_callback(
+                    "vad-download",
+                    "Fallo al descargar el modelo VAD",
+                    {"error": str(exc)},
+                    "error",
+                )
+            return None
+
+    def _patch_vad_loader(self, debug_callback=None) -> None:
+        if self._vad_patch_done or whisperx is None:  # pragma: no cover - defensive
+            return
+        try:
+            vad_module = getattr(whisperx, "vad")
+        except Exception:
+            logger.debug("Módulo VAD de whisperx no disponible para parchear", exc_info=True)
+            return
+
+        original_loader = getattr(vad_module, "load_vad_model", None)
+        if not callable(original_loader):
+            return
+        if getattr(original_loader, "_app_patched", False):
+            self._vad_patch_done = True
+            return
+
+        def patched_loader(device, use_auth_token=None, **options):
+            try:
+                return original_loader(device, use_auth_token=use_auth_token, **options)
+            except HTTPError as err:
+                if debug_callback:
+                    debug_callback(
+                        "vad-download",
+                        "Descarga VAD redirigida",
+                        {"code": err.code, "url": getattr(vad_module, "VAD_SEGMENTATION_URL", "")},
+                        "warning",
+                    )
+                if err.code in {301, 302, 307, 308}:
+                    fallback_path = self._download_vad_weights(debug_callback=debug_callback)
+                    if fallback_path:
+                        options = dict(options)
+                        options["segmentation_path"] = str(fallback_path)
+                        return original_loader(device, use_auth_token=use_auth_token, **options)
+                logger.error("Fallo al cargar modelo VAD: %s", err)
+                raise
+
+        patched_loader._app_patched = True  # type: ignore[attr-defined]
+        vad_module.load_vad_model = patched_loader  # type: ignore[attr-defined]
+
+        # Algunos submódulos de whisperx (por ejemplo asr.py) importan load_vad_model
+        # directamente. Si no actualizamos también esa referencia seguirán utilizando
+        # la versión original sin fallback y el HTTPError 301 reaparece.
+        try:
+            asr_module = getattr(whisperx, "asr", None)
+        except Exception:  # pragma: no cover - defensivo
+            asr_module = None
+        if asr_module is not None:
+            current_attr = getattr(asr_module, "load_vad_model", None)
+            if current_attr is None or current_attr is original_loader:
+                setattr(asr_module, "load_vad_model", patched_loader)
+
+        current_url = getattr(vad_module, "VAD_SEGMENTATION_URL", "")
+        if isinstance(current_url, str) and current_url.startswith("http://"):
+            setattr(vad_module, "VAD_SEGMENTATION_URL", current_url.replace("http://", "https://", 1))
+        self._vad_patch_done = True
+
+    def _ensure_model(self, debug_callback=None):
         if self._model is None:
             device = self._normalize_device(self.device_preference or settings.whisper_device)
             if device == "cuda" and torch is not None and not torch.cuda.is_available():
@@ -190,7 +311,15 @@ class WhisperXTranscriber(BaseTranscriber):
                 device = "cpu"
             compute_type = self._compute_type_for_device(device)
             logger.info("Loading whisperx model %s on %s", self.model_size, device)
+            if debug_callback:
+                debug_callback(
+                    "load-model",
+                    "Preparando modelo whisperx",
+                    {"model": self.model_size, "device": device, "compute_type": compute_type},
+                    "info",
+                )
             self._patch_default_asr_options()
+            self._patch_vad_loader(debug_callback=debug_callback)
             self._model = whisperx.load_model(  # type: ignore[attr-defined]
                 self.model_size,
                 device=device,
@@ -200,6 +329,13 @@ class WhisperXTranscriber(BaseTranscriber):
             )
             if settings.whisper_use_faster and hasattr(whisperx, "transcribe_with_vad"):
                 logger.info("Enabled faster VAD transcription")
+                if debug_callback:
+                    debug_callback(
+                        "load-model",
+                        "Transcripción con VAD acelerado disponible",
+                        {"enabled": True},
+                        "info",
+                    )
         if settings.whisper_enable_speaker_diarization and self._diarize_pipeline is None:
             logger.info("Loading diarization pipeline")
             self._diarize_pipeline = whisperx.DiarizationPipeline(
@@ -215,24 +351,60 @@ class WhisperXTranscriber(BaseTranscriber):
             logger.debug("Unable to estimate duration for %s: %s", audio_path, exc)
             return None
 
-    def transcribe(self, audio_path: Path, language: Optional[str] = None) -> TranscriptionResult:
+    def transcribe(
+        self,
+        audio_path: Path,
+        language: Optional[str] = None,
+        debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
+    ) -> TranscriptionResult:
+        def emit(stage: str, message: str, extra: Optional[Dict[str, object]] = None, level: str = "info") -> None:
+            if debug_callback:
+                debug_callback(stage, message, extra, level)
+
         with self._lock:
-            self._ensure_model()
+            self._ensure_model(debug_callback=emit)
         assert self._model is not None
 
         logger.info("Starting transcription for %s", audio_path)
+        emit(
+            "transcribe.start",
+            "Comenzando transcripción",
+            {"filename": audio_path.name, "language": language or settings.whisper_language},
+        )
         audio = whisperx.load_audio(str(audio_path))
-        model_output = self._model.transcribe(
-            audio,
-            batch_size=settings.whisper_batch_size,
-            language=language or settings.whisper_language,
+        start = time.perf_counter()
+        try:
+            model_output = self._model.transcribe(
+                audio,
+                batch_size=settings.whisper_batch_size,
+                language=language or settings.whisper_language,
+            )
+        except Exception as exc:
+            emit(
+                "transcribe.error",
+                "Error ejecutando whisperx.transcribe",
+                {"error": str(exc)},
+                "error",
+            )
+            raise
+        runtime = time.perf_counter() - start
+        emit(
+            "transcribe.completed",
+            "Transcripción finalizada",
+            {"runtime_seconds": runtime, "segment_count": len(model_output.get("segments", []))},
         )
 
         segments = model_output.get("segments", [])
         diarized_segments = segments
         if settings.whisper_enable_speaker_diarization and self._diarize_pipeline is not None:
+            emit("diarization.start", "Iniciando diarización", None)
             diarize_segments = self._diarize_pipeline(audio)
             diarized_segments = whisperx.assign_word_speakers(diarize_segments, segments)
+            emit(
+                "diarization.completed",
+                "Diarización completada",
+                {"segments": len(diarized_segments)},
+            )
 
         segment_results: List[SegmentResult] = []
         collected_text: List[str] = []
@@ -251,6 +423,7 @@ class WhisperXTranscriber(BaseTranscriber):
             language=model_output.get("language", language),
             duration=duration,
             segments=segment_results,
+            runtime_seconds=runtime,
         )
 
 

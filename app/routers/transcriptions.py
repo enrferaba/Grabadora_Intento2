@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -29,6 +29,7 @@ from ..schemas import (
     TranscriptionCreateResponse,
     TranscriptionDetail,
 )
+from ..utils.debug import append_debug_event
 from ..utils.storage import compute_txt_path, ensure_storage_subdir, save_upload_file
 from ..whisper_service import get_transcriber, serialize_segments
 
@@ -136,6 +137,19 @@ def _enqueue_transcription(
     transcription.stored_path = str(dest_path)
     session.commit()
 
+    append_debug_event(
+        transcription.id,
+        "enqueued",
+        "Archivo encolado para transcripción",
+        extra={
+            "filename": transcription.original_filename,
+            "language": language,
+            "subject": subject,
+            "model": resolved_model,
+            "device": resolved_device,
+        },
+    )
+
     background_tasks.add_task(
         process_transcription,
         transcription.id,
@@ -230,6 +244,20 @@ def process_transcription(
     resolved_model = _resolve_model_choice(model_size)
     resolved_device = _resolve_device_choice(device_preference)
     transcriber = get_transcriber(resolved_model, resolved_device)
+
+    def debug_callback(stage: str, message: str, extra: Optional[Dict[str, object]], level: str = "info") -> None:
+        append_debug_event(transcription_id, stage, message, extra=extra, level=level)
+
+    append_debug_event(
+        transcription_id,
+        "processing-start",
+        "Procesamiento iniciado",
+        extra={
+            "model": resolved_model,
+            "device": resolved_device,
+            "language": language,
+        },
+    )
     try:
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
@@ -238,7 +266,17 @@ def process_transcription(
                 return
             transcription.status = TranscriptionStatus.PROCESSING.value
 
-        result = transcriber.transcribe(Path(transcription.stored_path), language or transcription.language)
+        result = transcriber.transcribe(
+            Path(transcription.stored_path),
+            language or transcription.language,
+            debug_callback=debug_callback,
+        )
+        completion_extra = {
+            "duration": result.duration,
+            "runtime_seconds": result.runtime_seconds,
+            "segments": len(result.segments),
+        }
+
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
             if transcription is None:
@@ -253,14 +291,30 @@ def process_transcription(
             transcription.error_message = None
             txt_path = compute_txt_path(transcription.id)
             txt_path.write_text(transcription.to_txt(), encoding="utf-8")
+
+        append_debug_event(
+            transcription_id,
+            "processing-complete",
+            "Transcripción finalizada correctamente",
+            extra=completion_extra,
+        )
     except Exception as exc:  # pragma: no cover - runtime safeguard
         logger.exception("Failed to transcribe %s", transcription_id)
+        error_message = str(exc)
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
             if transcription is None:
                 return
             transcription.status = TranscriptionStatus.FAILED.value
-            transcription.error_message = str(exc)
+            transcription.error_message = error_message
+
+        append_debug_event(
+            transcription_id,
+            "processing-error",
+            "Error durante la transcripción",
+            extra={"error": error_message},
+            level="error",
+        )
 
 
 @router.get("", response_model=SearchResponse)

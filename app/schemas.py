@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -33,12 +33,21 @@ class TranscriptionBase(BaseModel):
         orm_mode = True
 
 
+class DebugEvent(BaseModel):
+    timestamp: datetime
+    stage: str
+    level: str
+    message: str
+    extra: Optional[Any]
+
+
 class TranscriptionDetail(TranscriptionBase):
     text: Optional[str]
     speakers: Optional[List[SpeakerSegment]]
     error_message: Optional[str]
     premium_notes: Optional[str]
     premium_perks: Optional[List[str]]
+    debug_events: Optional[List[DebugEvent]]
 
 
 class TranscriptionCreateResponse(BaseModel):

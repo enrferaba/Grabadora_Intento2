@@ -143,6 +143,8 @@ def test_transcription_lifecycle(test_env):
         }
         assert detail.model_size is not None
         assert detail.device_preference is not None
+        assert detail.debug_events is not None and len(detail.debug_events) >= 1
+        assert detail.debug_events[-1].stage in {"processing-complete", "processing-error"}
 
     txt_path = compute_txt_path(transcription_id)
     assert txt_path.exists()
@@ -156,6 +158,7 @@ def test_transcription_lifecycle(test_env):
             session=session,
         )
         assert listing.total >= 1
+        assert listing.results[0].debug_events is not None
         download = transcriptions.download_transcription(transcription_id, session=session)
         assert download.status_code == 200
         transcriptions.delete_transcription(transcription_id, session=session)
@@ -245,6 +248,41 @@ def test_batch_upload_and_payment_flow(test_env):
         transcription_detail = transcriptions.get_transcription(first_id, session=session)
         assert transcription_detail.premium_enabled is True
         assert transcription_detail.premium_notes
+
+
+def test_debug_event_trim(test_env):
+    _prepare_database()
+
+    from app import config
+    from app.database import get_session
+    from app.models import Transcription, TranscriptionStatus
+    from app.utils.debug import append_debug_event
+
+    original_limit = config.settings.debug_event_limit
+    config.settings.debug_event_limit = 3
+    try:
+        with get_session() as session:
+            transcription = Transcription(
+                original_filename="demo.wav",
+                stored_path="/tmp/demo.wav",
+                status=TranscriptionStatus.PENDING.value,
+            )
+            session.add(transcription)
+            session.commit()
+            transcription_id = transcription.id
+
+        for idx in range(5):
+            append_debug_event(transcription_id, f"stage-{idx}", f"mensaje {idx}")
+
+        with get_session() as session:
+            refreshed = session.get(Transcription, transcription_id)
+            assert refreshed is not None
+            assert refreshed.debug_events is not None
+            assert len(refreshed.debug_events) == 3
+            stages = [event["stage"] for event in refreshed.debug_events]
+            assert stages == ["stage-2", "stage-3", "stage-4"]
+    finally:
+        config.settings.debug_event_limit = original_limit
 
 
 def test_frontend_mount_available(test_env):
