@@ -53,6 +53,32 @@ python -m scripts.doctor
 
 El comando revisa las dependencias clave (FastAPI, SQLAlchemy, WhisperX, etc.) y muestra cómo resolver cualquier ausencia.
 
+### Copiar y pegar todo el flujo
+
+#### Windows (PowerShell)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m scripts.init_db
+python -m scripts.doctor
+python -m uvicorn app.main:app --reload
+```
+
+#### Linux / macOS
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m scripts.init_db
+python -m scripts.doctor
+python -m uvicorn app.main:app --reload
+```
+
 ### Arrancar la API en modo desarrollo
 
 ```bash

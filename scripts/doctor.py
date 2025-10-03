@@ -7,6 +7,11 @@ import sys
 from dataclasses import dataclass
 from typing import Iterable, List
 
+try:  # pragma: no cover - solo garantiza parches en tiempo de ejecución
+    import app.compat  # noqa: F401
+except Exception:  # pragma: no cover - entorno mínimo puede no tener el paquete
+    pass
+
 
 REQUIRED_MODULES: List[str] = [
     "sqlalchemy",
