@@ -16,7 +16,9 @@ if ForwardRef is not None and hasattr(ForwardRef, "_evaluate"):
         if parameter.default is inspect._empty:
             _original_evaluate = ForwardRef._evaluate
 
-            def _patched_evaluate(self, globalns, localns, recursive_guard=None):
-                return _original_evaluate(self, globalns, localns, recursive_guard)
+            def _patched_evaluate(self, *args, **kwargs):
+                if "recursive_guard" not in kwargs:
+                    kwargs["recursive_guard"] = None
+                return _original_evaluate(self, *args, **kwargs)
 
             ForwardRef._evaluate = _patched_evaluate

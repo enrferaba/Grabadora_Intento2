@@ -26,8 +26,10 @@ def _patch_forward_ref() -> None:
 
     original = forward_ref._evaluate  # type: ignore[attr-defined]
 
-    def _patched(self, globalns, localns, recursive_guard=None):  # type: ignore[override]
-        return original(self, globalns, localns, recursive_guard)
+    def _patched(self, *args, **kwargs):  # type: ignore[override]
+        if "recursive_guard" not in kwargs:
+            kwargs["recursive_guard"] = None
+        return original(self, *args, **kwargs)
 
     forward_ref._evaluate = _patched  # type: ignore[assignment]
 
