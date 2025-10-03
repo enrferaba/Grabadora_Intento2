@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grabadora Pro</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' ry='14' fill='%235647f5'/%3E%3Cpath d='M18 32a14 14 0 1028 0 14 14 0 00-28 0zm14-10a10 10 0 11-10 10 10 10 0 0110-10zm-2 6v8l8-4-8-4z' fill='%23fff'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero-content">
+        <h1>Grabadora Pro</h1>
+        <p>
+          Transcribe varias clases a la vez, identifica a los ponentes con WhisperX y desbloquea notas premium impulsadas por IA.
+        </p>
+        <div class="hero-tags">
+          <span>WhisperX</span>
+          <span>Diarización</span>
+          <span>Pagos premium</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="card span-2">
+        <h2>Subir nuevos audios</h2>
+        <p class="section-lead">Arrastra varios archivos o selecciónalos manualmente. Se procesarán en paralelo.</p>
+        <form id="upload-form">
+          <div class="form-grid">
+            <label class="form-label" for="audio-file">Archivos de audio</label>
+            <input id="audio-file" type="file" accept="audio/*" multiple required />
+
+            <label class="form-label" for="language">Idioma preferido</label>
+            <input id="language" type="text" name="language" placeholder="Auto" />
+
+            <label class="form-label" for="subject">Asignatura / carpeta</label>
+            <input id="subject" type="text" name="subject" placeholder="Ej: Matemáticas" />
+
+            <label class="form-label" for="price">Precio personalizado (centavos)</label>
+            <input id="price" type="number" min="0" step="1" name="price_cents" placeholder="Opcional" />
+
+            <label class="form-label" for="currency">Moneda</label>
+            <input id="currency" type="text" name="currency" placeholder="EUR" maxlength="8" />
+          </div>
+          <div id="file-preview" class="file-preview" hidden></div>
+          <button type="submit" class="primary">Subir y transcribir</button>
+        </form>
+        <div id="upload-status" aria-live="polite"></div>
+      </section>
+
+      <section class="card">
+        <div class="list-header">
+          <h2>Transcripciones recientes</h2>
+          <input id="search" type="search" placeholder="Buscar por texto, asignatura o estado" />
+        </div>
+        <div class="filters">
+          <label><input type="checkbox" id="filter-premium" /> Solo premium</label>
+        </div>
+        <div id="transcription-list" class="transcription-list"></div>
+      </section>
+
+      <section class="card">
+        <div class="list-header">
+          <h2>Planes premium</h2>
+          <button id="refresh-plans" type="button" class="ghost">Actualizar</button>
+        </div>
+        <p class="section-lead">Elige un plan para desbloquear notas IA y beneficios extra en cada transcripción.</p>
+        <div id="plans" class="plans"></div>
+        <div id="checkout-status" class="checkout-status" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <template id="transcription-template">
+      <article class="transcription">
+        <header>
+          <h3 class="transcription-title"></h3>
+          <span class="status"></span>
+        </header>
+        <p class="meta"></p>
+        <p class="excerpt"></p>
+        <div class="premium" hidden>
+          <strong>Notas premium:</strong>
+          <p class="premium-notes"></p>
+        </div>
+        <div class="actions">
+          <a class="download" href="#" target="_blank" rel="noopener">Descargar TXT</a>
+          <button class="view">Ver detalles</button>
+          <button class="delete" data-id="">Eliminar</button>
+          <button class="checkout ghost" data-id="">Comprar plan</button>
+        </div>
+        <details class="speakers">
+          <summary>Hablantes detectados</summary>
+          <ul></ul>
+        </details>
+      </article>
+    </template>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal-content">
+        <button id="modal-close" aria-label="Cerrar">×</button>
+        <pre id="modal-text"></pre>
+      </div>
+    </div>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
