@@ -30,7 +30,12 @@ from ..schemas import (
     TranscriptionDetail,
 )
 from ..utils.debug import append_debug_event
-from ..utils.storage import compute_txt_path, ensure_storage_subdir, save_upload_file
+from ..utils.storage import (
+    compute_txt_path,
+    ensure_storage_subdir,
+    sanitize_folder_name,
+    save_upload_file,
+)
 from ..whisper_service import get_transcriber, serialize_segments
 
 ALLOWED_MEDIA_EXTENSIONS = {
@@ -50,8 +55,10 @@ ALLOWED_MEDIA_EXTENSIONS = {
 ALLOWED_MEDIA_PREFIXES = ("audio/", "video/")
 
 MODEL_ALIASES = {
-    "large": "large-v2",
+    "large": "large-v3",
     "large-v2": "large-v2",
+    "large-v3": "large-v3",
+    "large3": "large-v3",
     "medium": "medium",
     "small": "small",
 }
@@ -106,6 +113,7 @@ def _enqueue_transcription(
     upload: UploadFile,
     language: Optional[str],
     subject: Optional[str],
+    destination_folder: str,
     model_size: Optional[str] = None,
     device_preference: Optional[str] = None,
 ) -> Transcription:
@@ -115,6 +123,9 @@ def _enqueue_transcription(
             detail="Solo se permiten archivos de audio o video",
         )
     _validate_upload_size(upload)
+    if not destination_folder or not destination_folder.strip():
+        raise HTTPException(status_code=400, detail="Debes indicar una carpeta de destino")
+    sanitized_folder = sanitize_folder_name(destination_folder)
     resolved_model = _resolve_model_choice(model_size)
     resolved_device = _resolve_device_choice(device_preference)
     transcription = Transcription(
@@ -124,6 +135,7 @@ def _enqueue_transcription(
         model_size=resolved_model,
         device_preference=resolved_device,
         subject=subject,
+        output_folder=sanitized_folder,
         status=TranscriptionStatus.PROCESSING.value,
     )
     session.add(transcription)
@@ -135,6 +147,13 @@ def _enqueue_transcription(
     upload.file.close()
 
     transcription.stored_path = str(dest_path)
+    planned_txt_path = compute_txt_path(
+        transcription.id,
+        folder=sanitized_folder,
+        original_filename=upload.filename,
+        ensure_unique=True,
+    )
+    transcription.transcript_path = str(planned_txt_path)
     session.commit()
 
     append_debug_event(
@@ -147,6 +166,7 @@ def _enqueue_transcription(
             "subject": subject,
             "model": resolved_model,
             "device": resolved_device,
+            "output_folder": sanitized_folder,
         },
     )
 
@@ -179,6 +199,7 @@ def create_transcription(
     upload: UploadFile = File(...),
     language: Optional[str] = Form(default=None),
     subject: Optional[str] = Form(default=None),
+    destination_folder: str = Form(..., description="Carpeta obligatoria dentro de transcripts_dir"),
     model_size: Optional[str] = Form(default=None),
     device_preference: Optional[str] = Form(default=None),
     session: Session = Depends(_get_session),
@@ -189,6 +210,7 @@ def create_transcription(
         upload,
         language,
         subject,
+        destination_folder,
         model_size,
         device_preference,
     )
@@ -206,6 +228,7 @@ def create_batch_transcriptions(
     uploads: List[UploadFile] = File(...),
     language: Optional[str] = Form(default=None),
     subject: Optional[str] = Form(default=None),
+    destination_folder: str = Form(...),
     model_size: Optional[str] = Form(default=None),
     device_preference: Optional[str] = Form(default=None),
     session: Session = Depends(_get_session),
@@ -221,6 +244,7 @@ def create_batch_transcriptions(
             upload,
             language,
             subject,
+            destination_folder,
             model_size,
             device_preference,
         )
@@ -247,6 +271,13 @@ def process_transcription(
 
     def debug_callback(stage: str, message: str, extra: Optional[Dict[str, object]], level: str = "info") -> None:
         append_debug_event(transcription_id, stage, message, extra=extra, level=level)
+        if stage == "transcribe.segment" and extra:
+            partial_text = str(extra.get("partial_text") or "").strip()
+            if partial_text:
+                with get_session() as update_session:
+                    partial = update_session.get(Transcription, transcription_id)
+                    if partial is not None and (partial.text or "").strip() != partial_text:
+                        partial.text = partial_text
 
     append_debug_event(
         transcription_id,
@@ -259,15 +290,39 @@ def process_transcription(
         },
     )
     try:
+        stored_path: Optional[str] = None
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
             if transcription is None:
                 logger.warning("Transcription %s missing", transcription_id)
                 return
             transcription.status = TranscriptionStatus.PROCESSING.value
+            transcription.model_size = resolved_model
+            transcription.device_preference = resolved_device
+            transcription.runtime_seconds = None
+            stored_path = transcription.stored_path
+
+        assert stored_path is not None
+        audio_path = Path(stored_path)
+        if not audio_path.exists():
+            message = (
+                "El archivo original ya no está disponible; la transcripción se canceló o eliminó."
+            )
+            with get_session() as session:
+                transcription = session.get(Transcription, transcription_id)
+                if transcription is not None:
+                    transcription.status = TranscriptionStatus.FAILED.value
+                    transcription.error_message = message
+            append_debug_event(
+                transcription_id,
+                "processing-missing-file",
+                message,
+                level="warning",
+            )
+            return
 
         result = transcriber.transcribe(
-            Path(transcription.stored_path),
+            audio_path,
             language or transcription.language,
             debug_callback=debug_callback,
         )
@@ -286,11 +341,23 @@ def process_transcription(
             transcription.model_size = resolved_model
             transcription.device_preference = resolved_device
             transcription.duration = result.duration
+            transcription.runtime_seconds = result.runtime_seconds
             transcription.speakers = serialize_segments(result.segments)
             transcription.status = TranscriptionStatus.COMPLETED.value
             transcription.error_message = None
-            txt_path = compute_txt_path(transcription.id)
-            txt_path.write_text(transcription.to_txt(), encoding="utf-8")
+            stored_folder = transcription.output_folder or "transcripciones"
+            target_path = (
+                Path(transcription.transcript_path)
+                if transcription.transcript_path
+                else compute_txt_path(
+                    transcription.id,
+                    folder=stored_folder,
+                    original_filename=transcription.original_filename,
+                )
+            )
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(transcription.to_txt(), encoding="utf-8")
+            transcription.transcript_path = str(target_path)
 
         append_debug_event(
             transcription_id,
@@ -356,10 +423,18 @@ def download_transcription(transcription_id: int, session: Session = Depends(_ge
     transcription = session.get(Transcription, transcription_id)
     if not transcription:
         raise HTTPException(status_code=404, detail="Transcripción no encontrada")
-    txt_path = compute_txt_path(transcription.id)
+    txt_path = (
+        Path(transcription.transcript_path)
+        if transcription.transcript_path
+        else compute_txt_path(
+            transcription.id,
+            folder=transcription.output_folder,
+            original_filename=transcription.original_filename,
+        )
+    )
     if not txt_path.exists():
         raise HTTPException(status_code=404, detail="Archivo TXT no disponible aún")
-    return FileResponse(txt_path, media_type="text/plain", filename=f"{transcription.original_filename}.txt")
+    return FileResponse(txt_path, media_type="text/plain", filename=txt_path.name)
 
 
 @router.delete("/{transcription_id}", status_code=204, response_class=Response)
@@ -368,7 +443,15 @@ def delete_transcription(transcription_id: int, session: Session = Depends(_get_
     if not transcription:
         raise HTTPException(status_code=404, detail="Transcripción no encontrada")
     stored_path = Path(transcription.stored_path)
-    txt_path = compute_txt_path(transcription.id)
+    txt_path = (
+        Path(transcription.transcript_path)
+        if transcription.transcript_path
+        else compute_txt_path(
+            transcription.id,
+            folder=transcription.output_folder,
+            original_filename=transcription.original_filename,
+        )
+    )
     session.delete(transcription)
     session.commit()
     if stored_path.exists():  # pragma: no cover - filesystem side effects

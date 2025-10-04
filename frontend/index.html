@@ -116,8 +116,9 @@
 
             <div class="field">
               <label class="form-label" for="model-size">Modelo WhisperX</label>
-              <select id="model-size" name="model_size" data-default="large">
-                <option value="large" selected>large (máxima precisión)</option>
+              <select id="model-size" name="model_size" data-default="large-v3">
+                <option value="large-v3" selected>large-v3 (máxima precisión)</option>
+                <option value="large-v2">large-v2 (estable)</option>
                 <option value="medium">medium (equilibrado)</option>
                 <option value="small">small (más veloz)</option>
               </select>
@@ -132,8 +133,15 @@
             </div>
 
             <div class="field">
-              <label class="form-label" for="subject">Asignatura / carpeta</label>
-              <input id="subject" type="text" name="subject" placeholder="Ej: Matemáticas" />
+              <label class="form-label" for="destination-folder">Carpeta destino (obligatoria)</label>
+              <input
+                id="destination-folder"
+                type="text"
+                name="destination_folder"
+                placeholder="Ej: clase-historia"
+                required
+              />
+              <p class="hint">La transcripción en TXT se guardará en esta carpeta dentro del directorio configurado.</p>
             </div>
 
           </div>
@@ -153,11 +161,34 @@
 
       <section class="card span-2 live-card" aria-labelledby="live-heading">
         <div class="card-header">
-          <h2 id="live-heading">Vista en vivo estilo ChatGPT</h2>
-          <p class="section-lead">Selecciona una transcripción para ver cómo se despliega el texto con un efecto de tipeo fluido.</p>
+          <h2 id="live-heading">Vista en vivo instantánea</h2>
+          <p class="section-lead">Selecciona una transcripción para seguir el texto conforme llega cada segmento, ordenado y sin retrasos artificiales.</p>
         </div>
         <div id="live-output" class="live-output" aria-live="polite">
           Selecciona cualquier transcripción para previsualizarla aquí.
+        </div>
+      </section>
+
+      <section class="card span-2 student-card" id="student-web" aria-labelledby="student-heading">
+        <div class="card-header">
+          <h2 id="student-heading">Modo estudiante en web</h2>
+          <p class="section-lead">Observa cómo se ejecuta la edición ligera con anuncios y computación local pensada para campus.</p>
+        </div>
+        <div class="student-controls">
+          <button id="open-student-web" type="button" class="primary-alt">Abrir simulador independiente</button>
+          <label class="toggle" for="student-follow">
+            <input id="student-follow" type="checkbox" checked />
+            <span>Sincronizar con la transcripción activa</span>
+          </label>
+        </div>
+        <div id="student-web-preview" class="student-preview">
+          <div class="student-preview__header">
+            <span>Vista previa incrustada</span>
+            <span class="badge">Plan estudiante</span>
+          </div>
+          <div id="student-preview-body" class="student-preview__body" aria-live="polite">
+            <p class="placeholder">Se vinculará automáticamente a la transcripción que esté en proceso.</p>
+          </div>
         </div>
       </section>
 

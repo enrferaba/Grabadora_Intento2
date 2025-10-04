@@ -24,18 +24,23 @@ class Settings(BaseSettings):
     transcripts_dir: Path = Path("data/transcripts")
     models_cache_dir: Path = Path("data/models")
 
-    whisper_model_size: str = "large-v2"
+    whisper_model_size: str = "large-v3"
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"
+    whisper_force_cuda: bool = False
     whisper_batch_size: int = 16
     whisper_language: Optional[str] = None
     whisper_use_faster: bool = True
     whisper_enable_speaker_diarization: bool = True
     whisper_parallel_pipelines: int = 1
+    whisper_word_timestamps: bool = False
     whisper_vad_repo_id: str = "pyannote/segmentation"
     whisper_vad_filename: str = "pytorch_model.bin"
 
     enable_dummy_transcriber: bool = False
+
+    cpu_threads: Optional[int] = None
+    fw_num_workers: int = 1
 
     max_upload_size_mb: int = 300
 

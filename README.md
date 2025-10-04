@@ -9,9 +9,10 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Base de datos SQLite / SQLAlchemy** con búsqueda por texto, asignatura y estado.
 - **Generación automática de archivos `.txt`** y estructura extensible para futuros planes premium con IA externa.
 - **Interfaz web** en `/` con selector multimedia animado, validación de audio/video y barra de progreso en tiempo real.
-- **Dashboard con métricas en vivo** (totales, completadas, minutos procesados, etc.) y vista estilo ChatGPT con efecto de tipeo fluido.
+- **Dashboard con métricas en vivo** (totales, completadas, minutos procesados, etc.) y vista estilo ChatGPT con animación adaptativa que escribe según el modelo y el dispositivo usado, desplazando la vista automáticamente.
 - **Beneficios premium simulados** con checkout y confirmación que desbloquean notas IA enriquecidas sin mostrar importes hasta definir tu estrategia comercial.
 - **Selector de idioma** con español (predeterminado), inglés y francés, además de autodetección cuando lo necesites.
+- **Modo estudiante web**: vista ligera con anuncios educativos y ejecución local accesible en `student.html` o desde el botón “Abrir simulador independiente”.
 - **Inicio de sesión con Google (OAuth 2.0)** listo para conectar con tus credenciales y personalizar la experiencia del dashboard.
 - **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
 - **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado y comprueban la compatibilidad con las versiones recientes de faster-whisper.
@@ -115,9 +116,11 @@ La interfaz quedará disponible en http://127.0.0.1:8000/ y la API en http://127
 | `SYNC_DATABASE_URL` | Cadena de conexión síncrona | `sqlite:///./data/app.db` |
 | `STORAGE_DIR` | Carpeta donde se guardan audios | `data/uploads` |
 | `TRANSCRIPTS_DIR` | Carpeta de archivos `.txt` | `data/transcripts` |
-| `WHISPER_MODEL_SIZE` | Modelo WhisperX a usar | `large-v2` |
+| `WHISPER_MODEL_SIZE` | Modelo WhisperX a usar | `large-v3` |
 | `WHISPER_DEVICE` | `cuda` o `cpu` | `cuda` |
+| `WHISPER_FORCE_CUDA` | Fuerza el uso de CUDA (no cae a CPU si falla) | `false` |
 | `ENABLE_DUMMY_TRANSCRIBER` | Usa transcriptor simulado (ideal para pruebas) | `false` |
+| `HUGGINGFACE_TOKEN` | Token opcional para descargar el VAD de `pyannote/segmentation` | *(vacío)* |
 
 ## Uso de la API
 
@@ -131,6 +134,32 @@ La interfaz quedará disponible en http://127.0.0.1:8000/ y la API en http://127
 - `GET /api/payments/plans`: Listado de planes activos.
 - `POST /api/payments/checkout`: Crea un checkout para un plan y una transcripción concreta.
 - `POST /api/payments/{id}/confirm`: Marca la compra como completada y desbloquea las notas premium.
+
+## Modo estudiante en la web
+
+- Desde el panel principal pulsa **“Abrir simulador independiente”** para lanzar `student.html` en una nueva pestaña.
+- La versión educativa sincroniza el texto con el backend cada pocos segundos, escribe con animaciones más pausadas y muestra
+  anuncios discretos entre segmentos.
+- También puedes acceder directamente navegando a `http://localhost:8000/student.html` cuando el servidor esté activo.
+
+## Benchmarks desde tu base de datos
+
+Utiliza el script `scripts/benchmark_models.py` para comparar la duración real de tus transcripciones frente al tiempo de
+ejecución observado. Ejemplos:
+
+```bash
+python -m scripts.benchmark_models --models large-v2 large-v3
+python -m scripts.benchmark_models --subject historia --export metrics.json
+```
+
+El resultado imprime una tabla con número de muestras, duración media, runtime medio y caracteres/segundo para documentar la
+mejora obtenida al cambiar de modelo.
+
+## ¿Problemas descargando el VAD de HuggingFace?
+
+Si ves errores `401` o `403` al intentar descargar `pyannote/segmentation`, configura la variable de entorno
+`HUGGINGFACE_TOKEN` con tu token personal (`huggingface-cli login`). Cuando no haya token, la aplicación reduce el log a una
+advertencia y continúa con el fallback de faster-whisper para evitar bloqueos.
 
 ## Docker
 

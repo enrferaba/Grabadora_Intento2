@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -49,3 +49,14 @@ def get_session() -> Session:
         raise
     finally:
         session.close()
+
+
+def ensure_transcription_schema() -> None:
+    inspector = inspect(sync_engine)
+    if 'transcriptions' not in inspector.get_table_names():
+        return
+    existing = {column['name'] for column in inspector.get_columns('transcriptions')}
+    if 'runtime_seconds' not in existing:
+        with sync_engine.connect() as connection:
+            connection.execute(text('ALTER TABLE transcriptions ADD COLUMN runtime_seconds FLOAT'))
+            connection.commit()

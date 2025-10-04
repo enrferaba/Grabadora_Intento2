@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Modo estudiante · Grabadora Pro</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="student.css" />
+  </head>
+  <body class="student-body">
+    <header class="student-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">🎓</span>
+        <span class="brand-name">Modo estudiante</span>
+      </div>
+      <p class="student-tagline">
+        Vista web ligera con anuncios y ejecución local pensada para aulas y bibliotecas.
+      </p>
+    </header>
+    <main class="layout student-layout">
+      <section class="card student-card span-2">
+        <div class="card-header">
+          <h1>Simulador web del plan educativo</h1>
+          <p class="section-lead">
+            Sigue tus transcripciones en directo sin consumir GPU del servidor. Cada alumno procesa en su propio
+            ordenador mientras mostramos mensajes patrocinados discretos.
+          </p>
+        </div>
+        <div class="student-controls">
+          <button id="student-refresh" type="button" class="primary-alt">Actualizar ahora</button>
+          <label class="toggle" for="student-auto">
+            <input id="student-auto" type="checkbox" checked />
+            <span>Recargar automáticamente cada pocos segundos</span>
+          </label>
+        </div>
+        <div class="student-preview">
+          <div class="student-preview__header">
+            <span>Transcripción en vivo local</span>
+            <span class="badge">Beta educativa</span>
+          </div>
+          <div id="student-stream" class="student-preview__body" aria-live="polite">
+            <p class="placeholder">
+              Pulsa «Actualizar ahora» o deja activada la recarga automática para vincular la transcripción en curso.
+            </p>
+          </div>
+        </div>
+        <aside class="student-info">
+          <h2>Anuncios integrados</h2>
+          <ul>
+            <li>Patrocinios de material escolar compatibles con el aula.</li>
+            <li>Los anuncios solo aparecen al finalizar cada segmento.</li>
+            <li>No rastreamos datos personales: todo se queda en tu ordenador.</li>
+          </ul>
+          <h2>Consejos de uso</h2>
+          <ul>
+            <li>Abre esta vista en pantalla compartida para que toda la clase siga la transcripción.</li>
+            <li>Si tu CPU va lenta, desactiva la recarga automática y usa el botón manual.</li>
+            <li>Instala los paquetes de Whisper recomendados para maximizar la precisión del modelo large-v3.</li>
+          </ul>
+        </aside>
+      </section>
+    </main>
+    <footer class="student-footer">
+      <p>
+        Plan estudiante con anuncios ligeros · Ejecuta Whisper en tu ordenador · <a href="./index.html">Volver al panel
+        principal</a>
+      </p>
+    </footer>
+    <script src="student.js" type="module"></script>
+  </body>
+</html>

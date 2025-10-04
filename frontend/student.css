@@ -1,0 +1,80 @@
+.student-body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+.student-header {
+  padding: 2rem clamp(1.5rem, 5vw, 3rem) 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+
+.student-tagline {
+  margin: 0;
+  color: #cbd5f5;
+  max-width: 48ch;
+}
+
+.student-layout {
+  width: min(960px, 94vw);
+  margin-bottom: 2rem;
+}
+
+.student-info {
+  margin-top: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border-radius: 18px;
+  background: rgba(8, 15, 32, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  display: grid;
+  gap: 1.25rem;
+}
+
+.student-info h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.student-info ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.45rem;
+  color: #d1d5f9;
+}
+
+.student-preview__body .ad-slot {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #a5f3fc;
+  opacity: 0.85;
+  text-align: center;
+}
+
+.student-footer {
+  margin-top: auto;
+  padding: 1.25rem;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 0.95rem;
+}
+
+.student-footer a {
+  color: #a5f3fc;
+}
+
+@media (max-width: 720px) {
+  .student-header {
+    align-items: center;
+    text-align: center;
+  }
+
+  .student-info {
+    margin-top: 2rem;
+  }
+}
