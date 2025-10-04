@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
-from .database import Base, sync_engine
+from .database import Base, ensure_transcription_schema, sync_engine
 from .routers import auth as auth_router
 from .routers import payments as payments_router
 from .routers import transcriptions as transcription_router
@@ -28,6 +28,7 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def on_startup() -> None:  # pragma: no cover - executed at runtime
         Base.metadata.create_all(bind=sync_engine)
+        ensure_transcription_schema()
 
     app.include_router(transcription_router.router, prefix=settings.api_prefix)
     app.include_router(payments_router.router, prefix=settings.api_prefix)

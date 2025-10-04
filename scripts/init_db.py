@@ -27,6 +27,19 @@ def main() -> None:
             session.add_all(
                 [
                     PricingTier(
+                        slug="student-local",
+                        name="Plan Estudiante Local",
+                        description="Corre Whisper en tu ordenador con anuncios ligeros y sin coste.",
+                        price_cents=0,
+                        currency="EUR",
+                        max_minutes=120,
+                        perks=[
+                            "Anuncios discretos en la aplicación",
+                            "Procesamiento en tu propio ordenador",
+                            "Sin cuotas mensuales",
+                        ],
+                    ),
+                    PricingTier(
                         slug="starter-15",
                         name="Starter 15",
                         description="Hasta 15 minutos por archivo, ideal para entrevistas cortas.",
