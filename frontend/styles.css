@@ -652,30 +652,45 @@ select:focus {
 }
 
 .live-output {
-  min-height: 180px;
+  min-height: 120px;
+  max-height: 340px;
+  overflow-y: auto;
   background: rgba(15, 23, 42, 0.55);
   border-radius: 16px;
   border: 1px solid rgba(148, 163, 184, 0.2);
-  padding: 1.2rem 1.4rem;
-  line-height: 1.65;
+  padding: 1rem 1.25rem;
+  line-height: 1.6;
   font-size: 1rem;
   font-family: "Spline Sans Mono", "JetBrains Mono", monospace;
   position: relative;
-  transition: border-color 0.3s ease;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
 }
 
-.live-output[data-typing="true"] {
-  border-color: rgba(99, 102, 241, 0.45);
-  box-shadow: 0 18px 35px rgba(99, 102, 241, 0.2);
+.live-output[data-stream="true"] {
+  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: 0 18px 35px rgba(99, 102, 241, 0.18);
 }
 
-.live-output[data-typing="true"]::after {
-  content: "▋";
+.live-output[data-stream="true"]::after {
+  content: "Streaming en vivo";
   position: absolute;
-  bottom: 1.2rem;
-  animation: blink 1s steps(1) infinite;
-  margin-left: 0.2rem;
+  top: 0.8rem;
+  right: 1rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
   color: var(--accent-hover);
+  animation: blink 1.4s steps(2, start) infinite;
+}
+
+.live-output p {
+  margin: 0;
+  background: rgba(15, 23, 42, 0.4);
+  border-radius: 12px;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
 }
 
 .list-header {
@@ -795,6 +810,10 @@ select:focus {
 .excerpt {
   margin: 0;
   line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .premium {
@@ -928,10 +947,34 @@ button:hover,
   color: #a5b4fc;
 }
 
+.plan-price {
+  margin: 0;
+  font-weight: 600;
+  color: var(--accent-hover);
+}
+
+.plan-card[data-plan-type='student'] {
+  border-color: rgba(74, 222, 128, 0.45);
+  background: rgba(22, 101, 52, 0.3);
+}
+
 .plan-perks {
   margin: 0;
   padding-left: 1.25rem;
   color: #cbd5f5;
+}
+
+.student-steps,
+.student-perks {
+  margin: 0.75rem 0 0;
+  padding-left: 1.5rem;
+  color: #d1fae5;
+  font-size: 0.95rem;
+}
+
+.student-steps li,
+.student-perks li {
+  margin-bottom: 0.35rem;
 }
 
 .plan-actions {
@@ -947,6 +990,15 @@ button:hover,
 
 .checkout-status.success {
   color: var(--success);
+}
+
+.checkout-status code {
+  font-family: "JetBrains Mono", monospace;
+  background: rgba(15, 23, 42, 0.45);
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #bae6fd;
 }
 
 .about-card {

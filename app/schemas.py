@@ -24,6 +24,8 @@ class TranscriptionBase(BaseModel):
     duration: Optional[float]
     status: TranscriptionStatus
     subject: Optional[str]
+    output_folder: str
+    transcript_path: Optional[str]
     created_at: datetime
     updated_at: datetime
     premium_enabled: bool

@@ -114,8 +114,6 @@ def test_transcription_lifecycle(test_env):
     from app.database import get_session
     from app.models import Transcription, TranscriptionStatus
     from app.routers import transcriptions
-    from app.utils.storage import compute_txt_path
-
     background = BackgroundTasks()
     upload = _make_upload("sample.wav")
 
@@ -127,6 +125,7 @@ def test_transcription_lifecycle(test_env):
             upload=upload,
             language="es",
             subject="Historia",
+            destination_folder="historia-clase",
             model_size="large",
             device_preference="gpu",
             session=session,
@@ -145,9 +144,12 @@ def test_transcription_lifecycle(test_env):
         assert detail.device_preference is not None
         assert detail.debug_events is not None and len(detail.debug_events) >= 1
         assert detail.debug_events[-1].stage in {"processing-complete", "processing-error"}
+        assert detail.output_folder == "historia-clase"
+        assert detail.transcript_path is not None
 
-    txt_path = compute_txt_path(transcription_id)
+    txt_path = Path(detail.transcript_path)
     assert txt_path.exists()
+    assert txt_path.parent.name == "historia-clase"
 
     with get_session() as session:
         assert session.query(Transcription).count() >= 1
@@ -182,6 +184,7 @@ def test_reject_non_media_upload(test_env):
             upload=upload,
             language=None,
             subject=None,
+            destination_folder="demo",
             session=session,
         )
 
@@ -220,6 +223,7 @@ def test_batch_upload_and_payment_flow(test_env):
             uploads=uploads,
             language="es",
             subject="Física",
+            destination_folder="fisica-general",
             model_size="medium",
             device_preference="gpu",
             session=session,
