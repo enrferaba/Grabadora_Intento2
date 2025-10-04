@@ -174,6 +174,29 @@
         </div>
       </section>
 
+      <section class="card span-2 student-card" id="student-web" aria-labelledby="student-heading">
+        <div class="card-header">
+          <h2 id="student-heading">Modo estudiante en web</h2>
+          <p class="section-lead">Observa cómo se ejecuta la edición ligera con anuncios y computación local pensada para campus.</p>
+        </div>
+        <div class="student-controls">
+          <button id="open-student-web" type="button" class="primary-alt">Abrir simulador independiente</button>
+          <label class="toggle" for="student-follow">
+            <input id="student-follow" type="checkbox" checked />
+            <span>Sincronizar con la transcripción activa</span>
+          </label>
+        </div>
+        <div id="student-web-preview" class="student-preview">
+          <div class="student-preview__header">
+            <span>Vista previa incrustada</span>
+            <span class="badge">Plan estudiante</span>
+          </div>
+          <div id="student-preview-body" class="student-preview__body" aria-live="polite">
+            <p class="placeholder">Se vinculará automáticamente a la transcripción que esté en proceso.</p>
+          </div>
+        </div>
+      </section>
+
       <section class="card" id="recientes">
         <div class="list-header">
           <h2>Transcripciones recientes</h2>

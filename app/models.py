@@ -38,6 +38,7 @@ class Transcription(Base):
     model_size = Column(String(64), nullable=True)
     device_preference = Column(String(32), nullable=True)
     duration = Column(Float, nullable=True)
+    runtime_seconds = Column(Float, nullable=True)
     text = Column(Text, nullable=True)
     speakers = Column(JSON, nullable=True)
     status = Column(String(32), default=TranscriptionStatus.PENDING.value, nullable=False)
@@ -73,6 +74,7 @@ class Transcription(Base):
             f"Archivo original: {self.original_filename}",
             f"Estado: {self.status}",
             f"Duración (s): {self.duration if self.duration is not None else 'N/A'}",
+            f"Tiempo de ejecución (s): {self.runtime_seconds if self.runtime_seconds is not None else 'N/A'}",
             f"Modelo: {self.model_size or 'predeterminado'}",
             f"Dispositivo: {self.device_preference or 'automático'}",
             f"Carpeta destino: {self.output_folder}",

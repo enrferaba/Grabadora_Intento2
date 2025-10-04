@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from inspect import signature
@@ -30,6 +31,87 @@ from .config import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_cpu_threads() -> int:
+    configured = getattr(settings, "cpu_threads", None)
+    if configured:
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return max(1, os.cpu_count() or 1)
+
+
+def _resolve_fw_num_workers() -> int:
+    try:
+        workers = int(getattr(settings, "fw_num_workers", 1))
+    except (TypeError, ValueError):
+        workers = 1
+    return max(1, workers)
+
+
+_langdet_lock = Lock()
+_langdet_model: Optional[FasterWhisperModel] = None  # type: ignore[type-arg]
+
+
+def _ensure_langdet_model(device: str) -> Optional[FasterWhisperModel]:
+    global _langdet_model
+    if FasterWhisperModel is None:
+        return None
+    with _langdet_lock:
+        if _langdet_model is None:
+            cpu_threads = _resolve_cpu_threads()
+            num_workers = _resolve_fw_num_workers()
+            try:
+                _langdet_model = FasterWhisperModel(  # type: ignore[call-arg]
+                    "tiny",
+                    device="cuda" if device == "cuda" else "cpu",
+                    compute_type="float16" if device == "cuda" else "int8",
+                    cpu_threads=cpu_threads,
+                    num_workers=num_workers,
+                    download_root=str(getattr(settings, "models_cache_dir", ".")),
+                )
+            except Exception as exc:  # pragma: no cover - optional best-effort helper
+                logger.debug("No se pudo cargar modelo tiny para detección rápida: %s", exc)
+                _langdet_model = None
+        return _langdet_model
+
+
+def _detect_language_fast(
+    audio_path: Path,
+    device: str,
+    debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
+) -> Optional[str]:
+    model = _ensure_langdet_model(device)
+    if model is None:
+        return None
+    try:
+        start = time.perf_counter()
+        _, info = model.transcribe(str(audio_path), beam_size=1, vad_filter=True)
+        language = getattr(info, "language", None)
+        if debug_callback:
+            debug_callback(
+                "lang.detect",
+                "Idioma detectado (tiny)",
+                {
+                    "language": language,
+                    "ms": int((time.perf_counter() - start) * 1000),
+                },
+                "debug",
+            )
+        return language
+    except Exception as exc:  # pragma: no cover - dependerá de runtime
+        if debug_callback:
+            debug_callback(
+                "lang.detect.error",
+                "Fallo detección rápida",
+                {"error": str(exc)},
+                "warning",
+            )
+        return None
 
 
 @dataclass
@@ -101,6 +183,26 @@ class WhisperXTranscriber(BaseTranscriber):
         self._cached_asr_options: Optional[dict] = None
         self._vad_patch_done = False
         self._fallback_transcriber: Optional["FasterWhisperTranscriber"] = None
+        self._disabled_reason: Optional[str] = self._initial_disabled_reason()
+
+    def _initial_disabled_reason(self) -> Optional[str]:
+        """Determine whether WhisperX should be disabled from the start."""
+
+        repo_id = (settings.whisper_vad_repo_id or "").strip().lower()
+        if not repo_id:
+            return None
+
+        token = settings.huggingface_token or None
+        if token:
+            return None
+
+        if repo_id.startswith("pyannote/") or "pyannote" in repo_id:
+            return (
+                "El modelo de VAD de WhisperX requiere autenticación en HuggingFace. "
+                "Configura la variable HUGGINGFACE_TOKEN para habilitar la diarización."
+            )
+
+        return None
 
     @staticmethod
     def _normalize_device(device: str) -> str:
@@ -126,6 +228,11 @@ class WhisperXTranscriber(BaseTranscriber):
         if self._cached_asr_options is not None:
             return self._cached_asr_options
 
+        want_word_ts = bool(
+            getattr(settings, "whisper_enable_speaker_diarization", False)
+            or getattr(settings, "whisper_word_timestamps", False)
+        )
+
         base_options = {
             "beam_size": 5,
             "best_of": 5,
@@ -143,9 +250,9 @@ class WhisperXTranscriber(BaseTranscriber):
             "prefix": None,
             "suppress_blank": True,
             "suppress_tokens": [-1],
-            "without_timestamps": True,
+            "without_timestamps": not want_word_ts,
             "max_initial_timestamp": 0.0,
-            "word_timestamps": False,
+            "word_timestamps": want_word_ts,
             "prepend_punctuations": "\"'“¿([{-",
             "append_punctuations": "\"'.。,，!！?？:：”)]}、",
             "multilingual": self._compute_multilingual_flag(),
@@ -226,6 +333,26 @@ class WhisperXTranscriber(BaseTranscriber):
                     {"error": str(exc)},
                     "warning",
                 )
+            self._disabled_reason = (
+                "huggingface_hub no está disponible; WhisperX usará el fallback local."
+            )
+            return None
+
+        token = settings.huggingface_token or None
+        if token is None and settings.whisper_vad_repo_id.startswith("pyannote/"):
+            message = (
+                "El repositorio de VAD requiere autenticación en HuggingFace. Configura HUGGINGFACE_TOKEN "
+                "para habilitar whisperx con diarización; se usará el fallback local mientras tanto."
+            )
+            logger.info(message)
+            if debug_callback:
+                debug_callback(
+                    "vad-download",
+                    "Repositorio VAD requiere autenticación",
+                    {"repo": settings.whisper_vad_repo_id},
+                    "warning",
+                )
+            self._disabled_reason = message
             return None
 
         target_dir = Path(settings.models_cache_dir) / "vad"
@@ -235,7 +362,7 @@ class WhisperXTranscriber(BaseTranscriber):
                 repo_id=settings.whisper_vad_repo_id,
                 filename=settings.whisper_vad_filename,
                 cache_dir=str(target_dir),
-                token=settings.huggingface_token or None,
+                token=token,
                 resume_download=True,
             )
             if debug_callback:
@@ -247,6 +374,25 @@ class WhisperXTranscriber(BaseTranscriber):
                 )
             return Path(local_path)
         except Exception as exc:  # pragma: no cover - network dependent
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code is None:
+                status_code = getattr(exc, "code", None)
+            if status_code in {401, 403}:
+                logger.warning(
+                    "No se pudo descargar el modelo VAD por falta de autorización (%s)",
+                    status_code,
+                )
+                if debug_callback:
+                    debug_callback(
+                        "vad-download",
+                        "Autenticación HuggingFace requerida para el VAD",
+                        {"status_code": status_code, "error": str(exc)},
+                        "warning",
+                    )
+                self._disabled_reason = (
+                    "Autenticación de HuggingFace obligatoria para usar whisperx con diarización."
+                )
+                return None
             logger.error("No se pudo descargar el modelo VAD: %s", exc)
             if debug_callback:
                 debug_callback(
@@ -303,6 +449,7 @@ class WhisperXTranscriber(BaseTranscriber):
                         {"error": str(err)},
                         "warning",
                     )
+                self._disabled_reason = "No se pudo descargar el VAD requerido por WhisperX (error de red)."
                 raise WhisperXVADUnavailableError("Unable to download VAD model (network error)") from err
             except Exception as err:
                 # Cualquier otra excepción inesperada (por ejemplo, errores de socket en
@@ -316,6 +463,7 @@ class WhisperXTranscriber(BaseTranscriber):
                         {"error": str(err)},
                         "warning",
                     )
+                self._disabled_reason = "Error inesperado descargando el modelo VAD de WhisperX."
                 raise WhisperXVADUnavailableError("Unexpected error downloading VAD model") from err
 
         patched_loader._app_patched = True  # type: ignore[attr-defined]
@@ -339,6 +487,9 @@ class WhisperXTranscriber(BaseTranscriber):
         self._vad_patch_done = True
 
     def _ensure_model(self, debug_callback=None):
+        if self._disabled_reason:
+            raise WhisperXVADUnavailableError(self._disabled_reason)
+
         if self._model is None:
             device = self._normalize_device(self.device_preference or settings.whisper_device)
             if device == "cuda" and torch is not None and not torch.cuda.is_available():
@@ -365,6 +516,10 @@ class WhisperXTranscriber(BaseTranscriber):
                 )
             except WhisperXVADUnavailableError:
                 self._model = None
+                if not self._disabled_reason:
+                    self._disabled_reason = (
+                        "WhisperX no está disponible porque el modelo de VAD requiere autenticación."
+                    )
                 if debug_callback:
                     debug_callback(
                         "load-model",
@@ -373,6 +528,32 @@ class WhisperXTranscriber(BaseTranscriber):
                         "warning",
                     )
                 raise
+            if (
+                getattr(settings, "whisper_enable_speaker_diarization", False)
+                or getattr(settings, "whisper_word_timestamps", False)
+            ) and self._align_model is None:
+                try:
+                    self._align_model, _ = whisperx.load_align_model(  # type: ignore[attr-defined]
+                        language=settings.whisper_language or "es",
+                        device=device,
+                    )
+                    if debug_callback:
+                        debug_callback(
+                            "align.load",
+                            "Modelo de alineación cargado",
+                            {"language": settings.whisper_language or "auto"},
+                            "info",
+                        )
+                except Exception as exc:  # pragma: no cover - depende de runtime
+                    logger.warning("No se pudo cargar align model: %s", exc)
+                    self._align_model = None
+                    if debug_callback:
+                        debug_callback(
+                            "align.load.error",
+                            "No se pudo cargar align model",
+                            {"error": str(exc)},
+                            "warning",
+                        )
             if settings.whisper_use_faster and hasattr(whisperx, "transcribe_with_vad"):
                 logger.info("Enabled faster VAD transcription")
                 if debug_callback:
@@ -384,18 +565,43 @@ class WhisperXTranscriber(BaseTranscriber):
                     )
         if settings.whisper_enable_speaker_diarization and self._diarize_pipeline is None:
             logger.info("Loading diarization pipeline")
-            self._diarize_pipeline = whisperx.DiarizationPipeline(
-                use_auth_token=None,
-                device=self._normalize_device(self.device_preference or settings.whisper_device),
-            )
+            token = getattr(settings, "huggingface_token", None) or None
+            try:
+                self._diarize_pipeline = whisperx.DiarizationPipeline(  # type: ignore[attr-defined]
+                    use_auth_token=token,
+                    device=self._normalize_device(self.device_preference or settings.whisper_device),
+                )
+                if debug_callback:
+                    debug_callback(
+                        "diarization.load",
+                        "Pipeline de diarización cargada",
+                        {"token": bool(token)},
+                        "info",
+                    )
+            except Exception as exc:  # pragma: no cover - red/network
+                logger.warning("Diarization deshabilitada: %s", exc)
+                self._diarize_pipeline = None
+                if debug_callback:
+                    debug_callback(
+                        "diarization.load.error",
+                        "No se pudo cargar la pipeline de diarización",
+                        {"error": str(exc)},
+                        "warning",
+                    )
 
     def _estimate_duration(self, audio_path: Path) -> Optional[float]:
         try:
-            audio = AudioSegment.from_file(audio_path)
-            return len(audio) / 1000.0
-        except Exception as exc:  # pragma: no cover - depends on ffmpeg availability
-            logger.debug("Unable to estimate duration for %s: %s", audio_path, exc)
-            return None
+            import soundfile as sf  # type: ignore
+
+            info = sf.info(str(audio_path))
+            return float(info.frames) / float(info.samplerate)
+        except Exception:
+            try:
+                audio = AudioSegment.from_file(audio_path)
+                return len(audio) / 1000.0
+            except Exception as exc:  # pragma: no cover - depends on ffmpeg availability
+                logger.debug("Unable to estimate duration for %s: %s", audio_path, exc)
+                return None
 
     def transcribe(
         self,
@@ -411,6 +617,10 @@ class WhisperXTranscriber(BaseTranscriber):
             with self._lock:
                 self._ensure_model(debug_callback=emit)
         except WhisperXVADUnavailableError as exc:
+            if not self._disabled_reason:
+                self._disabled_reason = str(exc) or (
+                    "WhisperX deshabilitado: se utilizará faster-whisper en su lugar."
+                )
             emit(
                 "load-model",
                 "WhisperX no disponible (VAD restringido); usando fallback",
@@ -421,6 +631,12 @@ class WhisperXTranscriber(BaseTranscriber):
             return fallback.transcribe(audio_path, language=language, debug_callback=debug_callback)
 
         assert self._model is not None
+
+        device = self._normalize_device(self.device_preference or settings.whisper_device)
+        if not language and not getattr(settings, "whisper_language", None):
+            detected = _detect_language_fast(audio_path, device, debug_callback=emit)
+            if detected:
+                language = detected
 
         logger.info("Starting transcription for %s", audio_path)
         emit(
@@ -452,26 +668,87 @@ class WhisperXTranscriber(BaseTranscriber):
         )
 
         segments = model_output.get("segments", [])
+        word_segments = None
+        if (
+            (
+                getattr(settings, "whisper_enable_speaker_diarization", False)
+                or getattr(settings, "whisper_word_timestamps", False)
+            )
+            and self._align_model is not None
+        ):
+            emit("align.start", "Alineando a nivel de palabra", None)
+            try:
+                aligned = whisperx.align(  # type: ignore[attr-defined]
+                    segments,
+                    self._model,
+                    self._align_model,
+                    audio,
+                    device=device,
+                )
+                segments = aligned.get("segments", segments)
+                word_segments = aligned.get("word_segments", None)
+                emit(
+                    "align.completed",
+                    "Alineación completada",
+                    {"segments": len(segments)},
+                )
+            except Exception as exc:
+                emit(
+                    "align.error",
+                    "Fallo alineando; continúo sin alineación",
+                    {"error": str(exc)},
+                    "warning",
+                )
+
         diarized_segments = segments
         if settings.whisper_enable_speaker_diarization and self._diarize_pipeline is not None:
             emit("diarization.start", "Iniciando diarización", None)
-            diarize_segments = self._diarize_pipeline(audio)
-            diarized_segments = whisperx.assign_word_speakers(diarize_segments, segments)
-            emit(
-                "diarization.completed",
-                "Diarización completada",
-                {"segments": len(diarized_segments)},
-            )
+            try:
+                diar = self._diarize_pipeline(audio)
+                diarized_segments = whisperx.assign_word_speakers(  # type: ignore[attr-defined]
+                    diar,
+                    word_segments or segments,
+                )
+                emit(
+                    "diarization.completed",
+                    "Diarización completada",
+                    {"segments": len(diarized_segments)},
+                )
+            except Exception as exc:
+                emit(
+                    "diarization.error",
+                    "Fallo diarizando; continúo sin diarización",
+                    {"error": str(exc)},
+                    "warning",
+                )
+                diarized_segments = segments
 
         segment_results: List[SegmentResult] = []
         collected_text: List[str] = []
-        for segment in diarized_segments:
+        for index, segment in enumerate(diarized_segments):
             text = segment.get("text", "").strip()
+            if not text:
+                continue
             speaker = segment.get("speaker", "SPEAKER_00")
             start = float(segment.get("start", 0))
             end = float(segment.get("end", 0))
             collected_text.append(text)
-            segment_results.append(SegmentResult(start=start, end=end, speaker=speaker, text=text))
+            segment_results.append(
+                SegmentResult(start=start, end=end, speaker=speaker, text=text)
+            )
+            emit(
+                "transcribe.segment",
+                "Segmento transcrito",
+                {
+                    "index": index,
+                    "start": start,
+                    "end": end,
+                    "speaker": speaker,
+                    "text": text,
+                    "partial_text": " ".join(collected_text).strip(),
+                },
+                "debug",
+            )
 
         duration = self._estimate_duration(audio_path)
 
@@ -548,6 +825,15 @@ class FasterWhisperTranscriber(BaseTranscriber):
             return "cuda"
         return "cpu"
 
+    def _current_device(self) -> str:
+        if self._model is not None:
+            device_attr = getattr(self._model, "device", None)
+            if isinstance(device_attr, str):
+                return device_attr
+            if device_attr is not None:
+                return str(device_attr)
+        return self._resolve_device()
+
     def _resolve_compute_type(self, device: str) -> str:
         if device == "cuda":
             return settings.whisper_compute_type or "float16"
@@ -577,6 +863,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
             return
         initial_device = self._resolve_device()
         last_error: Optional[Exception] = None
+        cpu_threads = _resolve_cpu_threads()
+        num_workers = _resolve_fw_num_workers()
 
         for device in self._candidate_devices(initial_device):
             for compute_type in self._candidate_compute_types(device):
@@ -589,6 +877,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
                                 "model": self.model_size,
                                 "device": device,
                                 "compute_type": compute_type,
+                                "cpu_threads": cpu_threads,
+                                "num_workers": num_workers,
                             },
                             "info",
                         )
@@ -596,6 +886,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
                         self.model_size,
                         device=device,
                         compute_type=compute_type,
+                        cpu_threads=cpu_threads,
+                        num_workers=num_workers,
                         download_root=str(settings.models_cache_dir),
                     )
                     if device == "cuda" and torch is not None:
@@ -616,6 +908,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
                                 "model": self.model_size,
                                 "device": device,
                                 "compute_type": compute_type,
+                                "cpu_threads": cpu_threads,
+                                "num_workers": num_workers,
                                 "error": str(exc),
                             },
                             "warning",
@@ -623,6 +917,20 @@ class FasterWhisperTranscriber(BaseTranscriber):
         if last_error is not None:
             raise last_error
         raise RuntimeError("Unable to load faster-whisper model with available configurations")
+
+    def _estimate_duration(self, audio_path: Path) -> Optional[float]:
+        try:
+            import soundfile as sf  # type: ignore
+
+            info = sf.info(str(audio_path))
+            return float(info.frames) / float(info.samplerate)
+        except Exception:
+            try:
+                audio = AudioSegment.from_file(audio_path)
+                return len(audio) / 1000.0
+            except Exception as exc:
+                logger.debug("Unable to estimate duration for %s: %s", audio_path, exc)
+                return None
 
     def transcribe(
         self,
@@ -637,6 +945,12 @@ class FasterWhisperTranscriber(BaseTranscriber):
         with self._lock:
             self._ensure_model(debug_callback=emit)
         assert self._model is not None
+
+        device = self._current_device()
+        if not language and not getattr(settings, "whisper_language", None):
+            detected = _detect_language_fast(audio_path, device, debug_callback=emit)
+            if detected:
+                language = detected
 
         attempts = [True, False]
         last_error: Optional[BaseException] = None
@@ -690,11 +1004,13 @@ class FasterWhisperTranscriber(BaseTranscriber):
             text = getattr(segment, "text", "").strip()
             if not text:
                 continue
+            start = float(getattr(segment, "start", 0.0))
+            end = float(getattr(segment, "end", 0.0))
             collected_text.append(text)
             segment_results.append(
                 SegmentResult(
-                    start=float(getattr(segment, "start", 0.0)),
-                    end=float(getattr(segment, "end", 0.0)),
+                    start=start,
+                    end=end,
                     speaker="SPEAKER_00",
                     text=text,
                 )
@@ -704,15 +1020,17 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 "Segmento transcrito",
                 {
                     "index": index,
-                    "start": float(getattr(segment, "start", 0.0)),
-                    "end": float(getattr(segment, "end", 0.0)),
+                    "start": start,
+                    "end": end,
+                    "speaker": "SPEAKER_00",
                     "text": text,
                     "partial_text": " ".join(collected_text).strip(),
                 },
+                "debug",
             )
 
         language_result = getattr(info, "language", language)
-        duration = getattr(info, "duration", None)
+        duration = getattr(info, "duration", None) or self._estimate_duration(audio_path)
 
         return TranscriptionResult(
             text=" ".join(collected_text).strip(),

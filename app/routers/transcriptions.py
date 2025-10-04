@@ -290,15 +290,39 @@ def process_transcription(
         },
     )
     try:
+        stored_path: Optional[str] = None
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
             if transcription is None:
                 logger.warning("Transcription %s missing", transcription_id)
                 return
             transcription.status = TranscriptionStatus.PROCESSING.value
+            transcription.model_size = resolved_model
+            transcription.device_preference = resolved_device
+            transcription.runtime_seconds = None
+            stored_path = transcription.stored_path
+
+        assert stored_path is not None
+        audio_path = Path(stored_path)
+        if not audio_path.exists():
+            message = (
+                "El archivo original ya no está disponible; la transcripción se canceló o eliminó."
+            )
+            with get_session() as session:
+                transcription = session.get(Transcription, transcription_id)
+                if transcription is not None:
+                    transcription.status = TranscriptionStatus.FAILED.value
+                    transcription.error_message = message
+            append_debug_event(
+                transcription_id,
+                "processing-missing-file",
+                message,
+                level="warning",
+            )
+            return
 
         result = transcriber.transcribe(
-            Path(transcription.stored_path),
+            audio_path,
             language or transcription.language,
             debug_callback=debug_callback,
         )
@@ -317,6 +341,7 @@ def process_transcription(
             transcription.model_size = resolved_model
             transcription.device_preference = resolved_device
             transcription.duration = result.duration
+            transcription.runtime_seconds = result.runtime_seconds
             transcription.speakers = serialize_segments(result.segments)
             transcription.status = TranscriptionStatus.COMPLETED.value
             transcription.error_message = None

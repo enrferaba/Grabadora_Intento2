@@ -22,6 +22,7 @@ class TranscriptionBase(BaseModel):
     model_size: Optional[str]
     device_preference: Optional[str]
     duration: Optional[float]
+    runtime_seconds: Optional[float]
     status: TranscriptionStatus
     subject: Optional[str]
     output_folder: str

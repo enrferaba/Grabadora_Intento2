@@ -142,6 +142,8 @@ def test_transcription_lifecycle(test_env):
         }
         assert detail.model_size is not None
         assert detail.device_preference is not None
+        if detail.status is TranscriptionStatus.COMPLETED:
+            assert detail.runtime_seconds is not None
         assert detail.debug_events is not None and len(detail.debug_events) >= 1
         assert detail.debug_events[-1].stage in {"processing-complete", "processing-error"}
         assert detail.output_folder == "historia-clase"
