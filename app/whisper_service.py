@@ -206,8 +206,16 @@ class WhisperXTranscriber(BaseTranscriber):
 
     @staticmethod
     def _normalize_device(device: str) -> str:
-        if device.lower() in {"cuda", "gpu"}:
+        desired = (device or settings.whisper_device or "cpu").lower()
+        if desired not in {"cuda", "gpu"}:
+            return "cpu"
+        if settings.whisper_force_cuda:
             return "cuda"
+        if torch is not None and torch.cuda.is_available():
+            return "cuda"
+        logger.warning(
+            "CUDA solicitado pero no disponible; se usará CPU. Configure WHISPER_FORCE_CUDA=true para forzar GPU si su entorno lo soporta."
+        )
         return "cpu"
 
     @staticmethod
@@ -491,17 +499,26 @@ class WhisperXTranscriber(BaseTranscriber):
             raise WhisperXVADUnavailableError(self._disabled_reason)
 
         if self._model is None:
-            device = self._normalize_device(self.device_preference or settings.whisper_device)
-            if device == "cuda" and torch is not None and not torch.cuda.is_available():
-                logger.warning("CUDA not available, falling back to CPU")
-                device = "cpu"
+            preferred = self.device_preference or settings.whisper_device
+            device = self._normalize_device(preferred)
+            forced_cuda = device == "cuda" and not (
+                torch is not None and torch.cuda.is_available()
+            ) and settings.whisper_force_cuda
             compute_type = self._compute_type_for_device(device)
-            logger.info("Loading whisperx model %s on %s", self.model_size, device)
+            if forced_cuda:
+                logger.info("Forzando carga de whisperx %s en CUDA", self.model_size)
+            else:
+                logger.info("Loading whisperx model %s on %s", self.model_size, device)
             if debug_callback:
                 debug_callback(
                     "load-model",
                     "Preparando modelo whisperx",
-                    {"model": self.model_size, "device": device, "compute_type": compute_type},
+                    {
+                        "model": self.model_size,
+                        "device": device,
+                        "compute_type": compute_type,
+                        "forced_cuda": forced_cuda,
+                    },
                     "info",
                 )
             self._patch_default_asr_options()
@@ -659,7 +676,14 @@ class WhisperXTranscriber(BaseTranscriber):
                 {"error": str(exc)},
                 "error",
             )
-            raise
+            fallback = self._get_fallback_transcriber()
+            emit(
+                "transcribe.retry",
+                "WhisperX falló; usando faster-whisper como respaldo",
+                {"error": str(exc)},
+                "warning",
+            )
+            return fallback.transcribe(audio_path, language=language, debug_callback=debug_callback)
         runtime = time.perf_counter() - start
         emit(
             "transcribe.completed",
@@ -821,8 +845,11 @@ class FasterWhisperTranscriber(BaseTranscriber):
 
     def _resolve_device(self) -> str:
         preferred = (self.device_preference or settings.whisper_device or "cpu").lower()
-        if preferred in {"cuda", "gpu"} and torch is not None and torch.cuda.is_available():
-            return "cuda"
+        if preferred in {"cuda", "gpu"}:
+            if settings.whisper_force_cuda:
+                return "cuda"
+            if torch is not None and torch.cuda.is_available():
+                return "cuda"
         return "cpu"
 
     def _current_device(self) -> str:
@@ -854,7 +881,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
 
     def _candidate_devices(self, initial_device: str) -> List[str]:
         devices = [initial_device]
-        if initial_device == "cuda":
+        if initial_device == "cuda" and not settings.whisper_force_cuda:
             devices.append("cpu")
         return devices
 
@@ -869,6 +896,9 @@ class FasterWhisperTranscriber(BaseTranscriber):
         for device in self._candidate_devices(initial_device):
             for compute_type in self._candidate_compute_types(device):
                 try:
+                    forced_cuda = device == "cuda" and settings.whisper_force_cuda and not (
+                        torch is not None and torch.cuda.is_available()
+                    )
                     if debug_callback:
                         debug_callback(
                             "load-model",
@@ -879,6 +909,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
                                 "compute_type": compute_type,
                                 "cpu_threads": cpu_threads,
                                 "num_workers": num_workers,
+                                "forced_cuda": forced_cuda,
                             },
                             "info",
                         )

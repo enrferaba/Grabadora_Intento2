@@ -77,6 +77,16 @@ const openStudentBtn = document.querySelector('#open-student-web');
 const typingQueue = [];
 let typingInProgress = false;
 
+function cancelTyping(container) {
+  if (!container) return;
+  container.dataset.typingToken = '';
+  for (let idx = typingQueue.length - 1; idx >= 0; idx -= 1) {
+    if (typingQueue[idx].container === container) {
+      typingQueue.splice(idx, 1);
+    }
+  }
+}
+
 async function fetchJSON(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -132,9 +142,11 @@ function trimParagraphNodes(container, desiredLength) {
 
 function resetStreamingContainer(container, placeholder) {
   if (!container) return;
+  cancelTyping(container);
   container.dataset.fullText = '';
   container.dataset.paragraphs = JSON.stringify([]);
   container.dataset.typing = 'false';
+  container.dataset.typingToken = '';
   container.replaceChildren();
   if (placeholder) {
     const placeholderNode = document.createElement('p');
@@ -144,9 +156,9 @@ function resetStreamingContainer(container, placeholder) {
   }
 }
 
-function scrollContainerToEnd(container, tick) {
+function scrollContainerToEnd(container) {
   if (!container) return;
-  if (tick % 4 === 0) {
+  const performScroll = () => {
     if (typeof container.scrollTo === 'function') {
       container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
     } else {
@@ -155,9 +167,12 @@ function scrollContainerToEnd(container, tick) {
     const parentCard = container.closest('.live-card, .student-card');
     if (parentCard) {
       parentCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    } else {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     }
+  };
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(performScroll);
+  } else {
+    performScroll();
   }
 }
 
@@ -184,10 +199,10 @@ function computeTypingSpeed(item, text) {
   if (!Number.isFinite(cps) || cps <= 0) {
     cps = 48;
   }
-  return Math.max(24, Math.min(170, cps * 1.12));
+  return Math.max(8, cps * 1.12);
 }
 
-function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll = true }) {
+function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll = true, token }) {
   return new Promise((resolve) => {
     if (!container) {
       resolve();
@@ -250,8 +265,8 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
       return;
     }
 
-    const normalizedSpeed = Math.max(24, Math.min(200, speedHint || 48));
-    const charDelay = Math.max(18, 1000 / normalizedSpeed);
+    const normalizedSpeed = Math.max(12, speedHint || 48);
+    const charDelay = Math.max(1, 1000 / normalizedSpeed);
     let animationIndex = 0;
 
     const runNext = () => {
@@ -265,6 +280,11 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
       element.dataset.typing = 'true';
 
       const step = () => {
+        if (container.dataset.typingToken !== token) {
+          element.dataset.typing = 'false';
+          finalize();
+          return;
+        }
         if (currentIndex >= addition.length) {
           element.dataset.typing = 'false';
           animationIndex += 1;
@@ -274,7 +294,7 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
         currentText += addition[currentIndex];
         element.textContent = currentText;
         if (autoScroll) {
-          scrollContainerToEnd(container, currentIndex + 1);
+          scrollContainerToEnd(container);
         }
         currentIndex += 1;
         window.setTimeout(step, charDelay);
@@ -307,12 +327,15 @@ function enqueueTypewriter(container, text, speedHint, options = {}) {
       typingQueue.splice(idx, 1);
     }
   }
+  const token = `${Date.now()}-${Math.random()}`;
+  container.dataset.typingToken = token;
   typingQueue.push({
     container,
     text,
     speedHint,
     placeholder: options.placeholder,
     autoScroll: options.autoScroll !== false,
+    token,
   });
   if (!typingInProgress) {
     processTypingQueue();
@@ -323,6 +346,7 @@ function renderTranscript(element, text, { placeholder = 'Transcripción no disp
   if (!element) return;
   const safeText = (text ?? '').trim();
   element.dataset.typing = 'false';
+  element.dataset.typingToken = '';
 
   if (element.tagName === 'PRE') {
     element.textContent = safeText || placeholder;
@@ -357,7 +381,17 @@ function renderStreamingView(container, item, options = {}) {
   container.dataset.stream = status === 'processing' ? 'true' : 'false';
 
   if (!text) {
+    cancelTyping(container);
     resetStreamingContainer(container, placeholder);
+    return;
+  }
+
+  if (status !== 'processing') {
+    cancelTyping(container);
+    renderTranscript(container, text, { placeholder });
+    if (options.autoScroll !== false) {
+      scrollContainerToEnd(container);
+    }
     return;
   }
 
@@ -531,13 +565,12 @@ function renderTranscriptions(items) {
       statusBadge.textContent = formatStatus(item.status);
       statusBadge.dataset.status = item.status;
     }
-    const folderLabel = item.output_folder ?? '—';
+    const folderLabel = item.output_folder ?? item.destination_folder ?? '—';
     const durationLabel = formatDuration(Number(item.duration ?? 0));
     const runtimeLabel = formatDuration(Number(item.runtime_seconds ?? 0));
     const modelLabel = item.model_size ?? 'automático';
     const deviceLabel = item.device_preference ?? 'auto';
     const metaParts = [
-      `Asignatura: ${item.subject ?? '—'}`,
       `Carpeta: ${folderLabel}`,
       `Modelo: ${modelLabel}`,
       `Dispositivo: ${deviceLabel}`,
@@ -896,7 +929,6 @@ uploadForm?.addEventListener('submit', async (event) => {
   }
 
   const language = uploadForm.querySelector('#language')?.value?.trim();
-  const subject = uploadForm.querySelector('#subject')?.value?.trim();
   const modelSize = uploadForm.querySelector('#model-size')?.value?.trim();
   const devicePreference = uploadForm.querySelector('#device-preference')?.value?.trim();
   const destinationFolder = destinationInput?.value?.trim();
@@ -917,7 +949,6 @@ uploadForm?.addEventListener('submit', async (event) => {
     formData.append('upload', files[0]);
   }
   if (language) formData.append('language', language);
-  if (subject) formData.append('subject', subject);
   formData.append('destination_folder', destinationFolder);
   if (modelSize) formData.append('model_size', modelSize);
   if (devicePreference) formData.append('device_preference', devicePreference);

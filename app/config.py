@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     whisper_model_size: str = "large-v3"
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"
+    whisper_force_cuda: bool = False
     whisper_batch_size: int = 16
     whisper_language: Optional[str] = None
     whisper_use_faster: bool = True

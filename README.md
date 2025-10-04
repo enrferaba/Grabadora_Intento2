@@ -118,6 +118,7 @@ La interfaz quedará disponible en http://127.0.0.1:8000/ y la API en http://127
 | `TRANSCRIPTS_DIR` | Carpeta de archivos `.txt` | `data/transcripts` |
 | `WHISPER_MODEL_SIZE` | Modelo WhisperX a usar | `large-v3` |
 | `WHISPER_DEVICE` | `cuda` o `cpu` | `cuda` |
+| `WHISPER_FORCE_CUDA` | Fuerza el uso de CUDA (no cae a CPU si falla) | `false` |
 | `ENABLE_DUMMY_TRANSCRIBER` | Usa transcriptor simulado (ideal para pruebas) | `false` |
 | `HUGGINGFACE_TOKEN` | Token opcional para descargar el VAD de `pyannote/segmentation` | *(vacío)* |
 
