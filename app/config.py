@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     transcripts_dir: Path = Path("data/transcripts")
     models_cache_dir: Path = Path("data/models")
 
-    whisper_model_size: str = "large-v2"
+    whisper_model_size: str = "large-v3"
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"
     whisper_batch_size: int = 16

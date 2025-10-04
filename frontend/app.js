@@ -52,7 +52,6 @@ let pollingHandle = null;
 let currentQuery = '';
 let premiumOnly = false;
 let selectedTranscriptionId = null;
-const typewriterControllers = new Map();
 const progressControllers = new Map();
 const metricSnapshot = {
   total: 0,
@@ -64,49 +63,9 @@ const metricSnapshot = {
 let uploadProgressTimer = null;
 let uploadProgressValue = 0;
 let currentLiveTranscriptionId = null;
-
-function typewriterEffect(element, text, speed = 18) {
-  if (!element) return;
-  const controller = typewriterControllers.get(element);
-  if (controller?.cancel) {
-    controller.cancel();
-  }
-
-  const finalText = text ?? '';
-  if (!finalText) {
-    element.textContent = '';
-    element.dataset.typing = 'false';
-    typewriterControllers.set(element, null);
-    return;
-  }
-
-  let index = 0;
-  let timeoutId;
-  let cancelled = false;
-  element.textContent = '';
-  element.dataset.typing = 'true';
-
-  const tick = () => {
-    if (cancelled) return;
-    element.textContent += finalText[index];
-    index += 1;
-    if (index < finalText.length) {
-      timeoutId = setTimeout(tick, speed);
-    } else {
-      element.dataset.typing = 'false';
-    }
-  };
-
-  tick();
-
-  typewriterControllers.set(element, {
-    cancel() {
-      cancelled = true;
-      clearTimeout(timeoutId);
-      element.dataset.typing = 'false';
-    },
-  });
-}
+let currentLiveText = '';
+const destinationInput = document.querySelector('#destination-folder');
+let cachedPlans = [];
 
 async function fetchJSON(url, options = {}) {
   const response = await fetch(url, options);
@@ -118,6 +77,58 @@ async function fetchJSON(url, options = {}) {
     return null;
   }
   return response.json();
+}
+
+function renderTranscript(element, text, { placeholder = 'Transcripción no disponible aún.' } = {}) {
+  if (!element) return;
+  const safeText = (text ?? '').trim();
+  element.dataset.typing = 'false';
+
+  if (element.tagName === 'PRE') {
+    element.textContent = safeText || placeholder;
+    return;
+  }
+
+  if (!safeText) {
+    element.textContent = placeholder;
+    return;
+  }
+
+  const chunks = safeText
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (!chunks.length) {
+    element.textContent = placeholder;
+    return;
+  }
+
+  element.replaceChildren();
+  for (const chunk of chunks) {
+    const paragraph = document.createElement('p');
+    paragraph.textContent = chunk;
+    element.appendChild(paragraph);
+  }
+}
+
+function renderLiveText(text, status = 'completed') {
+  if (!liveOutput) return;
+  const placeholder = status === 'processing' ? 'Procesando y transcribiendo en vivo…' : 'Transcripción no disponible aún.';
+  const trimmed = (text ?? '').trim();
+  const isStreaming = status === 'processing';
+  if (!trimmed) {
+    liveOutput.textContent = placeholder;
+    liveOutput.dataset.stream = isStreaming ? 'true' : 'false';
+    return;
+  }
+  renderTranscript(liveOutput, trimmed, { placeholder });
+  liveOutput.dataset.stream = isStreaming ? 'true' : 'false';
+}
+
+function renderModalText(text) {
+  const placeholder = 'Transcripción no disponible aún.';
+  renderTranscript(modalText, text, { placeholder });
 }
 
 function formatStatus(status) {
@@ -267,8 +278,10 @@ function renderTranscriptions(items) {
       statusBadge.textContent = formatStatus(item.status);
       statusBadge.dataset.status = item.status;
     }
-    node.querySelector('.meta').textContent = `Asignatura: ${item.subject ?? '—'} • Estado: ${item.status} • Creado: ${formatDate(item.created_at)}`;
-    node.querySelector('.excerpt').textContent = item.text?.slice(0, 220) ?? 'Transcripción no disponible aún.';
+    const folderLabel = item.output_folder ?? '—';
+    node.querySelector('.meta').textContent = `Asignatura: ${item.subject ?? '—'} • Carpeta: ${folderLabel} • Estado: ${item.status} • Creado: ${formatDate(item.created_at)}`;
+    const preview = (item.text ?? '').trim();
+    node.querySelector('.excerpt').textContent = preview ? preview.slice(0, 220) : 'Transcripción no disponible aún.';
     const cardProgress = node.querySelector('.card-progress');
     toggleCardProgress(item.id, item.status === 'processing', cardProgress);
     node.querySelector('.download').href = `${API_BASE}/${item.id}/download`;
@@ -331,7 +344,7 @@ function startPolling() {
   stopPolling();
   pollingHandle = setInterval(() => {
     refreshTranscriptions().catch(() => stopPolling());
-  }, 5000);
+  }, 2000);
 }
 
 function stopPolling() {
@@ -426,6 +439,7 @@ function renderPlans(plans = []) {
   if (!plansContainer) return;
   plansContainer.innerHTML = '';
   const safePlans = Array.isArray(plans) ? plans : [];
+  cachedPlans = safePlans;
   if (!safePlans.length) {
     plansContainer.innerHTML = '<p>No hay planes disponibles actualmente.</p>';
     return;
@@ -435,17 +449,47 @@ function renderPlans(plans = []) {
     const card = document.createElement('article');
     card.className = 'plan-card';
     const perks = (plan.perks ?? []).map((perk) => `<li>${perk}</li>`).join('');
+    const priceEuros = (plan.price_cents ?? 0) / 100;
+    const isStudentPlan = plan.price_cents === 0;
+    const priceLabel = isStudentPlan
+      ? 'Gratis • con anuncios y ejecución local'
+      : `€${priceEuros.toFixed(2)} ${plan.currency ?? 'EUR'}`;
+    const actionButton = isStudentPlan
+      ? `<button type="button" class="ghost" data-student="true" data-plan="${plan.slug}">Configurar plan estudiante</button>`
+      : `<button type="button" class="primary" data-plan="${plan.slug}">Activar premium</button>`;
     card.innerHTML = `
       <h3>${plan.name}</h3>
       <p class="plan-meta">${plan.description ?? 'Notas premium, resúmenes y recordatorios inteligentes incluidos.'}</p>
       <p class="plan-minutes">Cobertura recomendada: hasta ${plan.max_minutes} minutos por archivo.</p>
+      <p class="plan-price">${priceLabel}</p>
       <ul class="plan-perks">${perks}</ul>
       <div class="plan-actions">
-        <button type="button" class="primary" data-plan="${plan.slug}">Activar premium</button>
+        ${actionButton}
       </div>
     `;
+    if (isStudentPlan) {
+      card.dataset.planType = 'student';
+    }
     plansContainer.appendChild(card);
   }
+}
+
+function showStudentPlanInstructions(plan) {
+  if (!checkoutStatus) return;
+  const perks = (plan?.perks ?? []).map((perk) => `<li>${perk}</li>`).join('');
+  const folder = destinationInput?.value?.trim() || plan?.slug || 'tu-carpeta';
+  checkoutStatus.innerHTML = `
+    <p><strong>${plan?.name ?? 'Plan estudiante'}</strong> listo para usar.</p>
+    <p>${plan?.description ?? 'Ejecuta Whisper localmente con anuncios suaves.'}</p>
+    <ol class="student-steps">
+      <li>Descarga y ejecuta el cliente local <code>whisperx-local</code> en tu ordenador.</li>
+      <li>Usa la carpeta <code>${folder}</code> como destino para sincronizar tus TXT.</li>
+      <li>Mantén esta pestaña abierta para recibir anuncios y actualizaciones en vivo.</li>
+    </ol>
+    <p>Beneficios incluidos:</p>
+    <ul class="student-perks">${perks}</ul>
+  `;
+  checkoutStatus.classList.add('success');
 }
 
 async function createCheckout(planSlug) {
@@ -498,6 +542,13 @@ uploadForm?.addEventListener('submit', async (event) => {
   const subject = uploadForm.querySelector('#subject')?.value?.trim();
   const modelSize = uploadForm.querySelector('#model-size')?.value?.trim();
   const devicePreference = uploadForm.querySelector('#device-preference')?.value?.trim();
+  const destinationFolder = destinationInput?.value?.trim();
+
+  if (!destinationFolder) {
+    uploadStatus.textContent = 'Indica una carpeta de destino para guardar el TXT.';
+    uploadStatus.classList.add('error');
+    return;
+  }
 
   const endpoint = files.length > 1 ? `${API_BASE}/batch` : API_BASE;
   const formData = new FormData();
@@ -510,6 +561,7 @@ uploadForm?.addEventListener('submit', async (event) => {
   }
   if (language) formData.append('language', language);
   if (subject) formData.append('subject', subject);
+  formData.append('destination_folder', destinationFolder);
   if (modelSize) formData.append('model_size', modelSize);
   if (devicePreference) formData.append('device_preference', devicePreference);
 
@@ -561,9 +613,15 @@ modal?.addEventListener('click', (event) => {
 });
 refreshPlansBtn?.addEventListener('click', loadPlans);
 plansContainer?.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-plan]');
+  const button = event.target.closest('button[data-plan]');
   if (!button) return;
   const slug = button.getAttribute('data-plan');
+  if (!slug) return;
+  if (button.hasAttribute('data-student')) {
+    const plan = cachedPlans.find((item) => item.slug === slug);
+    showStudentPlanInstructions(plan);
+    return;
+  }
   createCheckout(slug);
 });
 
@@ -622,30 +680,36 @@ function updateMetrics(items) {
   updateMetricValue(metricMinutes, 'minutes', minutes, (val) => `${val.toFixed(1)} min`);
 }
 
-function showTypewriterText(text) {
-  const safeText = text && text.trim() ? text : 'Transcripción no disponible aún.';
-  typewriterEffect(modalText, safeText);
-  typewriterEffect(liveOutput, safeText);
-}
-
 function updateLivePreview(results) {
   if (!liveOutput) return;
   const safeResults = Array.isArray(results) ? results : [];
   if (selectedTranscriptionId) {
     const selected = safeResults.find((item) => item.id === selectedTranscriptionId);
-    if (selected?.text && selected.id !== currentLiveTranscriptionId) {
-      currentLiveTranscriptionId = selected.id;
-      showTypewriterText(selected.text);
+    if (selected) {
+      const text = selected.text ?? '';
+      if (selected.id !== currentLiveTranscriptionId || text !== currentLiveText) {
+        currentLiveTranscriptionId = selected.id;
+        currentLiveText = text;
+        renderLiveText(text, selected.status);
+      }
     }
     return;
   }
   const active =
     safeResults.find((item) => item.status === 'processing' && item.text) ||
     safeResults.find((item) => item.status === 'completed' && item.text);
-  if (active && active.text && active.id !== currentLiveTranscriptionId) {
-    currentLiveTranscriptionId = active.id;
-    showTypewriterText(active.text);
+  if (active) {
+    const text = active.text ?? '';
+    if (active.id !== currentLiveTranscriptionId || text !== currentLiveText) {
+      currentLiveTranscriptionId = active.id;
+      currentLiveText = text;
+      renderLiveText(text, active.status);
+    }
+    return;
   }
+  currentLiveTranscriptionId = null;
+  currentLiveText = '';
+  renderLiveText('Selecciona cualquier transcripción para previsualizarla aquí.', 'completed');
 }
 
 function resetCopyFeedback() {
@@ -660,15 +724,14 @@ async function openModal(id) {
   try {
     const data = await fetchJSON(`${API_BASE}/${id}`);
     modal.hidden = false;
-    showTypewriterText(data.text ?? 'Transcripción no disponible aún.');
+    renderModalText(data.text ?? 'Transcripción no disponible aún.');
     resetCopyFeedback();
   } catch (error) {
     modal.hidden = false;
     const message = `No se pudo obtener la transcripción: ${error.message}`;
     modalText.textContent = message;
     if (liveOutput) {
-      liveOutput.textContent = message;
-      liveOutput.dataset.typing = 'false';
+      renderLiveText(message, 'completed');
     }
     resetCopyFeedback();
   }

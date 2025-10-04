@@ -53,6 +53,8 @@ class Transcription(Base):
     )
 
     subject = Column(String(120), nullable=True)
+    output_folder = Column(String(255), nullable=False, default="general")
+    transcript_path = Column(String(500), nullable=True)
     price_cents = Column(Integer, nullable=True)
     currency = Column(String(8), nullable=True)
     premium_enabled = Column(Boolean, default=False, nullable=False)
@@ -73,6 +75,7 @@ class Transcription(Base):
             f"Duración (s): {self.duration if self.duration is not None else 'N/A'}",
             f"Modelo: {self.model_size or 'predeterminado'}",
             f"Dispositivo: {self.device_preference or 'automático'}",
+            f"Carpeta destino: {self.output_folder}",
             ""
         ]
         body = self.text or ""

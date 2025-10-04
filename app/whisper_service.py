@@ -553,24 +553,76 @@ class FasterWhisperTranscriber(BaseTranscriber):
             return settings.whisper_compute_type or "float16"
         return "int8"
 
+    def _candidate_compute_types(self, device: str) -> List[str]:
+        preferred = self._resolve_compute_type(device)
+        if device == "cuda":
+            fallbacks = ["float16", "int8_float16", "float32", "int8_float32", "int8"]
+        else:
+            fallbacks = ["int8", "int8_float32", "int8_float16", "float32"]
+
+        candidates: List[str] = []
+        for option in [preferred, *fallbacks]:
+            if option not in candidates:
+                candidates.append(option)
+        return candidates
+
+    def _candidate_devices(self, initial_device: str) -> List[str]:
+        devices = [initial_device]
+        if initial_device == "cuda":
+            devices.append("cpu")
+        return devices
+
     def _ensure_model(self, debug_callback=None) -> None:
         if self._model is not None:
             return
-        device = self._resolve_device()
-        compute_type = self._resolve_compute_type(device)
-        if debug_callback:
-            debug_callback(
-                "load-model",
-                "Cargando modelo faster-whisper de respaldo",
-                {"model": self.model_size, "device": device, "compute_type": compute_type},
-                "info",
-            )
-        self._model = FasterWhisperModel(  # type: ignore[call-arg]
-            self.model_size,
-            device=device,
-            compute_type=compute_type,
-            download_root=str(settings.models_cache_dir),
-        )
+        initial_device = self._resolve_device()
+        last_error: Optional[Exception] = None
+
+        for device in self._candidate_devices(initial_device):
+            for compute_type in self._candidate_compute_types(device):
+                try:
+                    if debug_callback:
+                        debug_callback(
+                            "load-model",
+                            "Cargando modelo faster-whisper de respaldo",
+                            {
+                                "model": self.model_size,
+                                "device": device,
+                                "compute_type": compute_type,
+                            },
+                            "info",
+                        )
+                    self._model = FasterWhisperModel(  # type: ignore[call-arg]
+                        self.model_size,
+                        device=device,
+                        compute_type=compute_type,
+                        download_root=str(settings.models_cache_dir),
+                    )
+                    if device == "cuda" and torch is not None:
+                        torch.cuda.empty_cache()
+                    return
+                except Exception as exc:  # pragma: no cover - depends on runtime environment
+                    last_error = exc
+                    if torch is not None and device == "cuda":
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                    if debug_callback:
+                        debug_callback(
+                            "load-model.retry",
+                            "Reintentando carga de modelo faster-whisper",
+                            {
+                                "model": self.model_size,
+                                "device": device,
+                                "compute_type": compute_type,
+                                "error": str(exc),
+                            },
+                            "warning",
+                        )
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Unable to load faster-whisper model with available configurations")
 
     def transcribe(
         self,
@@ -634,7 +686,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
 
         segment_results: List[SegmentResult] = []
         collected_text: List[str] = []
-        for segment in segments:
+        for index, segment in enumerate(segments):
             text = getattr(segment, "text", "").strip()
             if not text:
                 continue
@@ -646,6 +698,17 @@ class FasterWhisperTranscriber(BaseTranscriber):
                     speaker="SPEAKER_00",
                     text=text,
                 )
+            )
+            emit(
+                "transcribe.segment",
+                "Segmento transcrito",
+                {
+                    "index": index,
+                    "start": float(getattr(segment, "start", 0.0)),
+                    "end": float(getattr(segment, "end", 0.0)),
+                    "text": text,
+                    "partial_text": " ".join(collected_text).strip(),
+                },
             )
 
         language_result = getattr(info, "language", language)
