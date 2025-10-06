@@ -35,12 +35,12 @@
           <div class="hero-content">
             <h1>Transcribe sin complicaciones</h1>
             <p>
-              Sube tus clases, prácticas o notas de voz y obtén el texto listo para revisar en segundos.
+              Sube tus clases, prácticas o notas de voz y sigue la transcripción en vivo mientras trabajamos por ti.
             </p>
             <div class="hero-tags">
               <span>WhisperX optimizado</span>
               <span>Carpetas automáticas</span>
-              <span>Seguimiento en vivo</span>
+              <span>Streaming en tiempo real</span>
             </div>
           </div>
           <div class="hero-visual" aria-hidden="true">
@@ -50,96 +50,208 @@
           </div>
         </section>
 
-        <section class="card span-2 upload-card" aria-labelledby="upload-heading">
-          <div class="card-header">
-            <h2 id="upload-heading">Transcripción rápida</h2>
-            <p class="section-lead">
-              Elige tus archivos, selecciona la carpeta de destino y deja que la app haga el resto.
-            </p>
-          </div>
-          <form id="upload-form" class="upload-form">
-            <div class="file-picker">
-              <input
-                id="audio-file"
-                type="file"
-                accept="audio/*,video/*"
-                multiple
-                hidden
-              />
-              <label for="audio-file" class="file-trigger" role="button" tabindex="0">
-                <span class="file-trigger__pulse"></span>
-                <span class="file-trigger__pulse"></span>
-                <span class="icon">📁</span>
-                <span class="text">Elegir archivos</span>
-              </label>
-              <p class="hint">Formatos compatibles: mp3, wav, m4a, mp4, webm y más.</p>
+        <div class="home-dashboard">
+          <section class="card home-pending-card" aria-labelledby="home-pending-heading">
+            <div class="card-header">
+              <h2 id="home-pending-heading">Tareas pendientes</h2>
+              <p class="section-lead">Controla las transcripciones en curso y salta a la biblioteca cuando necesites más detalle.</p>
             </div>
-            <div id="file-preview" class="file-preview" hidden></div>
-            <div id="file-error" class="form-error" hidden></div>
-
-            <div class="field">
-              <label class="form-label" for="destination-folder">Carpeta destino</label>
-              <input
-                id="destination-folder"
-                type="text"
-                name="destination_folder"
-                placeholder="Ej: clase-historia"
-                list="destination-folder-options"
-                required
-              />
-              <datalist id="destination-folder-options"></datalist>
+            <div class="home-pending-meta">
+              <span id="home-pending-count" class="badge badge-soft" aria-live="polite">Sin tareas en curso</span>
+              <button type="button" class="ghost" data-section-jump="library">Abrir cola completa</button>
             </div>
+            <p id="home-pending-empty" class="home-pending-empty">No tienes transcripciones procesándose ahora mismo.</p>
+            <ul id="home-pending-list" class="home-pending-list" hidden aria-live="polite"></ul>
+          </section>
 
-            <details class="advanced-options">
-              <summary>Opciones avanzadas</summary>
-              <div class="form-grid">
+          <div class="home-columns">
+            <section class="card upload-card" aria-labelledby="upload-heading">
+              <div class="card-header">
+                <h2 id="upload-heading">Transcripción rápida</h2>
+                <p class="section-lead">
+                  Elige tus archivos, selecciona la carpeta de destino y deja que la app haga el resto.
+                </p>
+              </div>
+              <form id="upload-form" class="upload-form">
+                <div class="file-picker">
+                  <input
+                    id="audio-file"
+                    type="file"
+                    accept="audio/*,video/*"
+                    multiple
+                    hidden
+                  />
+                  <label for="audio-file" class="file-trigger" role="button" tabindex="0">
+                    <span class="file-trigger__pulse"></span>
+                    <span class="file-trigger__pulse"></span>
+                    <span class="icon">📁</span>
+                    <span class="text">Elegir archivos</span>
+                  </label>
+                  <p class="hint">Formatos compatibles: mp3, wav, m4a, mp4, webm y más.</p>
+                </div>
+                <div id="file-preview" class="file-preview" hidden></div>
+                <div id="file-error" class="form-error" hidden></div>
+
                 <div class="field">
-                  <label class="form-label" for="language">Idioma preferido</label>
-                  <select id="language" name="language">
-                    <option value="">Detección automática</option>
-                    <option value="es" selected>Español</option>
-                    <option value="en">Inglés</option>
-                    <option value="fr">Francés</option>
-                  </select>
+                  <label class="form-label" for="destination-folder">Carpeta destino</label>
+                  <input
+                    id="destination-folder"
+                    type="text"
+                    name="destination_folder"
+                    placeholder="Ej: clase-historia"
+                    list="destination-folder-options"
+                    required
+                  />
+                  <datalist id="destination-folder-options"></datalist>
                 </div>
 
-                <div class="field">
-                  <label class="form-label" for="model-size">Modelo WhisperX</label>
-                  <select id="model-size" name="model_size" data-default="large-v3">
-                    <option value="large-v3" selected>large-v3 (máxima precisión)</option>
-                    <option value="large-v2">large-v2 (estable)</option>
-                    <option value="medium">medium (equilibrado)</option>
-                    <option value="small">small (más veloz)</option>
-                  </select>
+                <details class="advanced-options">
+                  <summary>Opciones avanzadas</summary>
+                  <div class="form-grid">
+                    <div class="field">
+                      <label class="form-label" for="language">Idioma preferido</label>
+                      <select id="language" name="language">
+                        <option value="">Detección automática</option>
+                        <option value="es" selected>Español</option>
+                        <option value="en">Inglés</option>
+                        <option value="fr">Francés</option>
+                      </select>
+                    </div>
+
+                    <div class="field">
+                      <label class="form-label" for="model-size">Modelo WhisperX</label>
+                      <select id="model-size" name="model_size" data-default="large-v3">
+                        <option value="large-v3" selected>large-v3 (máxima precisión)</option>
+                        <option value="large-v2">large-v2 (estable)</option>
+                        <option value="medium">medium (equilibrado)</option>
+                        <option value="small">small (más veloz)</option>
+                      </select>
+                    </div>
+
+                    <div class="field">
+                      <label class="form-label" for="device-preference">Dispositivo preferido</label>
+                      <select id="device-preference" name="device_preference" data-default="gpu">
+                        <option value="gpu" selected>GPU / CUDA (recomendado)</option>
+                        <option value="cpu">CPU</option>
+                      </select>
+                    </div>
+                  </div>
+                </details>
+
+                <div class="live-inline-hint" id="destination-saved-hint" hidden>
+                  <span class="icon">💾</span>
+                  <span>Guardando última carpeta usada…</span>
                 </div>
 
-                <div class="field">
-                  <label class="form-label" for="device-preference">Dispositivo preferido</label>
-                  <select id="device-preference" name="device_preference" data-default="gpu">
-                    <option value="gpu" selected>GPU / CUDA (recomendado)</option>
-                    <option value="cpu">CPU</option>
-                  </select>
+                <button type="submit" class="primary upload-button">
+                  <span class="glow"></span>
+                  <span class="label">Subir y transcribir</span>
+                </button>
+              </form>
+              <div class="upload-feedback">
+                <div id="upload-progress" class="progress-track" hidden>
+                  <div class="progress-bar"></div>
+                </div>
+                <div id="upload-status" class="upload-status" aria-live="polite"></div>
+              </div>
+            </section>
+
+            <section class="card live-stream-card" aria-labelledby="live-stream-heading">
+              <div class="card-header">
+                <h2 id="live-stream-heading">Transcripción en línea</h2>
+                <p class="section-lead">Graba con tu micrófono, conserva el audio y obtén subtítulos mientras hablas.</p>
+              </div>
+
+              <div class="live-stream-wrapper">
+                <div class="live-stream-config">
+                  <div class="live-stream-controls">
+                    <div class="field">
+                      <label class="form-label" for="live-language">Idioma</label>
+                      <select id="live-language" name="live_language">
+                        <option value="">Detección automática</option>
+                        <option value="es" selected>Español</option>
+                        <option value="en">Inglés</option>
+                        <option value="fr">Francés</option>
+                      </select>
+                    </div>
+
+                    <div class="field">
+                      <label class="form-label" for="live-model">Modelo</label>
+                      <select id="live-model" name="live_model" data-default="large-v3">
+                        <option value="large-v3" selected>large-v3</option>
+                        <option value="large-v2">large-v2</option>
+                        <option value="medium">medium</option>
+                        <option value="small">small</option>
+                      </select>
+                    </div>
+
+                    <div class="field">
+                      <label class="form-label" for="live-device">Dispositivo</label>
+                      <select id="live-device" name="live_device" data-default="gpu">
+                        <option value="gpu" selected>GPU / CUDA</option>
+                        <option value="cpu">CPU</option>
+                      </select>
+                    </div>
+
+                    <div class="field">
+                      <label class="form-label" for="live-folder">Carpeta destino</label>
+                      <input
+                        id="live-folder"
+                        type="text"
+                        name="live_folder"
+                        placeholder="Ej: clases-en-vivo"
+                        list="destination-folder-options"
+                      />
+                    </div>
+
+                    <div class="field">
+                      <label class="form-label" for="live-subject">Temario / notas</label>
+                      <input
+                        id="live-subject"
+                        type="text"
+                        name="live_subject"
+                        placeholder="Tema, práctica, teoría…"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="live-stream-actions">
+                    <button type="button" id="live-start" class="primary">
+                      <span class="icon">🎙️</span>
+                      <span>Iniciar transmisión</span>
+                    </button>
+                    <button type="button" id="live-stop" class="secondary" disabled>
+                      <span class="icon">⏹</span>
+                      <span>Detener y guardar</span>
+                    </button>
+                    <button type="button" id="live-reset" class="ghost" disabled>
+                      <span class="icon">🧹</span>
+                      <span>Descartar sesión</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="live-stream-session">
+                  <h3 class="live-panel-title">Sesión en curso</h3>
+                  <div class="live-stream-status" id="live-stream-status" role="status" aria-live="polite">
+                    Tu texto aparecerá aquí cuando empieces a hablar.
+                  </div>
+                  <div id="live-stream-output" class="live-stream-output" aria-live="polite"></div>
                 </div>
               </div>
-            </details>
 
-            <div class="live-inline-hint" id="destination-saved-hint" hidden>
-              <span class="icon">💾</span>
-              <span>Guardando última carpeta usada…</span>
-            </div>
-
-            <button type="submit" class="primary upload-button">
-              <span class="glow"></span>
-              <span class="label">Subir y transcribir</span>
-            </button>
-          </form>
-          <div class="upload-feedback">
-            <div id="upload-progress" class="progress-track" hidden>
-              <div class="progress-bar"></div>
-            </div>
-            <div id="upload-status" class="upload-status" aria-live="polite"></div>
+              <div class="live-preview-panel">
+                <div class="live-preview-header">
+                  <h3 class="live-panel-title">Vista en vivo instantánea</h3>
+                  <p class="live-panel-lead">Selecciona una transcripción para seguir el texto conforme llega cada segmento con auto-scroll.</p>
+                </div>
+                <div id="live-output" class="live-output" aria-live="polite">
+                  Selecciona cualquier transcripción para previsualizarla aquí.
+                </div>
+              </div>
+            </section>
           </div>
-        </section>
+        </div>
       </section>
 
       <section class="main-section" data-section="library" hidden>
@@ -227,93 +339,16 @@
         </section>
       </section>
       <section class="main-section" data-section="live" hidden>
-        <section class="card span-2 live-stream-card" aria-labelledby="live-stream-heading">
+        <section class="card span-2 live-info-card" aria-labelledby="live-info-heading">
           <div class="card-header">
-            <h2 id="live-stream-heading">Transcripción en línea</h2>
-            <p class="section-lead">Graba con tu micrófono, conserva el audio y obtén subtítulos mientras hablas.</p>
+            <h2 id="live-info-heading">Centro en vivo</h2>
+            <p class="section-lead">Inicia tus sesiones desde Inicio y consulta aquí recursos y diagnósticos adicionales.</p>
           </div>
-
-          <div class="live-stream-controls">
-            <div class="field">
-              <label class="form-label" for="live-language">Idioma</label>
-              <select id="live-language" name="live_language">
-                <option value="">Detección automática</option>
-                <option value="es" selected>Español</option>
-                <option value="en">Inglés</option>
-                <option value="fr">Francés</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="form-label" for="live-model">Modelo</label>
-              <select id="live-model" name="live_model" data-default="large-v3">
-                <option value="large-v3" selected>large-v3</option>
-                <option value="large-v2">large-v2</option>
-                <option value="medium">medium</option>
-                <option value="small">small</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="form-label" for="live-device">Dispositivo</label>
-              <select id="live-device" name="live_device" data-default="gpu">
-                <option value="gpu" selected>GPU / CUDA</option>
-                <option value="cpu">CPU</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="form-label" for="live-folder">Carpeta destino</label>
-              <input
-                id="live-folder"
-                type="text"
-                name="live_folder"
-                placeholder="Ej: clases-en-vivo"
-                list="destination-folder-options"
-              />
-            </div>
-
-            <div class="field">
-              <label class="form-label" for="live-subject">Temario / notas</label>
-              <input
-                id="live-subject"
-                type="text"
-                name="live_subject"
-                placeholder="Tema, práctica, teoría…"
-              />
-            </div>
-          </div>
-
-          <div class="live-stream-actions">
-            <button type="button" id="live-start" class="primary">
-              <span class="icon">🎙️</span>
-              <span>Iniciar transmisión</span>
-            </button>
-            <button type="button" id="live-stop" class="secondary" disabled>
-              <span class="icon">⏹</span>
-              <span>Detener y guardar</span>
-            </button>
-            <button type="button" id="live-reset" class="ghost" disabled>
-              <span class="icon">🧹</span>
-              <span>Descartar sesión</span>
-            </button>
-          </div>
-
-          <div class="live-stream-status" id="live-stream-status" role="status" aria-live="polite">
-            Tu texto aparecerá aquí cuando empieces a hablar.
-          </div>
-
-          <div id="live-stream-output" class="live-stream-output" aria-live="polite"></div>
-        </section>
-
-        <section class="card span-2 live-card" aria-labelledby="live-heading">
-          <div class="card-header">
-            <h2 id="live-heading">Vista en vivo instantánea</h2>
-            <p class="section-lead">Selecciona una transcripción para seguir el texto conforme llega cada segmento, ordenado y sin retrasos artificiales.</p>
-          </div>
-          <div id="live-output" class="live-output" aria-live="polite">
-            Selecciona cualquier transcripción para previsualizarla aquí.
-          </div>
+          <ul class="live-info-list">
+            <li><strong>Transcripción en línea</strong> ahora vive en la pestaña Inicio para que grabes y transcribas sin cambiar de vista.</li>
+            <li>La <em>Vista en vivo instantánea</em> también está en Inicio y mantiene el auto-scroll activo mientras llegan nuevos bloques.</li>
+            <li>Si detectamos problemas con CUDA o el modelo, verás avisos en la Biblioteca con los pasos sugeridos para solucionarlo.</li>
+          </ul>
         </section>
 
         <section class="card span-2 student-card" id="student-web" aria-labelledby="student-heading">

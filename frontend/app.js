@@ -94,8 +94,14 @@ const liveStopButton = document.querySelector('#live-stop');
 const liveResetButton = document.querySelector('#live-reset');
 const liveStreamStatus = document.querySelector('#live-stream-status');
 const liveStreamOutput = document.querySelector('#live-stream-output');
+const homePendingList = document.querySelector('#home-pending-list');
+const homePendingEmpty = document.querySelector('#home-pending-empty');
+const homePendingCount = document.querySelector('#home-pending-count');
+const homeFolderSummary = document.querySelector('#home-folder-summary');
+const homeRecentList = document.querySelector('#home-recent-list');
 const sectionToggles = document.querySelectorAll('[data-section-toggle]');
 const sectionPanels = document.querySelectorAll('[data-section]');
+const sectionJumpButtons = document.querySelectorAll('[data-section-jump]');
 
 const typingQueue = [];
 let typingInProgress = false;
@@ -1126,6 +1132,74 @@ function createFolderGroupNode(group) {
   return article;
 }
 
+function renderHomeFolderSummary(groups) {
+  if (!homeFolderSummary) return;
+  homeFolderSummary.innerHTML = '';
+  const summary = Array.isArray(groups) ? groups.slice(0, 4) : [];
+  if (!summary.length) {
+    const empty = document.createElement('p');
+    empty.className = 'home-folder-summary__empty';
+    empty.textContent = 'Sube tu primer archivo para crear una carpeta y verla aquí.';
+    homeFolderSummary.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement('ul');
+  list.className = 'home-folder-summary__list';
+
+  summary.forEach((group) => {
+    const item = document.createElement('li');
+    item.className = 'home-folder-summary__item';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'home-folder-summary__button';
+    button.setAttribute('data-folder-jump', group.name);
+
+    const title = document.createElement('span');
+    title.className = 'home-folder-summary__name';
+    title.textContent = group.name;
+    button.appendChild(title);
+
+    const itemsCount = Array.isArray(group.items) ? group.items.length : 0;
+    const countLabel = itemsCount === 1 ? '1 archivo' : `${itemsCount} archivos`;
+    const updatedLabel = group.latestISO ? formatDate(group.latestISO) : 'Sin fecha';
+    const meta = document.createElement('span');
+    meta.className = 'home-folder-summary__meta';
+    meta.textContent = `${countLabel} • ${updatedLabel}`;
+    button.appendChild(meta);
+
+    const tags = Array.from(group.tags ?? []).map((tag) => FOLDER_TAG_LABELS[tag] ?? tag);
+    if (tags.length) {
+      const tagsEl = document.createElement('span');
+      tagsEl.className = 'home-folder-summary__tags';
+      tagsEl.textContent = tags.join(' · ');
+      button.appendChild(tagsEl);
+    }
+
+    const subjects = Array.from(group.subjects ?? []);
+    if (subjects.length) {
+      const subjectsEl = document.createElement('span');
+      subjectsEl.className = 'home-folder-summary__subjects';
+      const label = subjects.slice(0, 2).join(' • ');
+      subjectsEl.textContent = label;
+      button.appendChild(subjectsEl);
+    }
+
+    if (group.severity && group.severity !== 'info') {
+      const badge = document.createElement('span');
+      badge.className = `home-folder-summary__badge is-${group.severity}`;
+      badge.textContent = group.severity === 'warning' ? 'Advertencias' : 'Error';
+      button.appendChild(badge);
+    }
+
+    item.appendChild(button);
+    list.appendChild(item);
+  });
+
+  homeFolderSummary.appendChild(list);
+}
+
 function applyFolderFilters() {
   if (!folderGroupsContainer) return;
   folderGroupsContainer.innerHTML = '';
@@ -1154,6 +1228,7 @@ function renderFolderLibrary(items) {
   cachedFolderGroups = buildFolderGroups(items);
   updateFolderTopicOptions(cachedFolderGroups);
   updateDestinationOptions(items);
+  renderHomeFolderSummary(cachedFolderGroups);
   applyFolderFilters();
 }
 
@@ -1165,6 +1240,8 @@ function updateSystemAlerts(items) {
     const events = Array.isArray(item?.debug_events) ? item.debug_events : [];
     for (const event of events) {
       const message = (event.message || '').toLowerCase();
+      const stage = (event.stage || '').toLowerCase();
+      const extra = event?.extra || {};
       if (!message) continue;
       if (message.includes('whisperx no disponible')) {
         messages.add(
@@ -1174,6 +1251,22 @@ function updateSystemAlerts(items) {
       if (message.includes('faster-whisper de respaldo')) {
         messages.add(
           'Se activó el modelo de respaldo en CPU. Verifica CUDA o tu GPU para mantener el rendimiento.',
+        );
+      }
+      if (stage === 'device.unavailable' || stage === 'device.fallback') {
+        messages.add(
+          'CUDA no está disponible en este momento. Comprueba que PyTorch detecte la GPU con `python -c "import torch; print(torch.cuda.is_available())"` y revisa tus drivers o WHISPER_FORCE_CUDA.',
+        );
+      }
+      if (stage === 'device.cuda-error') {
+        const details = String(extra?.error ?? '').slice(0, 160) || 'consulta los registros del servidor.';
+        messages.add(
+          `CUDA devolvió un error al inicializar (${details}). Verifica controladores, versión de PyTorch y reinicia el servicio si es necesario.`,
+        );
+      }
+      if (stage === 'load-model.failed') {
+        messages.add(
+          'Ninguna configuración de faster-whisper pudo cargarse. Limpia la caché de modelos en data/models o reinstala dependencias para restaurar el servicio.',
         );
       }
     }
@@ -1192,6 +1285,171 @@ function updateSystemAlerts(items) {
   systemAlerts.hidden = false;
 }
 
+function renderHomePendingList(items) {
+  if (!homePendingList || !homePendingEmpty) return;
+  const pendingItems = (Array.isArray(items) ? items : []).filter(
+    (item) => item.status === 'processing',
+  );
+
+  if (homePendingCount) {
+    if (pendingItems.length) {
+      const label =
+        pendingItems.length === 1
+          ? '1 transcripción en curso'
+          : `${pendingItems.length} transcripciones en curso`;
+      homePendingCount.textContent = label;
+      homePendingCount.dataset.state = 'active';
+    } else {
+      homePendingCount.textContent = 'Sin tareas en curso';
+      homePendingCount.dataset.state = 'empty';
+    }
+  }
+
+  if (!pendingItems.length) {
+    homePendingList.hidden = true;
+    homePendingList.innerHTML = '';
+    homePendingEmpty.hidden = false;
+    return;
+  }
+
+  homePendingEmpty.hidden = true;
+  homePendingList.hidden = false;
+  homePendingList.innerHTML = '';
+
+  pendingItems.slice(0, 4).forEach((item) => {
+    const li = document.createElement('li');
+    li.className = 'home-pending-item';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'home-pending-item__button';
+    button.setAttribute('data-pending-id', item.id);
+
+    const content = document.createElement('div');
+    content.className = 'home-pending-item__content';
+
+    const title = document.createElement('span');
+    title.className = 'home-pending-item__title';
+    title.textContent = item.original_filename || 'Transcripción en curso';
+    content.appendChild(title);
+
+    const folderLabel = item.output_folder || item.destination_folder || 'Sin carpeta';
+    const modelLabel = item.model_size || 'Modelo automático';
+    const deviceHint = (item.device_preference || '').trim().toUpperCase();
+    const deviceLabel = deviceHint || 'AUTO';
+    const contentMeta = document.createElement('span');
+    contentMeta.className = 'home-pending-item__meta';
+    contentMeta.textContent = `${folderLabel} • ${modelLabel} • ${deviceLabel}`;
+    content.appendChild(contentMeta);
+
+    button.appendChild(content);
+
+    const statusWrapper = document.createElement('div');
+    statusWrapper.className = 'home-pending-item__status';
+
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'home-pending-item__badge';
+    statusBadge.dataset.status = item.status;
+    statusBadge.textContent = formatStatus(item.status);
+    statusWrapper.appendChild(statusBadge);
+
+    const detailParts = [];
+    const runtimeSeconds = Number(item.runtime_seconds ?? 0);
+    if (runtimeSeconds > 0) {
+      detailParts.push(`Tiempo transcurrido: ${formatDuration(runtimeSeconds)}`);
+    }
+    const updatedLabel = formatShortDate(item.updated_at || item.created_at);
+    if (updatedLabel) {
+      detailParts.push(`Actualizado: ${updatedLabel}`);
+    }
+    const lastEvent = Array.isArray(item.debug_events)
+      ? item.debug_events[item.debug_events.length - 1]
+      : null;
+    const stageParts = (lastEvent?.stage || '')
+      .split(/[.\s_-]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1));
+    const stage = stageParts.join(' ');
+    if (stage) {
+      detailParts.push(stage);
+    }
+
+    if (detailParts.length) {
+      const details = document.createElement('span');
+      details.className = 'home-pending-item__details';
+      details.textContent = detailParts.join(' • ');
+      statusWrapper.appendChild(details);
+    }
+
+    button.appendChild(statusWrapper);
+    li.appendChild(button);
+    homePendingList.appendChild(li);
+  });
+}
+
+function renderHomeRecentList(items) {
+  if (!homeRecentList) return;
+  homeRecentList.innerHTML = '';
+  const results = Array.isArray(items) ? [...items] : [];
+  if (!results.length) {
+    const empty = document.createElement('p');
+    empty.className = 'home-recent-list__empty';
+    empty.textContent = 'Tus últimas transcripciones aparecerán aquí en cuanto subas audio.';
+    homeRecentList.appendChild(empty);
+    return;
+  }
+
+  results.sort((a, b) => {
+    const aDate = Date.parse(a?.updated_at || a?.created_at || 0) || 0;
+    const bDate = Date.parse(b?.updated_at || b?.created_at || 0) || 0;
+    return bDate - aDate;
+  });
+
+  const list = document.createElement('ul');
+  list.className = 'home-recent-list__list';
+
+  results.slice(0, 4).forEach((item) => {
+    const li = document.createElement('li');
+    li.className = 'home-recent-list__item';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'home-recent-list__button';
+    button.setAttribute('data-recent-id', item.id);
+
+    const title = document.createElement('span');
+    title.className = 'home-recent-list__title';
+    title.textContent = item.original_filename;
+    button.appendChild(title);
+
+    const folderLabel = item.output_folder || item.destination_folder || 'Sin carpeta';
+    const folder = document.createElement('span');
+    folder.className = 'home-recent-list__folder';
+    folder.textContent = folderLabel;
+    button.appendChild(folder);
+
+    const meta = document.createElement('span');
+    meta.className = 'home-recent-list__meta';
+    const statusLabel = formatStatus(item.status);
+    const dateLabel = formatDate(item.updated_at || item.created_at);
+    meta.textContent = `${statusLabel} • ${dateLabel}`;
+    button.appendChild(meta);
+
+    const preview = (item.text || '').trim();
+    if (preview) {
+      const excerpt = document.createElement('span');
+      excerpt.className = 'home-recent-list__excerpt';
+      excerpt.textContent = preview.slice(0, 120);
+      button.appendChild(excerpt);
+    }
+
+    li.appendChild(button);
+    list.appendChild(li);
+  });
+
+  homeRecentList.appendChild(list);
+}
+
 function renderTranscriptions(items) {
   if (!transcriptionList) return;
   if (!template || !('content' in template)) {
@@ -1200,6 +1458,8 @@ function renderTranscriptions(items) {
   }
   transcriptionList.innerHTML = '';
   const results = Array.isArray(items) ? items : [];
+  renderHomePendingList(results);
+  renderHomeRecentList(results);
   renderFolderLibrary(results);
   updateSystemAlerts(results);
   if (!results.length) {
@@ -1214,6 +1474,7 @@ function renderTranscriptions(items) {
       card.style.setProperty('--card-delay', `${index * 60}ms`);
       card.dataset.status = item.status;
       card.dataset.severity = determineTranscriptionSeverity(item);
+      card.dataset.transcriptionId = item.id;
     }
     node.querySelector('.transcription-title').textContent = item.original_filename;
     const statusBadge = node.querySelector('.status');
@@ -2009,6 +2270,46 @@ folderGroupsContainer?.addEventListener('click', (event) => {
   scrollContainerToEnd(liveOutput);
 });
 
+homePendingList?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-pending-id]');
+  if (!button) return;
+  const id = Number(button.getAttribute('data-pending-id'));
+  if (!Number.isFinite(id)) return;
+  selectedTranscriptionId = id;
+  updateLivePreview(cachedResults);
+  openModal(id);
+});
+
+homeFolderSummary?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-folder-jump]');
+  if (!button) return;
+  const folder = button.getAttribute('data-folder-jump');
+  if (!folder) return;
+  folderFilters.search = folder.toLowerCase();
+  if (folderSearchInput) {
+    folderSearchInput.value = folder;
+  }
+  applyFolderFilters();
+  setActiveSection('library', { fallback: 'home' });
+  window.requestAnimationFrame(() => {
+    folderGroupsContainer?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+});
+
+homeRecentList?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-recent-id]');
+  if (!button) return;
+  const id = Number(button.getAttribute('data-recent-id'));
+  if (!Number.isFinite(id)) return;
+  selectedTranscriptionId = id;
+  updateLivePreview(cachedResults);
+  openModal(id);
+});
+
+renderHomePendingList([]);
+renderHomeFolderSummary([]);
+renderHomeRecentList([]);
+
 if (folderGroupsContainer) {
   applyFolderFilters();
 }
@@ -2017,6 +2318,15 @@ if (sectionToggles?.length) {
   sectionToggles.forEach((button) => {
     button.addEventListener('click', () => {
       const target = button.dataset.sectionToggle;
+      setActiveSection(target, { fallback: 'home' });
+    });
+  });
+}
+
+if (sectionJumpButtons?.length) {
+  sectionJumpButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button.dataset.sectionJump;
       setActiveSection(target, { fallback: 'home' });
     });
   });

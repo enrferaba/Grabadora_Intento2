@@ -9,6 +9,7 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Base de datos SQLite / SQLAlchemy** con búsqueda por texto, asignatura y estado.
 - **Generación automática de archivos `.txt`** y estructura extensible para futuros planes premium con IA externa.
 - **Interfaz web** en `/` con selector multimedia animado, validación de audio/video y barra de progreso en tiempo real.
+- **Inicio unificado** que combina subida rápida, transcripción en vivo, vista instantánea con auto-scroll y accesos directos a carpetas y trabajos recientes.
 - **Biblioteca por carpetas** con filtros por etiquetas, estado, número de tema y búsqueda libre para localizar transcripciones rápidas.
 - **Dashboard con métricas en vivo** (totales, completadas, minutos procesados, etc.) y vista estilo ChatGPT con animación adaptativa que escribe según el modelo y el dispositivo usado, desplazando la vista automáticamente.
 - **Beneficios premium simulados** con checkout y confirmación que desbloquean notas IA enriquecidas sin mostrar importes hasta definir tu estrategia comercial.
@@ -16,6 +17,7 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Autocompletado de carpetas** que recuerda la última carpeta usada, sugiere destinos existentes y sincroniza el modo en vivo con el formulario principal.
 - **Modo estudiante web**: vista ligera con anuncios educativos y ejecución local accesible en `student.html` o desde el botón “Abrir simulador independiente”.
 - **Transcripción en vivo** que captura audio del navegador, permite elegir modelo/dispositivo y convierte la sesión en una transcripción almacenada con sus TXT generados.
+- **Diagnósticos de CUDA** con eventos de fallback detallados y avisos en la Biblioteca para que puedas corregir drivers o forzar la GPU cuando sea necesario.
 - **Inicio de sesión con Google (OAuth 2.0)** listo para conectar con tus credenciales y personalizar la experiencia del dashboard.
 - **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
 - **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado y comprueban la compatibilidad con las versiones recientes de faster-whisper.
