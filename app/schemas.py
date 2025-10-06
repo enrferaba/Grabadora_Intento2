@@ -108,3 +108,49 @@ class PurchaseDetail(PurchaseResponse):
 
     class Config:
         orm_mode = True
+
+
+class LiveSessionCreateRequest(BaseModel):
+    language: Optional[str] = None
+    model_size: Optional[str] = None
+    device_preference: Optional[str] = None
+
+
+class LiveSessionCreateResponse(BaseModel):
+    session_id: str
+    model_size: str
+    device_preference: str
+    language: Optional[str] = None
+
+
+class LiveChunkResponse(BaseModel):
+    session_id: str
+    text: str
+    duration: Optional[float]
+    runtime_seconds: Optional[float]
+    chunk_count: int
+    model_size: str
+    device_preference: str
+    language: Optional[str]
+
+
+class LiveFinalizeRequest(BaseModel):
+    destination_folder: Optional[str] = None
+    subject: Optional[str] = None
+    language: Optional[str] = None
+    model_size: Optional[str] = None
+    device_preference: Optional[str] = None
+    filename: Optional[str] = None
+
+
+class LiveFinalizeResponse(BaseModel):
+    session_id: str
+    transcription_id: Optional[int]
+    text: str
+    duration: Optional[float]
+    runtime_seconds: Optional[float]
+    output_folder: Optional[str]
+    transcript_path: Optional[str]
+    model_size: Optional[str]
+    device_preference: Optional[str]
+    language: Optional[str]

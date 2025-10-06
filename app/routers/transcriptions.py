@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import logging
+import secrets
+import shutil
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Dict, List, Optional
 
 from fastapi import (
@@ -25,6 +30,11 @@ from ..models import Transcription, TranscriptionStatus
 from ..schemas import (
     BatchTranscriptionCreateResponse,
     HealthResponse,
+    LiveChunkResponse,
+    LiveFinalizeRequest,
+    LiveFinalizeResponse,
+    LiveSessionCreateRequest,
+    LiveSessionCreateResponse,
     SearchResponse,
     TranscriptionCreateResponse,
     TranscriptionDetail,
@@ -37,6 +47,7 @@ from ..utils.storage import (
     save_upload_file,
 )
 from ..whisper_service import get_transcriber, serialize_segments
+from pydub import AudioSegment
 
 ALLOWED_MEDIA_EXTENSIONS = {
     ".aac",
@@ -73,6 +84,28 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])
 
+LIVE_SESSIONS_ROOT = Path(settings.storage_dir).parent / "live_sessions"
+LIVE_SESSIONS_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass
+class LiveSessionState:
+    session_id: str
+    model_size: str
+    device: str
+    language: Optional[str]
+    directory: Path
+    audio_path: Path
+    created_at: float = field(default_factory=time.time)
+    chunk_count: int = 0
+    last_text: str = ""
+    last_duration: Optional[float] = None
+    last_runtime: Optional[float] = None
+    lock: Lock = field(default_factory=Lock)
+
+
+LIVE_SESSIONS: Dict[str, LiveSessionState] = {}
+
 
 def _get_session() -> Session:
     with get_session() as session:
@@ -105,6 +138,37 @@ def _resolve_device_choice(value: Optional[str]) -> str:
         return settings.whisper_device or "cuda"
     resolved = DEVICE_ALIASES.get(value.lower())
     return resolved or settings.whisper_device or "cuda"
+
+
+def _require_live_session(session_id: str) -> LiveSessionState:
+    state = LIVE_SESSIONS.get(session_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Sesión en vivo no encontrada")
+    return state
+
+
+def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> None:
+    try:
+        segment = AudioSegment.from_file(chunk_path)
+    except Exception as exc:  # pragma: no cover - depende del runtime
+        raise RuntimeError(f"No se pudo procesar el fragmento de audio: {exc}") from exc
+
+    if state.audio_path.exists():
+        try:
+            base = AudioSegment.from_file(state.audio_path)
+            combined = base + segment
+        except Exception as exc:  # pragma: no cover - depende del runtime
+            raise RuntimeError(f"No se pudo unir el audio acumulado: {exc}") from exc
+    else:
+        combined = segment
+
+    combined.export(state.audio_path, format="wav")
+
+
+def _cleanup_live_session(session_id: str) -> None:
+    state = LIVE_SESSIONS.pop(session_id, None)
+    if state:
+        shutil.rmtree(state.directory, ignore_errors=True)
 
 
 def _enqueue_transcription(
@@ -178,6 +242,145 @@ def _enqueue_transcription(
         resolved_device,
     )
     return transcription
+
+
+@router.post("/live/sessions", response_model=LiveSessionCreateResponse, status_code=201)
+def create_live_session(payload: LiveSessionCreateRequest) -> LiveSessionCreateResponse:
+    session_id = secrets.token_urlsafe(12)
+    resolved_model = _resolve_model_choice(payload.model_size)
+    resolved_device = _resolve_device_choice(payload.device_preference)
+    directory = LIVE_SESSIONS_ROOT / session_id
+    directory.mkdir(parents=True, exist_ok=True)
+    state = LiveSessionState(
+        session_id=session_id,
+        model_size=resolved_model,
+        device=resolved_device,
+        language=payload.language,
+        directory=directory,
+        audio_path=directory / "stream.wav",
+    )
+    LIVE_SESSIONS[session_id] = state
+    return LiveSessionCreateResponse(
+        session_id=session_id,
+        model_size=resolved_model,
+        device_preference=resolved_device,
+        language=payload.language,
+    )
+
+
+@router.post("/live/sessions/{session_id}/chunk", response_model=LiveChunkResponse)
+def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunkResponse:
+    state = _require_live_session(session_id)
+    data = chunk.file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="El fragmento está vacío")
+    suffix = Path(chunk.filename or "").suffix or ".webm"
+    index = state.chunk_count
+    chunk_path = state.directory / f"chunk-{index:05d}{suffix}"
+    chunk_path.write_bytes(data)
+    chunk.file.close()
+    with state.lock:
+        try:
+            _merge_live_chunk(state, chunk_path)
+        except RuntimeError as exc:
+            chunk_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            chunk_path.unlink(missing_ok=True)
+        state.chunk_count = index + 1
+        transcriber = get_transcriber(state.model_size, state.device)
+        result = transcriber.transcribe(state.audio_path, state.language)
+        state.last_text = result.text
+        state.last_duration = result.duration
+        state.last_runtime = result.runtime_seconds
+        state.language = result.language or state.language
+    return LiveChunkResponse(
+        session_id=session_id,
+        text=state.last_text,
+        duration=state.last_duration,
+        runtime_seconds=state.last_runtime,
+        chunk_count=state.chunk_count,
+        model_size=state.model_size,
+        device_preference=state.device,
+        language=state.language,
+    )
+
+
+@router.post("/live/sessions/{session_id}/finalize", response_model=LiveFinalizeResponse)
+def finalize_live_session(
+    session_id: str,
+    payload: LiveFinalizeRequest,
+    session: Session = Depends(_get_session),
+) -> LiveFinalizeResponse:
+    state = _require_live_session(session_id)
+    with state.lock:
+        if not state.audio_path.exists():
+            raise HTTPException(status_code=400, detail="No se capturó audio en la sesión en vivo")
+        resolved_model = _resolve_model_choice(payload.model_size or state.model_size)
+        resolved_device = _resolve_device_choice(payload.device_preference or state.device)
+        resolved_language = payload.language or state.language
+        transcriber = get_transcriber(resolved_model, resolved_device)
+        result = transcriber.transcribe(state.audio_path, resolved_language)
+        sanitized_folder = sanitize_folder_name(payload.destination_folder or "en-vivo")
+        final_filename = payload.filename or f"live-session-{session_id}.wav"
+        storage_dir = ensure_storage_subdir(f"live-{session_id}")
+        target_audio_path = storage_dir / final_filename
+        shutil.copy(state.audio_path, target_audio_path)
+        transcription = Transcription(
+            original_filename=final_filename,
+            stored_path=str(target_audio_path),
+            language=result.language or resolved_language,
+            model_size=resolved_model,
+            device_preference=resolved_device,
+            subject=payload.subject,
+            output_folder=sanitized_folder,
+            status=TranscriptionStatus.COMPLETED.value,
+            text=result.text,
+            duration=result.duration,
+            runtime_seconds=result.runtime_seconds,
+        )
+        session.add(transcription)
+        session.flush()
+        transcript_path = compute_txt_path(
+            transcription.id,
+            folder=sanitized_folder,
+            original_filename=final_filename,
+            ensure_unique=True,
+        )
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        transcript_path.write_text(transcription.to_txt(), encoding="utf-8")
+        transcription.transcript_path = str(transcript_path)
+        session.commit()
+        append_debug_event(
+            transcription.id,
+            "live-finalized",
+            "Sesión en vivo finalizada y almacenada",
+            extra={"chunks": state.chunk_count, "live_session": session_id},
+        )
+        response = LiveFinalizeResponse(
+            session_id=session_id,
+            transcription_id=transcription.id,
+            text=result.text,
+            duration=result.duration,
+            runtime_seconds=result.runtime_seconds,
+            output_folder=sanitized_folder,
+            transcript_path=transcription.transcript_path,
+            model_size=resolved_model,
+            device_preference=resolved_device,
+            language=result.language or resolved_language,
+        )
+    _cleanup_live_session(session_id)
+    return response
+
+
+@router.delete("/live/sessions/{session_id}", status_code=204)
+def discard_live_session(session_id: str) -> Response:
+    state = LIVE_SESSIONS.get(session_id)
+    if state is not None:
+        with state.lock:
+            pass
+    _cleanup_live_session(session_id)
+    return Response(status_code=204)
 
 
 def _is_supported_media(upload: UploadFile) -> bool:
