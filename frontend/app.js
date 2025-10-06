@@ -47,6 +47,8 @@ const MEDIA_EXTENSIONS = [
   '.wma',
 ];
 
+const AUTO_SCROLL_THRESHOLD = 160;
+
 let searchTimer;
 let pollingTimeout = null;
 let currentQuery = '';
@@ -142,12 +144,14 @@ function trimParagraphNodes(container, desiredLength) {
 
 function resetStreamingContainer(container, placeholder) {
   if (!container) return;
+  ensureAutoScrollTracking(container);
   cancelTyping(container);
   container.dataset.fullText = '';
   container.dataset.paragraphs = JSON.stringify([]);
   container.dataset.typing = 'false';
   container.dataset.typingToken = '';
   container.replaceChildren();
+  container.dataset.autoScroll = 'true';
   if (placeholder) {
     const placeholderNode = document.createElement('p');
     placeholderNode.classList.add('placeholder');
@@ -156,18 +160,58 @@ function resetStreamingContainer(container, placeholder) {
   }
 }
 
+function getAutoScrollThreshold(container) {
+  const parsed = Number(container?.dataset?.autoScrollThreshold);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : AUTO_SCROLL_THRESHOLD;
+}
+
+function distanceFromScrollEnd(container) {
+  if (!container) return Number.POSITIVE_INFINITY;
+  return container.scrollHeight - (container.scrollTop + container.clientHeight);
+}
+
+function isContainerNearBottom(container) {
+  return distanceFromScrollEnd(container) <= getAutoScrollThreshold(container);
+}
+
+function updateAutoScrollFlag(container) {
+  if (!container) return;
+  container.dataset.autoScroll = isContainerNearBottom(container) ? 'true' : 'false';
+}
+
+function ensureAutoScrollTracking(container) {
+  if (!container || container.dataset.autoScrollTracking === 'true') return;
+  const handleScroll = () => {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => updateAutoScrollFlag(container));
+    } else {
+      updateAutoScrollFlag(container);
+    }
+  };
+  container.dataset.autoScrollTracking = 'true';
+  if (!container.dataset.autoScroll) {
+    container.dataset.autoScroll = 'true';
+  }
+  container.addEventListener('scroll', handleScroll, { passive: true });
+  updateAutoScrollFlag(container);
+}
+
+ensureAutoScrollTracking(liveOutput);
+ensureAutoScrollTracking(studentPreviewBody);
+ensureAutoScrollTracking(modalText);
+
 function scrollContainerToEnd(container) {
   if (!container) return;
+  ensureAutoScrollTracking(container);
+  if (container.dataset.autoScroll === 'false') return;
+  if (!isContainerNearBottom(container)) return;
   const performScroll = () => {
     if (typeof container.scrollTo === 'function') {
       container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
     } else {
       container.scrollTop = container.scrollHeight;
     }
-    const parentCard = container.closest('.live-card, .student-card');
-    if (parentCard) {
-      parentCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
+    updateAutoScrollFlag(container);
   };
   if (typeof window.requestAnimationFrame === 'function') {
     window.requestAnimationFrame(performScroll);
@@ -344,6 +388,7 @@ function enqueueTypewriter(container, text, speedHint, options = {}) {
 
 function renderTranscript(element, text, { placeholder = 'Transcripción no disponible aún.' } = {}) {
   if (!element) return;
+  ensureAutoScrollTracking(element);
   const safeText = (text ?? '').trim();
   element.dataset.typing = 'false';
   element.dataset.typingToken = '';
@@ -375,6 +420,7 @@ function renderTranscript(element, text, { placeholder = 'Transcripción no disp
 
 function renderStreamingView(container, item, options = {}) {
   if (!container) return;
+  ensureAutoScrollTracking(container);
   const placeholder = options.placeholder ?? 'Transcripción no disponible aún.';
   const status = item?.status ?? 'completed';
   const text = (item?.text ?? '').trim();
