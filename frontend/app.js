@@ -23,12 +23,18 @@ const languageSelect = document.querySelector('#language');
 const modelSelect = document.querySelector('#model-size');
 const deviceSelect = document.querySelector('#device-preference');
 const liveOutput = document.querySelector('#live-output');
+const homeLiveOutput = document.querySelector('#home-live-output');
+const livePreviewTargets = [liveOutput, homeLiveOutput].filter(Boolean);
 const copyTranscriptBtn = document.querySelector('#copy-transcript');
 const metricTotal = document.querySelector('[data-metric="total"]');
 const metricCompleted = document.querySelector('[data-metric="completed"]');
 const metricProcessing = document.querySelector('[data-metric="processing"]');
 const metricPremium = document.querySelector('[data-metric="premium"]');
 const metricMinutes = document.querySelector('[data-metric="minutes"]');
+const metricMode = document.querySelector('[data-metric="mode"]');
+const metricModel = document.querySelector('[data-metric="model"]');
+const metricTodayMinutes = document.querySelector('[data-metric="todayMinutes"]');
+const metricTodayCount = document.querySelector('[data-metric="todayCount"]');
 const uploadProgress = document.querySelector('#upload-progress');
 
 const MEDIA_PREFIXES = ['audio/', 'video/'];
@@ -65,6 +71,10 @@ const metricSnapshot = {
   processing: 0,
   premium: 0,
   minutes: 0,
+  todayMinutes: 0,
+  todayCount: 0,
+  mode: '',
+  model: '',
 };
 let uploadProgressTimer = null;
 let uploadProgressValue = 0;
@@ -90,6 +100,7 @@ const liveDeviceSelect = document.querySelector('#live-device');
 const liveFolderInput = document.querySelector('#live-folder');
 const liveSubjectInput = document.querySelector('#live-subject');
 const liveStartButton = document.querySelector('#live-start');
+const livePauseButton = document.querySelector('#live-pause');
 const liveStopButton = document.querySelector('#live-stop');
 const liveResetButton = document.querySelector('#live-reset');
 const liveStreamStatus = document.querySelector('#live-stream-status');
@@ -99,9 +110,28 @@ const homePendingEmpty = document.querySelector('#home-pending-empty');
 const homePendingCount = document.querySelector('#home-pending-count');
 const homeFolderSummary = document.querySelector('#home-folder-summary');
 const homeRecentList = document.querySelector('#home-recent-list');
+const homeLiveStatus = document.querySelector('#home-live-status');
+const homeLiveControls = document.querySelectorAll('[data-live-control]');
+const homeLiveCard = document.querySelector('#home-live-card');
+const homeLiveFollowToggle = document.querySelector('#home-live-follow');
+const homeLiveReturnButton = document.querySelector('#home-live-return');
+const homeLiveFullscreenButton = document.querySelector('#home-live-fullscreen');
+const homeQuickFolderInput = document.querySelector('#home-folder-quick');
+const scrollTargetButtons = document.querySelectorAll('[data-scroll-to]');
 const sectionToggles = document.querySelectorAll('[data-section-toggle]');
 const sectionPanels = document.querySelectorAll('[data-section]');
 const sectionJumpButtons = document.querySelectorAll('[data-section-jump]');
+const liveFollowToggle = document.querySelector('#live-follow');
+const liveReturnButton = document.querySelector('#live-return');
+const liveFullscreenButton = document.querySelector('#live-fullscreen');
+const liveFontIncreaseButton = document.querySelector('#live-font-increase');
+const liveFontDecreaseButton = document.querySelector('#live-font-decrease');
+const liveTailSizeSelect = document.querySelector('#live-tail-size');
+const liveStreamCard = document.querySelector('#live-stream-card');
+const jobFollowToggle = document.querySelector('#job-follow');
+const jobTailSizeSelect = document.querySelector('#job-tail-size');
+const jobReturnButton = document.querySelector('#job-return');
+const jobTextContainer = document.querySelector('#job-text');
 
 const typingQueue = [];
 let typingInProgress = false;
@@ -116,12 +146,26 @@ const folderFilters = {
 const DESTINATION_STORAGE_KEY = 'grabadora:last-destination-folder';
 const LAST_SECTION_STORAGE_KEY = 'grabadora:last-section';
 const LIVE_CHUNK_INTERVAL = 4000;
+const HOME_TAIL_FOLLOW_KEY = 'grabadora:tail:home-follow';
+const LIVE_TAIL_FOLLOW_KEY = 'grabadora:tail:live-follow';
+const JOB_TAIL_FOLLOW_KEY = 'grabadora:tail:job-follow';
+const LIVE_TAIL_SIZE_KEY = 'grabadora:tail:live-size';
+const JOB_TAIL_SIZE_KEY = 'grabadora:tail:job-size';
+const LIVE_FONT_STEP = 0.1;
+const LIVE_FONT_MIN = 0.8;
+const LIVE_FONT_MAX = 1.6;
+
+const tailControllers = new Map();
+const fullscreenBindings = [];
+
+let liveFontScale = 1;
 
 let liveSessionId = null;
 let liveMediaStream = null;
 let liveRecorder = null;
 let liveChunkChain = Promise.resolve();
 let liveSessionActive = false;
+let liveSessionPaused = false;
 let destinationHintTimeout = null;
 
 const FOLDER_TAG_LABELS = {
@@ -237,6 +281,9 @@ function hideDestinationSavedHint() {
 function persistDestinationFolder(value) {
   const trimmed = (value || '').trim();
   safeLocalStorageSet(DESTINATION_STORAGE_KEY, trimmed);
+  if (homeQuickFolderInput) {
+    homeQuickFolderInput.value = trimmed;
+  }
   if (!destinationSavedHint) {
     return;
   }
@@ -298,6 +345,180 @@ function handleLiveFolderChange(event) {
   }
 }
 
+function handleHomeQuickFolderChange(event) {
+  const value = event?.target?.value ?? homeQuickFolderInput?.value ?? '';
+  if (destinationInput) {
+    destinationInput.value = value;
+  }
+  if (liveFolderInput) {
+    liveFolderInput.value = value;
+  }
+  persistDestinationFolder(value);
+}
+
+function getTailLimit(container) {
+  const raw = Number(container?.dataset?.tailLimit);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+
+function renderTailSnapshot(container) {
+  if (!container) return;
+  const text = container.dataset.fullText ?? '';
+  const placeholder =
+    container.dataset.stream === 'true'
+      ? 'Procesando y transcribiendo en vivo…'
+      : 'Transcripción no disponible aún.';
+  if (text) {
+    renderTranscript(container, text, { placeholder });
+  }
+}
+
+function setTailLimit(container, limit) {
+  if (!container) return;
+  const numeric = Number(limit);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    container.dataset.tailLimit = String(Math.floor(numeric));
+  } else {
+    delete container.dataset.tailLimit;
+  }
+  if (container.dataset.fullText) {
+    renderTailSnapshot(container);
+  }
+}
+
+function createTailController({ container, toggle, returnButton, storageKey }) {
+  if (!container) return null;
+  let internalUpdate = false;
+
+  const apply = (follow, { persist = true, reason = 'manual', skipDispatch = false } = {}) => {
+    const enabled = Boolean(follow);
+    container.dataset.followPreference = enabled ? 'true' : 'false';
+    if (toggle) {
+      toggle.checked = enabled;
+    }
+    if (returnButton) {
+      returnButton.hidden = enabled;
+      returnButton.setAttribute('aria-hidden', enabled ? 'true' : 'false');
+    }
+    container.dataset.autoScroll = enabled ? 'true' : 'false';
+    if (enabled) {
+      scrollContainerToEnd(container);
+    } else {
+      updateAutoScrollFlag(container, reason);
+    }
+    if (persist && storageKey) {
+      safeLocalStorageSet(storageKey, enabled ? '1' : '0');
+    }
+    if (!skipDispatch) {
+      internalUpdate = true;
+      container.dispatchEvent(
+        new CustomEvent('tail:follow-change', {
+          detail: { follow: enabled, reason, source: 'controller' },
+        }),
+      );
+      internalUpdate = false;
+    }
+  };
+
+  const stored = storageKey ? safeLocalStorageGet(storageKey) : '';
+  let initial;
+  if (stored !== '') {
+    initial = stored !== '0' && stored !== 'false';
+  } else if (toggle) {
+    initial = toggle.checked;
+  } else {
+    initial = container.dataset.followPreference !== 'false';
+  }
+
+  container.dataset.followPreference = initial ? 'true' : 'false';
+  apply(initial, { persist: false, reason: 'init', skipDispatch: true });
+
+  toggle?.addEventListener('change', (event) => {
+    apply(event.target.checked, { reason: 'manual' });
+  });
+
+  returnButton?.addEventListener('click', () => {
+    apply(true, { reason: 'return' });
+  });
+
+  container.addEventListener('tail:follow-change', (event) => {
+    if (internalUpdate) return;
+    const detail = event.detail || {};
+    const enabled = Boolean(detail.follow);
+    container.dataset.followPreference = enabled ? 'true' : 'false';
+    if (toggle) {
+      toggle.checked = enabled;
+    }
+    if (returnButton) {
+      returnButton.hidden = enabled;
+      returnButton.setAttribute('aria-hidden', enabled ? 'true' : 'false');
+    }
+    if (detail.reason !== 'scroll' && storageKey) {
+      safeLocalStorageSet(storageKey, enabled ? '1' : '0');
+    }
+    if (enabled) {
+      scrollContainerToEnd(container);
+    } else {
+      updateAutoScrollFlag(container, detail.reason || 'external');
+    }
+  });
+
+  container.addEventListener('tail:auto-scroll', (event) => {
+    if (!returnButton) return;
+    const detail = event.detail || {};
+    if (!detail.followPreference && !detail.auto) {
+      returnButton.hidden = false;
+      returnButton.setAttribute('aria-hidden', 'false');
+    } else if (detail.followPreference && detail.auto) {
+      returnButton.hidden = true;
+      returnButton.setAttribute('aria-hidden', 'true');
+    }
+  });
+
+  tailControllers.set(container, { setFollow: apply });
+  return { setFollow: apply };
+}
+
+function syncFullscreenBodyState() {
+  const active = Boolean(document.querySelector('.home-live-panel.is-fullscreen, .live-stream-session.is-fullscreen'));
+  document.body.classList.toggle('tail-fullscreen-open', active);
+}
+
+function updateFullscreenButton(button, active) {
+  if (!button) return;
+  const label = active ? button.dataset.exitFullscreenLabel : button.dataset.fullscreenLabel;
+  const labelNode = button.querySelector('.button-label');
+  if (labelNode && label) {
+    labelNode.textContent = label;
+  } else if (label) {
+    button.textContent = label;
+  }
+  button.setAttribute('aria-pressed', active ? 'true' : 'false');
+}
+
+function setupFullscreenToggle(button, target) {
+  if (!button || !target) return;
+  const apply = (active) => {
+    target.classList.toggle('is-fullscreen', active);
+    updateFullscreenButton(button, active);
+    syncFullscreenBodyState();
+  };
+  button.addEventListener('click', () => {
+    apply(!target.classList.contains('is-fullscreen'));
+  });
+  updateFullscreenButton(button, target.classList.contains('is-fullscreen'));
+  fullscreenBindings.push({ button, target, apply });
+}
+
+function applyLiveFontScale(scale) {
+  if (!liveStreamOutput) return;
+  const clamped = Math.min(LIVE_FONT_MAX, Math.max(LIVE_FONT_MIN, scale));
+  liveFontScale = clamped;
+  liveStreamOutput.style.setProperty('--tail-font-scale', clamped.toFixed(2));
+  liveStreamOutput.dataset.fontScale = clamped.toFixed(2);
+  homeLiveOutput?.style.setProperty('--tail-font-scale', clamped.toFixed(2));
+}
+
 function splitIntoParagraphs(text) {
   return (text ?? '')
     .split(/\n{2,}/)
@@ -336,7 +557,8 @@ function resetStreamingContainer(container, placeholder) {
   container.dataset.typing = 'false';
   container.dataset.typingToken = '';
   container.replaceChildren();
-  container.dataset.autoScroll = 'true';
+  const followPreference = container.dataset.followPreference !== 'false';
+  container.dataset.autoScroll = followPreference ? 'true' : 'false';
   if (placeholder) {
     const placeholderNode = document.createElement('p');
     placeholderNode.classList.add('placeholder');
@@ -359,32 +581,108 @@ function isContainerNearBottom(container) {
   return distanceFromScrollEnd(container) <= getAutoScrollThreshold(container);
 }
 
-function updateAutoScrollFlag(container) {
+function updateAutoScrollFlag(container, reason = 'scroll') {
   if (!container) return;
-  container.dataset.autoScroll = isContainerNearBottom(container) ? 'true' : 'false';
+  const nearBottom = isContainerNearBottom(container);
+  const followPreference = container.dataset.followPreference !== 'false';
+  const nextValue = followPreference && nearBottom;
+  const previousValue = container.dataset.autoScroll === 'true';
+  container.dataset.autoScroll = nextValue ? 'true' : 'false';
+  if (previousValue !== nextValue) {
+    container.dispatchEvent(
+      new CustomEvent('tail:auto-scroll', {
+        detail: {
+          auto: nextValue,
+          nearBottom,
+          followPreference,
+          reason,
+        },
+      }),
+    );
+  }
 }
 
 function ensureAutoScrollTracking(container) {
   if (!container || container.dataset.autoScrollTracking === 'true') return;
   const handleScroll = () => {
+    const evaluate = () => {
+      const nearBottom = isContainerNearBottom(container);
+      const followPreference = container.dataset.followPreference !== 'false';
+      if (!nearBottom && followPreference) {
+        container.dataset.followPreference = 'false';
+        container.dataset.autoScroll = 'false';
+        container.dispatchEvent(
+          new CustomEvent('tail:follow-change', {
+            detail: { follow: false, reason: 'scroll' },
+          }),
+        );
+      }
+      updateAutoScrollFlag(container, 'scroll');
+    };
     if (typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(() => updateAutoScrollFlag(container));
+      window.requestAnimationFrame(evaluate);
     } else {
-      updateAutoScrollFlag(container);
+      evaluate();
     }
   };
   container.dataset.autoScrollTracking = 'true';
+  if (!container.dataset.followPreference) {
+    container.dataset.followPreference = 'true';
+  }
   if (!container.dataset.autoScroll) {
-    container.dataset.autoScroll = 'true';
+    container.dataset.autoScroll = container.dataset.followPreference !== 'false' ? 'true' : 'false';
   }
   container.addEventListener('scroll', handleScroll, { passive: true });
-  updateAutoScrollFlag(container);
+  updateAutoScrollFlag(container, 'init');
 }
 
-ensureAutoScrollTracking(liveOutput);
+livePreviewTargets.forEach((output) => ensureAutoScrollTracking(output));
 ensureAutoScrollTracking(studentPreviewBody);
 ensureAutoScrollTracking(modalText);
 ensureAutoScrollTracking(liveStreamOutput);
+
+const homeTailController = createTailController({
+  container: homeLiveOutput,
+  toggle: homeLiveFollowToggle,
+  returnButton: homeLiveReturnButton,
+  storageKey: HOME_TAIL_FOLLOW_KEY,
+});
+
+const liveTailController = createTailController({
+  container: liveStreamOutput,
+  toggle: liveFollowToggle,
+  returnButton: liveReturnButton,
+  storageKey: LIVE_TAIL_FOLLOW_KEY,
+});
+
+const jobTailController = createTailController({
+  container: jobTextContainer,
+  toggle: jobFollowToggle,
+  returnButton: jobReturnButton,
+  storageKey: JOB_TAIL_FOLLOW_KEY,
+});
+
+const storedLiveTail = Number(safeLocalStorageGet(LIVE_TAIL_SIZE_KEY));
+const defaultLiveTail = Number(liveTailSizeSelect?.value || 200);
+const initialLiveTail = Number.isFinite(storedLiveTail) && storedLiveTail > 0 ? storedLiveTail : defaultLiveTail;
+if (liveTailSizeSelect) {
+  liveTailSizeSelect.value = String(initialLiveTail);
+}
+setTailLimit(liveStreamOutput, initialLiveTail);
+setTailLimit(homeLiveOutput, initialLiveTail);
+
+const storedJobTail = Number(safeLocalStorageGet(JOB_TAIL_SIZE_KEY));
+const defaultJobTail = Number(jobTailSizeSelect?.value || 200);
+const initialJobTail = Number.isFinite(storedJobTail) && storedJobTail > 0 ? storedJobTail : defaultJobTail;
+if (jobTailSizeSelect) {
+  jobTailSizeSelect.value = String(initialJobTail);
+}
+setTailLimit(jobTextContainer, initialJobTail);
+
+setupFullscreenToggle(homeLiveFullscreenButton, homeLiveCard);
+setupFullscreenToggle(liveFullscreenButton, liveStreamCard);
+
+applyLiveFontScale(1);
 
 function scrollContainerToEnd(container) {
   if (!container) return;
@@ -396,7 +694,7 @@ function scrollContainerToEnd(container) {
     } else {
       container.scrollTop = container.scrollHeight;
     }
-    updateAutoScrollFlag(container);
+    updateAutoScrollFlag(container, 'manual');
   };
   if (typeof window.requestAnimationFrame === 'function') {
     window.requestAnimationFrame(performScroll);
@@ -446,6 +744,8 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
     }
 
     const targetParagraphs = splitIntoParagraphs(sanitized);
+    const tailLimit = getTailLimit(container);
+    const displayParagraphs = tailLimit > 0 ? targetParagraphs.slice(-tailLimit) : targetParagraphs;
     const previousFull = container.dataset.fullText || '';
     const shouldReset = !previousFull || !sanitized.startsWith(previousFull);
     if (shouldReset) {
@@ -454,10 +754,10 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
     }
 
     const previousParagraphs = JSON.parse(container.dataset.paragraphs || '[]');
-    trimParagraphNodes(container, targetParagraphs.length);
+    trimParagraphNodes(container, displayParagraphs.length);
 
     const animations = [];
-    targetParagraphs.forEach((paragraphText, index) => {
+    displayParagraphs.forEach((paragraphText, index) => {
       const paragraphElement = ensureParagraph(container, index);
       const previousText = shouldReset ? '' : previousParagraphs[index] ?? paragraphElement.textContent ?? '';
       if (!paragraphText) {
@@ -484,7 +784,7 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
 
     const finalize = () => {
       container.dataset.fullText = sanitized;
-      container.dataset.paragraphs = JSON.stringify(targetParagraphs);
+      container.dataset.paragraphs = JSON.stringify(displayParagraphs);
       container.dataset.typing = 'false';
       if (autoScroll) {
         scrollContainerToEnd(container);
@@ -583,27 +883,37 @@ function renderTranscript(element, text, { placeholder = 'Transcripción no disp
 
   if (element.tagName === 'PRE') {
     element.textContent = safeText || placeholder;
+    element.dataset.fullText = safeText;
+    element.dataset.paragraphs = JSON.stringify([]);
     return;
   }
 
   if (!safeText) {
     element.textContent = placeholder;
+    element.dataset.fullText = '';
+    element.dataset.paragraphs = JSON.stringify([]);
     return;
   }
 
   const chunks = splitIntoParagraphs(safeText);
+  const tailLimit = getTailLimit(element);
+  const displayChunks = tailLimit > 0 ? chunks.slice(-tailLimit) : chunks;
 
-  if (!chunks.length) {
+  if (!displayChunks.length) {
     element.textContent = placeholder;
+    element.dataset.fullText = safeText;
+    element.dataset.paragraphs = JSON.stringify([]);
     return;
   }
 
   element.replaceChildren();
-  for (const chunk of chunks) {
+  for (const chunk of displayChunks) {
     const paragraph = document.createElement('p');
     paragraph.textContent = chunk;
     element.appendChild(paragraph);
   }
+  element.dataset.fullText = safeText;
+  element.dataset.paragraphs = JSON.stringify(displayChunks);
 }
 
 function renderStreamingView(container, item, options = {}) {
@@ -1405,49 +1715,58 @@ function renderHomeRecentList(items) {
     return bDate - aDate;
   });
 
-  const list = document.createElement('ul');
-  list.className = 'home-recent-list__list';
+  const table = document.createElement('table');
+  table.className = 'home-recent-table__table';
+  table.createTHead().innerHTML = `
+    <tr>
+      <th scope="col">Nombre</th>
+      <th scope="col">Estado</th>
+      <th scope="col">Duración</th>
+      <th scope="col">Actualizado</th>
+      <th scope="col">Carpeta</th>
+    </tr>
+  `;
 
-  results.slice(0, 4).forEach((item) => {
-    const li = document.createElement('li');
-    li.className = 'home-recent-list__item';
+  const tbody = table.createTBody();
+  results.slice(0, 5).forEach((item) => {
+    const row = document.createElement('tr');
+    row.dataset.recentId = item.id;
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', `Abrir ${item.original_filename}`);
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'home-recent-list__button';
-    button.setAttribute('data-recent-id', item.id);
+    const nameCell = document.createElement('td');
+    nameCell.textContent = item.original_filename;
+    row.appendChild(nameCell);
 
-    const title = document.createElement('span');
-    title.className = 'home-recent-list__title';
-    title.textContent = item.original_filename;
-    button.appendChild(title);
+    const statusCell = document.createElement('td');
+    statusCell.textContent = formatStatus(item.status);
+    statusCell.dataset.status = item.status;
+    row.appendChild(statusCell);
 
-    const folderLabel = item.output_folder || item.destination_folder || 'Sin carpeta';
-    const folder = document.createElement('span');
-    folder.className = 'home-recent-list__folder';
-    folder.textContent = folderLabel;
-    button.appendChild(folder);
+    const durationCell = document.createElement('td');
+    durationCell.textContent = formatDuration(Number(item.duration ?? 0));
+    row.appendChild(durationCell);
 
-    const meta = document.createElement('span');
-    meta.className = 'home-recent-list__meta';
-    const statusLabel = formatStatus(item.status);
-    const dateLabel = formatDate(item.updated_at || item.created_at);
-    meta.textContent = `${statusLabel} • ${dateLabel}`;
-    button.appendChild(meta);
+    const updatedCell = document.createElement('td');
+    updatedCell.textContent = formatDate(item.updated_at || item.created_at);
+    row.appendChild(updatedCell);
 
-    const preview = (item.text || '').trim();
-    if (preview) {
-      const excerpt = document.createElement('span');
-      excerpt.className = 'home-recent-list__excerpt';
-      excerpt.textContent = preview.slice(0, 120);
-      button.appendChild(excerpt);
-    }
+    const folderCell = document.createElement('td');
+    folderCell.textContent = item.output_folder || item.destination_folder || 'Sin carpeta';
+    row.appendChild(folderCell);
 
-    li.appendChild(button);
-    list.appendChild(li);
+    tbody.appendChild(row);
   });
 
-  homeRecentList.appendChild(list);
+  homeRecentList.appendChild(table);
+}
+
+function handleRecentSelection(id) {
+  if (!Number.isFinite(id)) return;
+  selectedTranscriptionId = id;
+  updateLivePreview(cachedResults);
+  openModal(id);
 }
 
 function renderTranscriptions(items) {
@@ -1806,13 +2125,20 @@ function supportsLiveStreaming() {
 }
 
 function setLiveStreamStatus(message, variant = 'info') {
-  if (!liveStreamStatus) return;
-  liveStreamStatus.textContent = message;
-  liveStreamStatus.dataset.state = variant === 'error' ? 'error' : 'info';
+  const state = variant === 'error' ? 'error' : 'info';
+  if (liveStreamStatus) {
+    liveStreamStatus.textContent = message;
+    liveStreamStatus.dataset.state = state;
+  }
+  if (homeLiveStatus) {
+    homeLiveStatus.textContent = message;
+    homeLiveStatus.dataset.state = state;
+  }
 }
 
 function resetLiveStreamUI(options = {}) {
   if (!liveStreamOutput) return;
+  liveSessionPaused = false;
   const placeholder = options.placeholder || 'Tu texto aparecerá aquí cuando empieces a hablar.';
   resetStreamingContainer(liveStreamOutput, placeholder);
   liveStreamOutput.dataset.stream = 'false';
@@ -1823,17 +2149,67 @@ function updateLiveControls() {
   if (liveStartButton) {
     liveStartButton.disabled = !supported || liveSessionActive;
   }
+  const paused = liveRecorder?.state === 'paused' || liveSessionPaused;
+  if (livePauseButton) {
+    livePauseButton.disabled = !liveSessionActive;
+    const label = livePauseButton.querySelector('span:last-child');
+    if (label) {
+      label.textContent = paused ? 'Reanudar' : 'Pausar';
+    }
+  }
   if (liveStopButton) {
-    liveStopButton.disabled = !liveSessionActive;
+    liveStopButton.disabled = !liveSessionId;
   }
   if (liveResetButton) {
     liveResetButton.disabled = !liveSessionId;
+  }
+  if (homeLiveControls?.length) {
+    homeLiveControls.forEach((button) => {
+      const action = button.dataset.liveControl;
+      const label = button.querySelector('span:last-child');
+      if (action === 'start') {
+        button.disabled = !supported || liveSessionActive;
+      } else if (action === 'pause') {
+        button.disabled = !liveSessionActive;
+        if (label) {
+          label.textContent = paused ? 'Reanudar' : 'Pausar';
+        }
+      } else if (action === 'finish') {
+        button.disabled = !liveSessionId;
+      }
+    });
   }
   if (!supported) {
     setLiveStreamStatus(
       'Tu navegador no permite grabación en vivo. Usa Chrome, Edge o un navegador compatible para habilitarlo.',
       'error',
     );
+  }
+}
+
+function toggleLivePause() {
+  if (!liveRecorder || !liveSessionActive) {
+    return;
+  }
+  if (typeof liveRecorder.pause !== 'function' || typeof liveRecorder.resume !== 'function') {
+    setLiveStreamStatus('Tu navegador no admite pausar la grabación en vivo.', 'error');
+    return;
+  }
+  try {
+    if (liveRecorder.state === 'paused') {
+      liveRecorder.resume();
+      liveSessionPaused = false;
+      setLiveStreamStatus('Grabación reanudada.');
+    } else if (liveRecorder.state === 'recording') {
+      liveRecorder.pause();
+      liveSessionPaused = true;
+      setLiveStreamStatus('Sesión en pausa. Reanuda cuando quieras.');
+    }
+  } catch (error) {
+    console.error('No se pudo alternar la pausa de la sesión en vivo:', error);
+    setLiveStreamStatus(`No se pudo pausar/reanudar: ${error.message}`, 'error');
+  } finally {
+    updateLiveControls();
   }
 }
 
@@ -1943,21 +2319,32 @@ async function startLiveSession() {
         liveMediaStream = null;
       }
     });
+    liveRecorder.addEventListener('pause', () => {
+      liveSessionPaused = true;
+      updateLiveControls();
+    });
+    liveRecorder.addEventListener('resume', () => {
+      liveSessionPaused = false;
+      updateLiveControls();
+    });
     liveRecorder.addEventListener('error', (event) => {
       const message = event?.error?.message || 'Error desconocido del grabador';
       setLiveStreamStatus(`La grabación en vivo falló: ${message}`, 'error');
       liveSessionActive = false;
+      liveSessionPaused = false;
       if (liveRecorder && liveRecorder.state !== 'inactive') {
         liveRecorder.stop();
       }
     });
     resetLiveStreamUI({ placeholder: 'Escuchando… di algo para comenzar.' });
+    liveSessionPaused = false;
     liveRecorder.start(LIVE_CHUNK_INTERVAL);
     setLiveStreamStatus('Grabando… habla cerca del micrófono para recibir texto.');
   } catch (error) {
     console.error('No se pudo iniciar la sesión en vivo:', error);
     liveSessionId = null;
     liveSessionActive = false;
+    liveSessionPaused = false;
     setLiveStreamStatus(`No se pudo iniciar la sesión en vivo: ${error.message}`, 'error');
     if (liveMediaStream) {
       liveMediaStream.getTracks().forEach((track) => track.stop());
@@ -1994,6 +2381,7 @@ async function finalizeLiveSession() {
     setLiveStreamStatus('Sesión guardada correctamente.');
     liveSessionId = null;
     liveSessionActive = false;
+    liveSessionPaused = false;
     liveChunkChain = Promise.resolve();
     liveRecorder = null;
     if (liveSubjectInput) {
@@ -2015,6 +2403,7 @@ async function stopLiveSession() {
     return;
   }
   setLiveStreamStatus('Deteniendo y guardando la sesión en vivo…');
+  liveSessionPaused = false;
   if (liveRecorder && liveRecorder.state !== 'inactive') {
     liveRecorder.stop();
   }
@@ -2039,6 +2428,7 @@ async function discardLiveSession() {
     updateLiveControls();
     return;
   }
+  liveSessionPaused = false;
   if (liveRecorder && liveRecorder.state !== 'inactive') {
     liveRecorder.stop();
   }
@@ -2196,17 +2586,47 @@ if (lastDestinationFolder) {
     liveFolderInput.value = lastDestinationFolder;
   }
 }
+if (homeQuickFolderInput) {
+  homeQuickFolderInput.value = lastDestinationFolder;
+}
 updateDestinationOptions([]);
 resetLiveStreamUI();
 setLiveStreamStatus('Tu texto aparecerá aquí cuando empieces a hablar.');
 updateLiveControls();
 liveStartButton?.addEventListener('click', startLiveSession);
+livePauseButton?.addEventListener('click', toggleLivePause);
 liveStopButton?.addEventListener('click', stopLiveSession);
 liveResetButton?.addEventListener('click', discardLiveSession);
 destinationInput?.addEventListener('change', handleDestinationInputChange);
 destinationInput?.addEventListener('blur', handleDestinationInputChange);
 liveFolderInput?.addEventListener('change', handleLiveFolderChange);
 liveFolderInput?.addEventListener('blur', handleLiveFolderChange);
+homeQuickFolderInput?.addEventListener('change', handleHomeQuickFolderChange);
+homeQuickFolderInput?.addEventListener('blur', handleHomeQuickFolderChange);
+if (homeLiveControls?.length) {
+  homeLiveControls.forEach((button) => {
+    const action = button.dataset.liveControl;
+    if (action === 'start') {
+      button.addEventListener('click', startLiveSession);
+    } else if (action === 'pause') {
+      button.addEventListener('click', toggleLivePause);
+    } else if (action === 'finish') {
+      button.addEventListener('click', () => {
+        stopLiveSession();
+      });
+    }
+  });
+}
+scrollTargetButtons?.forEach((button) => {
+  button.addEventListener('click', () => {
+    const selector = button.dataset.scrollTo;
+    if (!selector) return;
+    const target = document.querySelector(selector);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+});
 searchInput?.addEventListener('input', handleSearch);
 filterPremium?.addEventListener('change', (event) => {
   premiumOnly = event.target.checked;
@@ -2263,11 +2683,13 @@ folderGroupsContainer?.addEventListener('click', (event) => {
   const id = Number(trigger.getAttribute('data-folder-transcription'));
   if (!Number.isFinite(id)) return;
   selectedTranscriptionId = id;
-  if (liveOutput) {
-    liveOutput.dataset.autoScroll = 'true';
+  if (livePreviewTargets.length) {
+    livePreviewTargets.forEach((output) => {
+      output.dataset.autoScroll = 'true';
+    });
   }
   updateLivePreview(cachedResults);
-  scrollContainerToEnd(liveOutput);
+  livePreviewTargets.forEach((output) => scrollContainerToEnd(output));
 });
 
 homePendingList?.addEventListener('click', (event) => {
@@ -2296,14 +2718,55 @@ homeFolderSummary?.addEventListener('click', (event) => {
   });
 });
 
-homeRecentList?.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-recent-id]');
-  if (!button) return;
-  const id = Number(button.getAttribute('data-recent-id'));
-  if (!Number.isFinite(id)) return;
-  selectedTranscriptionId = id;
+liveTailSizeSelect?.addEventListener('change', (event) => {
+  const limit = Number(event.target.value);
+  if (!Number.isFinite(limit) || limit <= 0) return;
+  safeLocalStorageSet(LIVE_TAIL_SIZE_KEY, String(limit));
+  setTailLimit(liveStreamOutput, limit);
+  setTailLimit(homeLiveOutput, limit);
   updateLivePreview(cachedResults);
-  openModal(id);
+});
+
+jobTailSizeSelect?.addEventListener('change', (event) => {
+  const limit = Number(event.target.value);
+  if (!Number.isFinite(limit) || limit <= 0) return;
+  safeLocalStorageSet(JOB_TAIL_SIZE_KEY, String(limit));
+  setTailLimit(jobTextContainer, limit);
+});
+
+liveFontIncreaseButton?.addEventListener('click', () => {
+  applyLiveFontScale(liveFontScale + LIVE_FONT_STEP);
+});
+
+liveFontDecreaseButton?.addEventListener('click', () => {
+  applyLiveFontScale(liveFontScale - LIVE_FONT_STEP);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  fullscreenBindings.forEach(({ target, apply }) => {
+    if (target?.classList?.contains('is-fullscreen')) {
+      apply(false);
+    }
+  });
+});
+
+homeRecentList?.addEventListener('click', (event) => {
+  const row = event.target.closest('[data-recent-id]');
+  if (!row) return;
+  const id = Number(row.getAttribute('data-recent-id'));
+  handleRecentSelection(id);
+});
+
+homeRecentList?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') {
+    return;
+  }
+  const row = event.target.closest('[data-recent-id]');
+  if (!row) return;
+  event.preventDefault();
+  const id = Number(row.getAttribute('data-recent-id'));
+  handleRecentSelection(id);
 });
 
 renderHomePendingList([]);
@@ -2384,7 +2847,17 @@ function updateMetricValue(element, key, value, formatter = (val) => val) {
 }
 
 function updateMetrics(items) {
-  if (!metricTotal && !metricCompleted && !metricProcessing && !metricPremium && !metricMinutes) {
+  if (
+    !metricTotal &&
+    !metricCompleted &&
+    !metricProcessing &&
+    !metricPremium &&
+    !metricMinutes &&
+    !metricMode &&
+    !metricModel &&
+    !metricTodayMinutes &&
+    !metricTodayCount
+  ) {
     return;
   }
   const safeItems = Array.isArray(items) ? items : [];
@@ -2393,12 +2866,48 @@ function updateMetrics(items) {
   const processing = safeItems.filter((item) => item.status === 'processing').length;
   const premium = safeItems.filter((item) => item.premium_enabled).length;
   const minutes = safeItems.reduce((acc, item) => acc + ((item.duration ?? 0) / 60), 0);
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const todayItems = safeItems.filter((item) => {
+    const timestamp = Date.parse(item?.updated_at || item?.created_at || '') || 0;
+    return timestamp >= startOfDay;
+  });
+  const todayCount = todayItems.length;
+  const todayMinutes = todayItems.reduce((acc, item) => acc + ((item.duration ?? 0) / 60), 0);
+  const deviceCounts = safeItems.reduce((acc, item) => {
+    const raw = (item?.device_preference || '').trim();
+    if (!raw) return acc;
+    const key = raw.toLowerCase();
+    if (!acc[key]) {
+      acc[key] = { count: 0, label: raw.toUpperCase() };
+    }
+    acc[key].count += 1;
+    return acc;
+  }, {});
+  const modelCounts = safeItems.reduce((acc, item) => {
+    const raw = (item?.model_size || '').trim();
+    if (!raw) return acc;
+    const key = raw.toLowerCase();
+    if (!acc[key]) {
+      acc[key] = { count: 0, label: raw };
+    }
+    acc[key].count += 1;
+    return acc;
+  }, {});
+  const topDevice = Object.values(deviceCounts)
+    .sort((a, b) => b.count - a.count)[0]?.label || '';
+  const topModel = Object.values(modelCounts)
+    .sort((a, b) => b.count - a.count)[0]?.label || '';
 
   updateMetricValue(metricTotal, 'total', total);
   updateMetricValue(metricCompleted, 'completed', completed);
   updateMetricValue(metricProcessing, 'processing', processing);
   updateMetricValue(metricPremium, 'premium', premium);
   updateMetricValue(metricMinutes, 'minutes', minutes, (val) => `${val.toFixed(1)} min`);
+  updateMetricValue(metricTodayMinutes, 'todayMinutes', todayMinutes, (val) => `Hoy: ${val.toFixed(1)} min`);
+  updateMetricValue(metricTodayCount, 'todayCount', todayCount, (val) => `Hoy: ${val}`);
+  updateMetricValue(metricMode, 'mode', topDevice, (val) => (val ? val : '—'));
+  updateMetricValue(metricModel, 'model', topModel, (val) => (val ? val : '—'));
 }
 
 function updateStudentPreview(item) {
@@ -2422,8 +2931,20 @@ function updateStudentPreview(item) {
 }
 
 function updateLivePreview(results) {
-  if (!liveOutput) return;
+  if (!livePreviewTargets.length) return;
   const safeResults = Array.isArray(results) ? results : [];
+  const renderToTargets = (item, options = {}) => {
+    livePreviewTargets.forEach((output) => {
+      renderStreamingView(output, item, options);
+    });
+  };
+  const resetTargets = (message) => {
+    livePreviewTargets.forEach((output) => {
+      resetStreamingContainer(output, message);
+      output.dataset.stream = 'false';
+    });
+  };
+
   if (selectedTranscriptionId) {
     const selected = safeResults.find((item) => item.id === selectedTranscriptionId);
     if (selected) {
@@ -2431,7 +2952,7 @@ function updateLivePreview(results) {
       if (selected.id !== currentLiveTranscriptionId || text !== currentLiveText) {
         currentLiveTranscriptionId = selected.id;
         currentLiveText = text;
-        renderStreamingView(liveOutput, selected, {
+        renderToTargets(selected, {
           placeholder: 'Procesando y transcribiendo en vivo…',
         });
         updateStudentPreview(selected);
@@ -2441,6 +2962,7 @@ function updateLivePreview(results) {
     }
     return;
   }
+
   const active =
     safeResults.find((item) => item.status === 'processing' && item.text) ||
     safeResults.find((item) => item.status === 'completed' && item.text);
@@ -2449,20 +2971,17 @@ function updateLivePreview(results) {
     if (active.id !== currentLiveTranscriptionId || text !== currentLiveText) {
       currentLiveTranscriptionId = active.id;
       currentLiveText = text;
-      renderStreamingView(liveOutput, active, {
+      renderToTargets(active, {
         placeholder: 'Procesando y transcribiendo en vivo…',
       });
       updateStudentPreview(active);
     }
     return;
   }
+
   currentLiveTranscriptionId = null;
   currentLiveText = '';
-  resetStreamingContainer(
-    liveOutput,
-    'Selecciona cualquier transcripción para previsualizarla aquí.',
-  );
-  liveOutput.dataset.stream = 'false';
+  resetTargets('Selecciona cualquier transcripción para previsualizarla aquí.');
   updateStudentPreview(null);
 }
 
@@ -2484,12 +3003,14 @@ async function openModal(id) {
     modal.hidden = false;
     const message = `No se pudo obtener la transcripción: ${error.message}`;
     modalText.textContent = message;
-    if (liveOutput) {
-      renderStreamingView(
-        liveOutput,
-        { text: message, status: 'completed' },
-        { autoScroll: false },
-      );
+    if (livePreviewTargets.length) {
+      livePreviewTargets.forEach((output) => {
+        renderStreamingView(
+          output,
+          { text: message, status: 'completed' },
+          { autoScroll: false },
+        );
+      });
     }
     resetCopyFeedback();
   }
