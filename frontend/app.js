@@ -31,6 +31,10 @@ const metricCompleted = document.querySelector('[data-metric="completed"]');
 const metricProcessing = document.querySelector('[data-metric="processing"]');
 const metricPremium = document.querySelector('[data-metric="premium"]');
 const metricMinutes = document.querySelector('[data-metric="minutes"]');
+const metricMode = document.querySelector('[data-metric="mode"]');
+const metricModel = document.querySelector('[data-metric="model"]');
+const metricTodayMinutes = document.querySelector('[data-metric="todayMinutes"]');
+const metricTodayCount = document.querySelector('[data-metric="todayCount"]');
 const uploadProgress = document.querySelector('#upload-progress');
 
 const MEDIA_PREFIXES = ['audio/', 'video/'];
@@ -67,6 +71,10 @@ const metricSnapshot = {
   processing: 0,
   premium: 0,
   minutes: 0,
+  todayMinutes: 0,
+  todayCount: 0,
+  mode: '',
+  model: '',
 };
 let uploadProgressTimer = null;
 let uploadProgressValue = 0;
@@ -92,6 +100,7 @@ const liveDeviceSelect = document.querySelector('#live-device');
 const liveFolderInput = document.querySelector('#live-folder');
 const liveSubjectInput = document.querySelector('#live-subject');
 const liveStartButton = document.querySelector('#live-start');
+const livePauseButton = document.querySelector('#live-pause');
 const liveStopButton = document.querySelector('#live-stop');
 const liveResetButton = document.querySelector('#live-reset');
 const liveStreamStatus = document.querySelector('#live-stream-status');
@@ -101,6 +110,10 @@ const homePendingEmpty = document.querySelector('#home-pending-empty');
 const homePendingCount = document.querySelector('#home-pending-count');
 const homeFolderSummary = document.querySelector('#home-folder-summary');
 const homeRecentList = document.querySelector('#home-recent-list');
+const homeLiveStatus = document.querySelector('#home-live-status');
+const homeLiveControls = document.querySelectorAll('[data-live-control]');
+const homeQuickFolderInput = document.querySelector('#home-folder-quick');
+const scrollTargetButtons = document.querySelectorAll('[data-scroll-to]');
 const sectionToggles = document.querySelectorAll('[data-section-toggle]');
 const sectionPanels = document.querySelectorAll('[data-section]');
 const sectionJumpButtons = document.querySelectorAll('[data-section-jump]');
@@ -124,6 +137,7 @@ let liveMediaStream = null;
 let liveRecorder = null;
 let liveChunkChain = Promise.resolve();
 let liveSessionActive = false;
+let liveSessionPaused = false;
 let destinationHintTimeout = null;
 
 const FOLDER_TAG_LABELS = {
@@ -239,6 +253,9 @@ function hideDestinationSavedHint() {
 function persistDestinationFolder(value) {
   const trimmed = (value || '').trim();
   safeLocalStorageSet(DESTINATION_STORAGE_KEY, trimmed);
+  if (homeQuickFolderInput) {
+    homeQuickFolderInput.value = trimmed;
+  }
   if (!destinationSavedHint) {
     return;
   }
@@ -298,6 +315,17 @@ function handleLiveFolderChange(event) {
   if (destinationInput && !destinationInput.value) {
     destinationInput.value = value;
   }
+}
+
+function handleHomeQuickFolderChange(event) {
+  const value = event?.target?.value ?? homeQuickFolderInput?.value ?? '';
+  if (destinationInput) {
+    destinationInput.value = value;
+  }
+  if (liveFolderInput) {
+    liveFolderInput.value = value;
+  }
+  persistDestinationFolder(value);
 }
 
 function splitIntoParagraphs(text) {
@@ -1407,49 +1435,58 @@ function renderHomeRecentList(items) {
     return bDate - aDate;
   });
 
-  const list = document.createElement('ul');
-  list.className = 'home-recent-list__list';
+  const table = document.createElement('table');
+  table.className = 'home-recent-table__table';
+  table.createTHead().innerHTML = `
+    <tr>
+      <th scope="col">Nombre</th>
+      <th scope="col">Estado</th>
+      <th scope="col">Duración</th>
+      <th scope="col">Actualizado</th>
+      <th scope="col">Carpeta</th>
+    </tr>
+  `;
 
-  results.slice(0, 4).forEach((item) => {
-    const li = document.createElement('li');
-    li.className = 'home-recent-list__item';
+  const tbody = table.createTBody();
+  results.slice(0, 5).forEach((item) => {
+    const row = document.createElement('tr');
+    row.dataset.recentId = item.id;
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', `Abrir ${item.original_filename}`);
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'home-recent-list__button';
-    button.setAttribute('data-recent-id', item.id);
+    const nameCell = document.createElement('td');
+    nameCell.textContent = item.original_filename;
+    row.appendChild(nameCell);
 
-    const title = document.createElement('span');
-    title.className = 'home-recent-list__title';
-    title.textContent = item.original_filename;
-    button.appendChild(title);
+    const statusCell = document.createElement('td');
+    statusCell.textContent = formatStatus(item.status);
+    statusCell.dataset.status = item.status;
+    row.appendChild(statusCell);
 
-    const folderLabel = item.output_folder || item.destination_folder || 'Sin carpeta';
-    const folder = document.createElement('span');
-    folder.className = 'home-recent-list__folder';
-    folder.textContent = folderLabel;
-    button.appendChild(folder);
+    const durationCell = document.createElement('td');
+    durationCell.textContent = formatDuration(Number(item.duration ?? 0));
+    row.appendChild(durationCell);
 
-    const meta = document.createElement('span');
-    meta.className = 'home-recent-list__meta';
-    const statusLabel = formatStatus(item.status);
-    const dateLabel = formatDate(item.updated_at || item.created_at);
-    meta.textContent = `${statusLabel} • ${dateLabel}`;
-    button.appendChild(meta);
+    const updatedCell = document.createElement('td');
+    updatedCell.textContent = formatDate(item.updated_at || item.created_at);
+    row.appendChild(updatedCell);
 
-    const preview = (item.text || '').trim();
-    if (preview) {
-      const excerpt = document.createElement('span');
-      excerpt.className = 'home-recent-list__excerpt';
-      excerpt.textContent = preview.slice(0, 120);
-      button.appendChild(excerpt);
-    }
+    const folderCell = document.createElement('td');
+    folderCell.textContent = item.output_folder || item.destination_folder || 'Sin carpeta';
+    row.appendChild(folderCell);
 
-    li.appendChild(button);
-    list.appendChild(li);
+    tbody.appendChild(row);
   });
 
-  homeRecentList.appendChild(list);
+  homeRecentList.appendChild(table);
+}
+
+function handleRecentSelection(id) {
+  if (!Number.isFinite(id)) return;
+  selectedTranscriptionId = id;
+  updateLivePreview(cachedResults);
+  openModal(id);
 }
 
 function renderTranscriptions(items) {
@@ -1808,13 +1845,20 @@ function supportsLiveStreaming() {
 }
 
 function setLiveStreamStatus(message, variant = 'info') {
-  if (!liveStreamStatus) return;
-  liveStreamStatus.textContent = message;
-  liveStreamStatus.dataset.state = variant === 'error' ? 'error' : 'info';
+  const state = variant === 'error' ? 'error' : 'info';
+  if (liveStreamStatus) {
+    liveStreamStatus.textContent = message;
+    liveStreamStatus.dataset.state = state;
+  }
+  if (homeLiveStatus) {
+    homeLiveStatus.textContent = message;
+    homeLiveStatus.dataset.state = state;
+  }
 }
 
 function resetLiveStreamUI(options = {}) {
   if (!liveStreamOutput) return;
+  liveSessionPaused = false;
   const placeholder = options.placeholder || 'Tu texto aparecerá aquí cuando empieces a hablar.';
   resetStreamingContainer(liveStreamOutput, placeholder);
   liveStreamOutput.dataset.stream = 'false';
@@ -1825,17 +1869,67 @@ function updateLiveControls() {
   if (liveStartButton) {
     liveStartButton.disabled = !supported || liveSessionActive;
   }
+  const paused = liveRecorder?.state === 'paused' || liveSessionPaused;
+  if (livePauseButton) {
+    livePauseButton.disabled = !liveSessionActive;
+    const label = livePauseButton.querySelector('span:last-child');
+    if (label) {
+      label.textContent = paused ? 'Reanudar' : 'Pausar';
+    }
+  }
   if (liveStopButton) {
-    liveStopButton.disabled = !liveSessionActive;
+    liveStopButton.disabled = !liveSessionId;
   }
   if (liveResetButton) {
     liveResetButton.disabled = !liveSessionId;
+  }
+  if (homeLiveControls?.length) {
+    homeLiveControls.forEach((button) => {
+      const action = button.dataset.liveControl;
+      const label = button.querySelector('span:last-child');
+      if (action === 'start') {
+        button.disabled = !supported || liveSessionActive;
+      } else if (action === 'pause') {
+        button.disabled = !liveSessionActive;
+        if (label) {
+          label.textContent = paused ? 'Reanudar' : 'Pausar';
+        }
+      } else if (action === 'finish') {
+        button.disabled = !liveSessionId;
+      }
+    });
   }
   if (!supported) {
     setLiveStreamStatus(
       'Tu navegador no permite grabación en vivo. Usa Chrome, Edge o un navegador compatible para habilitarlo.',
       'error',
     );
+  }
+}
+
+function toggleLivePause() {
+  if (!liveRecorder || !liveSessionActive) {
+    return;
+  }
+  if (typeof liveRecorder.pause !== 'function' || typeof liveRecorder.resume !== 'function') {
+    setLiveStreamStatus('Tu navegador no admite pausar la grabación en vivo.', 'error');
+    return;
+  }
+  try {
+    if (liveRecorder.state === 'paused') {
+      liveRecorder.resume();
+      liveSessionPaused = false;
+      setLiveStreamStatus('Grabación reanudada.');
+    } else if (liveRecorder.state === 'recording') {
+      liveRecorder.pause();
+      liveSessionPaused = true;
+      setLiveStreamStatus('Sesión en pausa. Reanuda cuando quieras.');
+    }
+  } catch (error) {
+    console.error('No se pudo alternar la pausa de la sesión en vivo:', error);
+    setLiveStreamStatus(`No se pudo pausar/reanudar: ${error.message}`, 'error');
+  } finally {
+    updateLiveControls();
   }
 }
 
@@ -1945,21 +2039,32 @@ async function startLiveSession() {
         liveMediaStream = null;
       }
     });
+    liveRecorder.addEventListener('pause', () => {
+      liveSessionPaused = true;
+      updateLiveControls();
+    });
+    liveRecorder.addEventListener('resume', () => {
+      liveSessionPaused = false;
+      updateLiveControls();
+    });
     liveRecorder.addEventListener('error', (event) => {
       const message = event?.error?.message || 'Error desconocido del grabador';
       setLiveStreamStatus(`La grabación en vivo falló: ${message}`, 'error');
       liveSessionActive = false;
+      liveSessionPaused = false;
       if (liveRecorder && liveRecorder.state !== 'inactive') {
         liveRecorder.stop();
       }
     });
     resetLiveStreamUI({ placeholder: 'Escuchando… di algo para comenzar.' });
+    liveSessionPaused = false;
     liveRecorder.start(LIVE_CHUNK_INTERVAL);
     setLiveStreamStatus('Grabando… habla cerca del micrófono para recibir texto.');
   } catch (error) {
     console.error('No se pudo iniciar la sesión en vivo:', error);
     liveSessionId = null;
     liveSessionActive = false;
+    liveSessionPaused = false;
     setLiveStreamStatus(`No se pudo iniciar la sesión en vivo: ${error.message}`, 'error');
     if (liveMediaStream) {
       liveMediaStream.getTracks().forEach((track) => track.stop());
@@ -1996,6 +2101,7 @@ async function finalizeLiveSession() {
     setLiveStreamStatus('Sesión guardada correctamente.');
     liveSessionId = null;
     liveSessionActive = false;
+    liveSessionPaused = false;
     liveChunkChain = Promise.resolve();
     liveRecorder = null;
     if (liveSubjectInput) {
@@ -2017,6 +2123,7 @@ async function stopLiveSession() {
     return;
   }
   setLiveStreamStatus('Deteniendo y guardando la sesión en vivo…');
+  liveSessionPaused = false;
   if (liveRecorder && liveRecorder.state !== 'inactive') {
     liveRecorder.stop();
   }
@@ -2041,6 +2148,7 @@ async function discardLiveSession() {
     updateLiveControls();
     return;
   }
+  liveSessionPaused = false;
   if (liveRecorder && liveRecorder.state !== 'inactive') {
     liveRecorder.stop();
   }
@@ -2198,17 +2306,47 @@ if (lastDestinationFolder) {
     liveFolderInput.value = lastDestinationFolder;
   }
 }
+if (homeQuickFolderInput) {
+  homeQuickFolderInput.value = lastDestinationFolder;
+}
 updateDestinationOptions([]);
 resetLiveStreamUI();
 setLiveStreamStatus('Tu texto aparecerá aquí cuando empieces a hablar.');
 updateLiveControls();
 liveStartButton?.addEventListener('click', startLiveSession);
+livePauseButton?.addEventListener('click', toggleLivePause);
 liveStopButton?.addEventListener('click', stopLiveSession);
 liveResetButton?.addEventListener('click', discardLiveSession);
 destinationInput?.addEventListener('change', handleDestinationInputChange);
 destinationInput?.addEventListener('blur', handleDestinationInputChange);
 liveFolderInput?.addEventListener('change', handleLiveFolderChange);
 liveFolderInput?.addEventListener('blur', handleLiveFolderChange);
+homeQuickFolderInput?.addEventListener('change', handleHomeQuickFolderChange);
+homeQuickFolderInput?.addEventListener('blur', handleHomeQuickFolderChange);
+if (homeLiveControls?.length) {
+  homeLiveControls.forEach((button) => {
+    const action = button.dataset.liveControl;
+    if (action === 'start') {
+      button.addEventListener('click', startLiveSession);
+    } else if (action === 'pause') {
+      button.addEventListener('click', toggleLivePause);
+    } else if (action === 'finish') {
+      button.addEventListener('click', () => {
+        stopLiveSession();
+      });
+    }
+  });
+}
+scrollTargetButtons?.forEach((button) => {
+  button.addEventListener('click', () => {
+    const selector = button.dataset.scrollTo;
+    if (!selector) return;
+    const target = document.querySelector(selector);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+});
 searchInput?.addEventListener('input', handleSearch);
 filterPremium?.addEventListener('change', (event) => {
   premiumOnly = event.target.checked;
@@ -2301,13 +2439,21 @@ homeFolderSummary?.addEventListener('click', (event) => {
 });
 
 homeRecentList?.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-recent-id]');
-  if (!button) return;
-  const id = Number(button.getAttribute('data-recent-id'));
-  if (!Number.isFinite(id)) return;
-  selectedTranscriptionId = id;
-  updateLivePreview(cachedResults);
-  openModal(id);
+  const row = event.target.closest('[data-recent-id]');
+  if (!row) return;
+  const id = Number(row.getAttribute('data-recent-id'));
+  handleRecentSelection(id);
+});
+
+homeRecentList?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') {
+    return;
+  }
+  const row = event.target.closest('[data-recent-id]');
+  if (!row) return;
+  event.preventDefault();
+  const id = Number(row.getAttribute('data-recent-id'));
+  handleRecentSelection(id);
 });
 
 renderHomePendingList([]);
@@ -2388,7 +2534,17 @@ function updateMetricValue(element, key, value, formatter = (val) => val) {
 }
 
 function updateMetrics(items) {
-  if (!metricTotal && !metricCompleted && !metricProcessing && !metricPremium && !metricMinutes) {
+  if (
+    !metricTotal &&
+    !metricCompleted &&
+    !metricProcessing &&
+    !metricPremium &&
+    !metricMinutes &&
+    !metricMode &&
+    !metricModel &&
+    !metricTodayMinutes &&
+    !metricTodayCount
+  ) {
     return;
   }
   const safeItems = Array.isArray(items) ? items : [];
@@ -2397,12 +2553,48 @@ function updateMetrics(items) {
   const processing = safeItems.filter((item) => item.status === 'processing').length;
   const premium = safeItems.filter((item) => item.premium_enabled).length;
   const minutes = safeItems.reduce((acc, item) => acc + ((item.duration ?? 0) / 60), 0);
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const todayItems = safeItems.filter((item) => {
+    const timestamp = Date.parse(item?.updated_at || item?.created_at || '') || 0;
+    return timestamp >= startOfDay;
+  });
+  const todayCount = todayItems.length;
+  const todayMinutes = todayItems.reduce((acc, item) => acc + ((item.duration ?? 0) / 60), 0);
+  const deviceCounts = safeItems.reduce((acc, item) => {
+    const raw = (item?.device_preference || '').trim();
+    if (!raw) return acc;
+    const key = raw.toLowerCase();
+    if (!acc[key]) {
+      acc[key] = { count: 0, label: raw.toUpperCase() };
+    }
+    acc[key].count += 1;
+    return acc;
+  }, {});
+  const modelCounts = safeItems.reduce((acc, item) => {
+    const raw = (item?.model_size || '').trim();
+    if (!raw) return acc;
+    const key = raw.toLowerCase();
+    if (!acc[key]) {
+      acc[key] = { count: 0, label: raw };
+    }
+    acc[key].count += 1;
+    return acc;
+  }, {});
+  const topDevice = Object.values(deviceCounts)
+    .sort((a, b) => b.count - a.count)[0]?.label || '';
+  const topModel = Object.values(modelCounts)
+    .sort((a, b) => b.count - a.count)[0]?.label || '';
 
   updateMetricValue(metricTotal, 'total', total);
   updateMetricValue(metricCompleted, 'completed', completed);
   updateMetricValue(metricProcessing, 'processing', processing);
   updateMetricValue(metricPremium, 'premium', premium);
   updateMetricValue(metricMinutes, 'minutes', minutes, (val) => `${val.toFixed(1)} min`);
+  updateMetricValue(metricTodayMinutes, 'todayMinutes', todayMinutes, (val) => `Hoy: ${val.toFixed(1)} min`);
+  updateMetricValue(metricTodayCount, 'todayCount', todayCount, (val) => `Hoy: ${val}`);
+  updateMetricValue(metricMode, 'mode', topDevice, (val) => (val ? val : '—'));
+  updateMetricValue(metricModel, 'model', topModel, (val) => (val ? val : '—'));
 }
 
 function updateStudentPreview(item) {

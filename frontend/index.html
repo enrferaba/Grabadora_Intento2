@@ -33,33 +33,74 @@
 
     <main class="app-main">
       <section class="main-section is-active" data-section="home">
-        <div class="container">
-          <div class="home-layout">
-            <div class="home-layout__main">
-              <section class="hero" id="home-hero">
-                <div class="hero-content">
-                  <h1>Transcribe sin complicaciones</h1>
-                  <p>
-                    Sube tus clases, prácticas o notas de voz y sigue la transcripción en vivo mientras trabajamos por ti.
-                  </p>
-                  <div class="hero-tags">
-                    <span>WhisperX optimizado</span>
-                    <span>Carpetas automáticas</span>
-                    <span>Streaming en tiempo real</span>
-                  </div>
-                </div>
-                <div class="hero-visual" aria-hidden="true">
-                  <div class="wave"></div>
-                  <div class="wave"></div>
-                  <div class="wave"></div>
-                </div>
-              </section>
+        <div class="container home-container">
+          <header class="view-header home-header">
+            <div class="home-header__intro">
+              <h1 class="view-title">Panel principal</h1>
+              <p class="section-lead">
+                Controla tus métricas, inicia transcripciones al vuelo y visualiza los últimos resultados sin abandonar la portada.
+              </p>
+            </div>
+            <div class="home-header__actions">
+              <label class="combo" for="home-folder-quick">
+                <span class="combo-label">Carpeta rápida</span>
+                <input
+                  id="home-folder-quick"
+                  type="text"
+                  placeholder="Crear o seleccionar"
+                  list="destination-folder-options"
+                  autocomplete="off"
+                />
+              </label>
+              <button type="button" class="primary" data-scroll-to="#upload-form">
+                <span class="icon">➕</span>
+                <span>Nueva transcripción</span>
+              </button>
+            </div>
+          </header>
 
+          <section class="card metrics-card home-stats-card" aria-label="Estadísticas generales">
+            <h2 class="visually-hidden">Resumen de uso</h2>
+            <div class="metrics-grid">
+              <article class="metric">
+                <p class="metric-label">Minutos procesados</p>
+                <p class="metric-value metric-stack">
+                  <span data-metric="minutes">0 min</span>
+                  <span class="metric-sub" data-metric="todayMinutes">Hoy: 0</span>
+                </p>
+                <p class="metric-sub">Total acumulado y minutos diarios</p>
+              </article>
+              <article class="metric">
+                <p class="metric-label">Transcripciones</p>
+                <p class="metric-value metric-stack">
+                  <span data-metric="total">0</span>
+                  <span class="metric-sub" data-metric="todayCount">Hoy: 0</span>
+                </p>
+                <p class="metric-sub">Conteo histórico y diario</p>
+              </article>
+              <article class="metric">
+                <p class="metric-label">En cola</p>
+                <p class="metric-value" data-metric="processing">0</p>
+                <p class="metric-sub">Transcripciones pendientes</p>
+              </article>
+              <article class="metric">
+                <p class="metric-label">Modo actual</p>
+                <p class="metric-value metric-stack">
+                  <span data-metric="mode">GPU</span>
+                  <span data-metric="model">WhisperX large-v3</span>
+                </p>
+                <p class="metric-sub">Carga aproximada y modelo activo</p>
+              </article>
+            </div>
+          </section>
+
+          <div class="home-grid">
+            <div class="home-grid__primary">
               <section class="card upload-card" aria-labelledby="upload-heading">
                 <div class="card-header">
                   <h2 id="upload-heading">Transcripción rápida</h2>
                   <p class="section-lead">
-                    Elige tus archivos, selecciona la carpeta de destino y deja que la app haga el resto.
+                    Arrastra audio o video, selecciona destino y obtén el texto listo para copiar o descargar.
                   </p>
                 </div>
                 <form id="upload-form" class="upload-form">
@@ -149,34 +190,57 @@
               <section class="card home-library-card" aria-labelledby="home-library-heading">
                 <div class="card-header">
                   <h2 id="home-library-heading">Biblioteca rápida</h2>
-                  <p class="section-lead">Revisa tus carpetas activas y los últimos archivos sin cambiar de pestaña.</p>
+                  <p class="section-lead">Ubica carpetas activas y abre los últimos procesos en segundos.</p>
                 </div>
                 <div class="home-library-content">
                   <div class="home-folder-summary" id="home-folder-summary" aria-live="polite"></div>
-                  <div class="home-recent-list" id="home-recent-list" aria-live="polite"></div>
-                </div>
-                <div class="home-library-actions">
-                  <button type="button" class="ghost" data-section-jump="library">Ver biblioteca completa</button>
+                  <div class="home-recent" aria-live="polite">
+                    <div class="home-recent-header">
+                      <h3>Últimas transcripciones</h3>
+                      <button type="button" class="ghost" data-section-jump="library">Ir a biblioteca</button>
+                    </div>
+                    <div class="home-recent-table" id="home-recent-list" role="region" aria-label="Transcripciones recientes"></div>
+                  </div>
                 </div>
               </section>
             </div>
 
-            <aside class="home-layout__side" aria-label="Panel de seguimiento">
+            <aside class="home-grid__secondary" aria-label="Panel de seguimiento">
               <section class="card home-live-card" aria-labelledby="home-live-heading">
                 <div class="card-header">
-                  <h2 id="home-live-heading">Visualización inmediata</h2>
-                  <p class="section-lead">Sigue el texto que se genera al instante sin salir de la portada.</p>
+                  <h2 id="home-live-heading">Transcripción en vivo</h2>
+                  <p class="section-lead">Visualiza los últimos fragmentos de audio en tiempo real con control directo desde Inicio.</p>
                 </div>
-                <div
-                  id="home-live-output"
-                  class="live-output live-output--compact"
-                  data-live-output
-                  aria-live="polite"
-                >
-                  Selecciona una transcripción o inicia una nueva grabación para verla aquí.
-                </div>
-                <div class="home-live-actions">
-                  <button type="button" class="ghost" data-section-jump="live">Abrir centro en vivo</button>
+                <div class="home-live-preview">
+                  <div
+                    id="home-live-output"
+                    class="live-output live-output--compact"
+                    data-live-output
+                    aria-live="polite"
+                    data-auto-scroll-threshold="64"
+                  >
+                    Selecciona una transcripción o inicia una nueva grabación para verla aquí.
+                  </div>
+                  <div class="home-live-controls">
+                    <span id="home-live-status" class="home-live-status" aria-live="polite">Listo para empezar una sesión.</span>
+                    <div class="home-live-buttons">
+                      <button type="button" class="secondary" data-live-control="start">
+                        <span class="icon">▶️</span>
+                        <span>Iniciar</span>
+                      </button>
+                      <button type="button" class="ghost" data-live-control="pause">
+                        <span class="icon">⏸</span>
+                        <span>Pausar</span>
+                      </button>
+                      <button type="button" class="primary" data-live-control="finish">
+                        <span class="icon">💾</span>
+                        <span>Finalizar y guardar</span>
+                      </button>
+                    </div>
+                    <p class="home-live-helper">
+                      Los controles están sincronizados con el Centro en vivo para evitar duplicados.
+                    </p>
+                  </div>
                 </div>
               </section>
 
@@ -195,13 +259,13 @@
 
               <section class="card home-shortcuts" aria-labelledby="home-shortcuts-heading">
                 <div class="card-header">
-                  <h2 id="home-shortcuts-heading">Acciones rápidas</h2>
-                  <p class="section-lead">Accede a las vistas clave sin salir de la portada.</p>
+                  <h2 id="home-shortcuts-heading">Accesos rápidos</h2>
+                  <p class="section-lead">Navega entre vistas clave con un solo clic.</p>
                 </div>
                 <div class="home-shortcuts__grid">
-                  <button type="button" class="pill" data-section-jump="library">📂 Ir a biblioteca</button>
+                  <button type="button" class="pill" data-section-jump="library">📂 Ver biblioteca completa</button>
                   <button type="button" class="pill" data-section-jump="live">🎙️ Abrir centro en vivo</button>
-                  <button type="button" class="pill" data-section-jump="benefits">✨ Ver beneficios premium</button>
+                  <button type="button" class="pill" data-section-jump="benefits">✨ Explorar beneficios</button>
                 </div>
               </section>
             </aside>
@@ -210,98 +274,107 @@
       </section>
 
       <section class="main-section" data-section="library" hidden>
-        <div class="container">
-          <header class="view-header">
-            <h1 class="view-title">Biblioteca</h1>
-            <p class="section-lead">Organiza tus carpetas y controla el progreso de tus transcripciones.</p>
+        <div class="container library-container">
+          <header class="view-header library-header">
+            <div class="library-header__intro">
+              <nav class="breadcrumbs" aria-label="Rastro de navegación">
+                <ol>
+                  <li><button type="button" data-section-jump="home">Inicio</button></li>
+                  <li aria-current="page">Biblioteca</li>
+                </ol>
+              </nav>
+              <h1 class="view-title">Biblioteca</h1>
+              <p class="section-lead">Gestiona carpetas, filtra por estado y revisa el avance de cada transcripción.</p>
+            </div>
+            <div class="library-header__actions">
+              <button type="button" class="primary" id="folder-create">Crear carpeta</button>
+              <button type="button" class="ghost" id="folder-manage">Gestionar selección</button>
+            </div>
           </header>
 
-          <section class="card folders-card" aria-labelledby="library-filters-heading">
-            <div class="card-header">
-              <h2 id="library-filters-heading">Filtros y organización</h2>
-              <p class="section-lead">Refina resultados por tipo, estado, tema o texto.</p>
-            </div>
-            <div class="folders-controls" role="group" aria-labelledby="library-filters-heading">
-              <label class="control" for="folder-category">
-                <span>Tipo de carpeta</span>
-                <select id="folder-category">
-                  <option value="all">Todas</option>
-                  <option value="temario">Temario</option>
-                  <option value="tema">Tema</option>
-                  <option value="practicas">Prácticas</option>
-                  <option value="ejercicios">Ejercicios</option>
-                  <option value="teoria">Teoría</option>
-                </select>
-              </label>
-              <label class="control" for="folder-status">
-                <span>Estado</span>
-                <select id="folder-status">
-                  <option value="all">Todos</option>
-                  <option value="in-progress">En proceso</option>
-                  <option value="completed">Completadas</option>
-                  <option value="failed">Con errores</option>
-                  <option value="premium">Premium activado</option>
-                </select>
-              </label>
-              <label class="control" for="folder-topic">
-                <span>Número de tema</span>
-                <select id="folder-topic">
-                  <option value="all">Todos</option>
-                </select>
-              </label>
-              <label class="control control--wide" for="folder-search">
-                <span>Buscar carpeta, asignatura o etiqueta</span>
-                <input id="folder-search" type="search" placeholder="Ej: historia, tema 3, teoría" />
-              </label>
-              <div class="folders-controls__actions">
-                <button id="folder-reset" type="button" class="ghost">Limpiar filtros</button>
-              </div>
-            </div>
-          </section>
+          <div class="library-layout">
+            <aside class="library-sidebar" aria-label="Carpetas">
+              <section class="card folder-tree-card" aria-labelledby="folder-tree-heading">
+                <div class="card-header">
+                  <h2 id="folder-tree-heading">Carpetas</h2>
+                  <p class="section-lead">Crea, renombra o mueve elementos directamente desde la barra lateral.</p>
+                </div>
+                <div class="folder-tree-actions">
+                  <button type="button" class="ghost" id="folder-add-root">Nueva carpeta</button>
+                  <button type="button" class="ghost" id="folder-add-child">Nueva subcarpeta</button>
+                </div>
+                <div id="folder-groups" class="folder-groups" aria-live="polite"></div>
+              </section>
+            </aside>
 
-          <div id="system-alerts" class="system-alerts" hidden aria-live="polite"></div>
+            <div class="library-main">
+              <section class="card library-filters" aria-labelledby="library-filters-heading">
+                <div class="card-header">
+                  <h2 id="library-filters-heading">Filtros y organización</h2>
+                  <p class="section-lead">Refina resultados por tipo, estado, idioma o búsqueda libre.</p>
+                </div>
+                <div class="folders-controls" role="group" aria-labelledby="library-filters-heading">
+                  <label class="control" for="folder-category">
+                    <span>Tipo de carpeta</span>
+                    <select id="folder-category">
+                      <option value="all">Todas</option>
+                      <option value="temario">Temario</option>
+                      <option value="tema">Tema</option>
+                      <option value="practicas">Prácticas</option>
+                      <option value="ejercicios">Ejercicios</option>
+                      <option value="teoria">Teoría</option>
+                    </select>
+                  </label>
+                  <label class="control" for="folder-status">
+                    <span>Estado</span>
+                    <select id="folder-status">
+                      <option value="all">Todos</option>
+                      <option value="in-progress">En proceso</option>
+                      <option value="completed">Completadas</option>
+                      <option value="failed">Con errores</option>
+                      <option value="premium">Premium activado</option>
+                    </select>
+                  </label>
+                  <label class="control" for="folder-topic">
+                    <span>Número de tema</span>
+                    <select id="folder-topic">
+                      <option value="all">Todos</option>
+                    </select>
+                  </label>
+                  <label class="control" for="folder-search">
+                    <span>Buscar carpeta, asignatura o etiqueta</span>
+                    <input id="folder-search" type="search" placeholder="Ej: historia, tema 3, teoría" />
+                  </label>
+                  <div class="folders-controls__actions">
+                    <button id="folder-reset" type="button" class="ghost">Limpiar filtros</button>
+                  </div>
+                </div>
+              </section>
 
-          <div id="folder-groups" class="folder-groups" aria-live="polite"></div>
+              <div id="system-alerts" class="system-alerts" hidden aria-live="polite"></div>
 
-          <section class="card metrics-card" aria-label="Resumen de actividad">
-            <h2 class="visually-hidden">Resumen de actividad</h2>
-            <div class="metrics-grid">
-              <article class="metric">
-                <p class="metric-label">Transcripciones</p>
-                <p class="metric-value" data-metric="total">0</p>
-                <p class="metric-sub">Historial total en la plataforma</p>
-              </article>
-              <article class="metric">
-                <p class="metric-label">Completadas</p>
-                <p class="metric-value" data-metric="completed">0</p>
-                <p class="metric-sub">Listas para descargar</p>
-              </article>
-              <article class="metric">
-                <p class="metric-label">En cola</p>
-                <p class="metric-value" data-metric="processing">0</p>
-                <p class="metric-sub">Procesándose en tiempo real</p>
-              </article>
-              <article class="metric">
-                <p class="metric-label">Premium &nbsp;|&nbsp; Minutos</p>
-                <p class="metric-value metric-stack">
-                  <span data-metric="premium">0</span>
-                  <span data-metric="minutes">0 min</span>
-                </p>
-                <p class="metric-sub">Clientes con IA + duración agregada</p>
-              </article>
+              <section class="card library-table-card" aria-labelledby="library-table-heading">
+                <div class="card-header">
+                  <div class="library-table-header">
+                    <div>
+                      <h2 id="library-table-heading">Transcripciones</h2>
+                      <p class="section-lead">Lista detallada con estado, duración y acciones rápidas.</p>
+                    </div>
+                    <div class="library-table-search">
+                      <label for="search" class="visually-hidden">Buscar transcripciones</label>
+                      <input id="search" type="search" placeholder="Buscar por texto, asignatura o estado" />
+                    </div>
+                  </div>
+                  <div class="library-table-filters">
+                    <label class="checkbox">
+                      <input type="checkbox" id="filter-premium" /> Solo premium
+                    </label>
+                  </div>
+                </div>
+                <div id="transcription-list" class="transcription-list" role="region" aria-live="polite"></div>
+              </section>
             </div>
-          </section>
-
-          <section class="card" id="recientes">
-            <div class="list-header">
-              <h2>Transcripciones recientes</h2>
-              <input id="search" type="search" placeholder="Buscar por texto, asignatura o estado" />
-            </div>
-            <div class="filters">
-              <label><input type="checkbox" id="filter-premium" /> Solo premium</label>
-            </div>
-            <div id="transcription-list" class="transcription-list"></div>
-          </section>
+          </div>
         </div>
       </section>
 
@@ -376,9 +449,13 @@
                       <span class="icon">🎙️</span>
                       <span>Iniciar transmisión</span>
                     </button>
+                    <button type="button" id="live-pause" class="ghost" disabled>
+                      <span class="icon">⏸</span>
+                      <span>Pausar</span>
+                    </button>
                     <button type="button" id="live-stop" class="secondary" disabled>
-                      <span class="icon">⏹</span>
-                      <span>Detener y guardar</span>
+                      <span class="icon">💾</span>
+                      <span>Finalizar y guardar</span>
                     </button>
                     <button type="button" id="live-reset" class="ghost" disabled>
                       <span class="icon">🧹</span>
@@ -392,6 +469,20 @@
                   <div class="live-stream-status" id="live-stream-status" role="status" aria-live="polite">
                     Tu texto aparecerá aquí cuando empieces a hablar.
                   </div>
+                  <dl class="live-kpi-grid">
+                    <div>
+                      <dt>Palabras / min</dt>
+                      <dd data-live-kpi="wpm">0</dd>
+                    </div>
+                    <div>
+                      <dt>Latencia</dt>
+                      <dd data-live-kpi="latency">— ms</dd>
+                    </div>
+                    <div>
+                      <dt>Chunks perdidos</dt>
+                      <dd data-live-kpi="dropped">0</dd>
+                    </div>
+                  </dl>
                   <div id="live-stream-output" class="live-stream-output" aria-live="polite"></div>
                 </div>
               </div>
@@ -442,6 +533,105 @@
               </div>
             </div>
           </section>
+        </div>
+      </section>
+
+      <section class="main-section" data-section="job-detail" hidden>
+        <div class="container job-detail-container">
+          <header class="view-header job-header">
+            <div class="job-header__intro">
+              <nav class="breadcrumbs" aria-label="Rastro de navegación">
+                <ol id="job-breadcrumbs">
+                  <li><button type="button" data-section-jump="home">Inicio</button></li>
+                  <li><button type="button" data-section-jump="library">Biblioteca</button></li>
+                  <li aria-current="page">Detalle del proceso</li>
+                </ol>
+              </nav>
+              <h1 id="job-title" class="view-title">Transcripción seleccionada</h1>
+              <p id="job-subtitle" class="section-lead">Consulta texto consolidado, descárgalo o muévelo de carpeta.</p>
+            </div>
+            <div class="job-header__actions">
+              <button type="button" class="ghost" id="job-move">Mover de carpeta</button>
+              <button type="button" class="primary" id="job-copy">Copiar texto</button>
+              <a class="secondary" id="job-download" href="#" download>Descargar .txt</a>
+            </div>
+          </header>
+
+          <div class="job-layout">
+            <article class="card job-text-card" aria-labelledby="job-text-heading">
+              <div class="card-header">
+                <h2 id="job-text-heading">Texto completo</h2>
+                <p class="section-lead">El visor sigue el streaming mientras se procesa y se consolida al finalizar.</p>
+              </div>
+              <div class="job-text-toolbar">
+                <label class="toggle" for="job-follow">
+                  <input id="job-follow" type="checkbox" checked />
+                  <span>Seguir al final automáticamente</span>
+                </label>
+                <label class="combo" for="job-tail-size">
+                  <span class="combo-label">Segmentos visibles</span>
+                  <select id="job-tail-size">
+                    <option value="50">50</option>
+                    <option value="200" selected>200</option>
+                    <option value="500">500</option>
+                    <option value="1000">1000</option>
+                  </select>
+                </label>
+              </div>
+              <div id="job-text" class="job-text" aria-live="polite">
+                <p class="placeholder">Selecciona una transcripción reciente para ver su contenido aquí.</p>
+              </div>
+              <div class="job-text-actions">
+                <button type="button" class="ghost" id="job-export-srt">Descargar .srt</button>
+                <button type="button" class="ghost" id="job-export-md">Exportar Markdown</button>
+              </div>
+            </article>
+
+            <aside class="job-meta" aria-label="Información adicional">
+              <section class="card job-meta-card" aria-labelledby="job-meta-heading">
+                <div class="card-header">
+                  <h2 id="job-meta-heading">Metadatos</h2>
+                  <p class="section-lead">Idioma detectado, modelo, duración y enlaces a recursos asociados.</p>
+                </div>
+                <dl class="job-meta-list" id="job-meta-list">
+                  <div>
+                    <dt>Estado</dt>
+                    <dd id="job-status">—</dd>
+                  </div>
+                  <div>
+                    <dt>Carpeta</dt>
+                    <dd id="job-folder">—</dd>
+                  </div>
+                  <div>
+                    <dt>Duración</dt>
+                    <dd id="job-duration">—</dd>
+                  </div>
+                  <div>
+                    <dt>Idioma</dt>
+                    <dd id="job-language">—</dd>
+                  </div>
+                  <div>
+                    <dt>Modelo</dt>
+                    <dd id="job-model">—</dd>
+                  </div>
+                  <div>
+                    <dt>WER estimada</dt>
+                    <dd id="job-wer">—</dd>
+                  </div>
+                </dl>
+              </section>
+
+              <section class="card job-links" aria-labelledby="job-links-heading">
+                <div class="card-header">
+                  <h2 id="job-links-heading">Recursos</h2>
+                </div>
+                <ul class="job-links-list">
+                  <li><a id="job-audio" href="#" target="_blank" rel="noopener">Audio original</a></li>
+                  <li><a id="job-logs" href="#" target="_blank" rel="noopener">Ver logs</a></li>
+                </ul>
+              </section>
+            </aside>
+          </div>
         </div>
       </section>
 
