@@ -204,7 +204,6 @@ function scrollContainerToEnd(container) {
   if (!container) return;
   ensureAutoScrollTracking(container);
   if (container.dataset.autoScroll === 'false') return;
-  if (!isContainerNearBottom(container)) return;
   const performScroll = () => {
     if (typeof container.scrollTo === 'function') {
       container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
