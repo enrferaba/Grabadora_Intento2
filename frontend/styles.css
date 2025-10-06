@@ -176,18 +176,43 @@ html {
   flex-wrap: wrap;
 }
 
+.app-nav::-webkit-scrollbar {
+  height: 6px;
+}
+
+.app-nav::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+}
+
 .nav-link {
   color: #cbd5f5;
-  text-decoration: none;
   font-size: 0.95rem;
-  padding: 0.35rem 0.6rem;
+  padding: 0.4rem 0.85rem;
   border-radius: 999px;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.2;
 }
 
 .nav-link:hover {
   background: var(--accent-soft);
   color: #f8fafc;
+}
+
+.nav-link:focus-visible {
+  outline: 2px solid rgba(148, 163, 255, 0.65);
+  outline-offset: 2px;
+}
+
+.nav-link.is-active,
+.nav-link[aria-current='page'] {
+  background: var(--accent);
+  color: #0b1120;
+  box-shadow: 0 12px 26px rgba(99, 102, 241, 0.35);
 }
 
 .google-btn {
@@ -208,6 +233,7 @@ html {
 @media (max-width: 960px) {
   .app-bar {
     justify-content: center;
+    flex-wrap: wrap;
   }
 
   .brand {
@@ -217,12 +243,13 @@ html {
 
   .app-nav {
     width: 100%;
-    justify-content: center;
-    order: 3;
+    justify-content: flex-start;
+    order: 2;
+    overflow-x: auto;
   }
 
   .google-btn {
-    order: 2;
+    order: 3;
     margin-left: auto;
     margin-right: auto;
   }
@@ -239,6 +266,7 @@ html {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 2.5rem;
   align-items: center;
+  grid-column: 1 / -1;
 }
 
 .hero-content {
@@ -310,6 +338,14 @@ html {
   display: grid;
   gap: 2rem;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.main-section {
+  display: none;
+}
+
+.main-section.is-active {
+  display: contents;
 }
 
 .metrics-card {
@@ -401,7 +437,12 @@ html {
     grid-column: span 1;
   }
   .app-nav {
-    display: none;
+    order: 2;
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding: 0.5rem 0 0;
+    gap: 0.75rem;
   }
 }
 
@@ -429,6 +470,46 @@ html {
 .upload-form {
   display: grid;
   gap: 1.5rem;
+}
+
+.advanced-options {
+  border: 1px solid var(--card-border);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.55);
+  padding: 0.9rem 1.1rem;
+  color: #cbd5f5;
+}
+
+.advanced-options summary {
+  cursor: pointer;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+.advanced-options summary::before {
+  content: '⚙️';
+  font-size: 1rem;
+}
+
+.advanced-options summary::after {
+  content: '▾';
+  font-size: 0.9rem;
+  transition: transform 0.2s ease;
+}
+
+.advanced-options[open] summary::after {
+  transform: rotate(180deg);
+}
+
+.advanced-options summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-options .form-grid {
+  margin-top: 1rem;
 }
 
 .file-picker {
@@ -1272,6 +1353,7 @@ select:focus {
   display: flex;
   gap: 0.75rem;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .actions a,
@@ -1279,6 +1361,56 @@ select:focus {
   flex: none;
   text-decoration: none;
   color: inherit;
+}
+
+.more-actions {
+  display: inline-block;
+  position: relative;
+}
+
+.more-actions summary {
+  cursor: pointer;
+  list-style: none;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 12px;
+  padding: 0.45rem 0.9rem;
+  background: rgba(15, 23, 42, 0.65);
+  color: #cbd5f5;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  transition: background 0.2s ease, border 0.2s ease;
+}
+
+.more-actions summary::after {
+  content: '▾';
+  font-size: 0.9rem;
+  transition: transform 0.2s ease;
+}
+
+.more-actions[open] summary::after {
+  transform: rotate(180deg);
+}
+
+.more-actions summary::-webkit-details-marker {
+  display: none;
+}
+
+.more-actions__content {
+  margin-top: 0.6rem;
+  display: grid;
+  gap: 0.5rem;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 12px;
+  padding: 0.75rem;
+  min-width: 220px;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.45);
+}
+
+.more-actions__content button {
+  width: 100%;
+  justify-content: flex-start;
 }
 
 .actions .download.disabled {

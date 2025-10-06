@@ -94,6 +94,8 @@ const liveStopButton = document.querySelector('#live-stop');
 const liveResetButton = document.querySelector('#live-reset');
 const liveStreamStatus = document.querySelector('#live-stream-status');
 const liveStreamOutput = document.querySelector('#live-stream-output');
+const sectionToggles = document.querySelectorAll('[data-section-toggle]');
+const sectionPanels = document.querySelectorAll('[data-section]');
 
 const typingQueue = [];
 let typingInProgress = false;
@@ -106,6 +108,7 @@ const folderFilters = {
   search: '',
 };
 const DESTINATION_STORAGE_KEY = 'grabadora:last-destination-folder';
+const LAST_SECTION_STORAGE_KEY = 'grabadora:last-section';
 const LIVE_CHUNK_INTERVAL = 4000;
 
 let liveSessionId = null;
@@ -184,6 +187,35 @@ function safeLocalStorageSet(key, value) {
     }
   } catch (error) {
     console.warn('No se pudo escribir en localStorage:', error);
+  }
+}
+
+function setActiveSection(targetSection, options = {}) {
+  if (!sectionPanels?.length) return;
+  const fallback = options.fallback || 'home';
+  const available = Array.from(sectionPanels, (panel) => panel.dataset.section).filter(Boolean);
+  const desired = available.includes(targetSection) ? targetSection : available.includes(fallback) ? fallback : available[0];
+  if (!desired) {
+    return;
+  }
+  sectionPanels.forEach((panel) => {
+    const active = panel.dataset.section === desired;
+    panel.classList.toggle('is-active', active);
+    panel.hidden = !active;
+  });
+  if (sectionToggles?.length) {
+    sectionToggles.forEach((toggle) => {
+      const active = toggle.dataset.sectionToggle === desired;
+      toggle.classList.toggle('is-active', active);
+      if (active) {
+        toggle.setAttribute('aria-current', 'page');
+      } else {
+        toggle.removeAttribute('aria-current');
+      }
+    });
+  }
+  if (!options?.skipPersist) {
+    safeLocalStorageSet(LAST_SECTION_STORAGE_KEY, desired);
   }
 }
 
@@ -1980,6 +2012,18 @@ folderGroupsContainer?.addEventListener('click', (event) => {
 if (folderGroupsContainer) {
   applyFolderFilters();
 }
+
+if (sectionToggles?.length) {
+  sectionToggles.forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button.dataset.sectionToggle;
+      setActiveSection(target, { fallback: 'home' });
+    });
+  });
+}
+
+const savedSection = safeLocalStorageGet(LAST_SECTION_STORAGE_KEY);
+setActiveSection(savedSection || 'home', { fallback: 'home', skipPersist: true });
 
 document.addEventListener('DOMContentLoaded', () => {
   resetCopyFeedback();
