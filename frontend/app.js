@@ -112,11 +112,26 @@ const homeFolderSummary = document.querySelector('#home-folder-summary');
 const homeRecentList = document.querySelector('#home-recent-list');
 const homeLiveStatus = document.querySelector('#home-live-status');
 const homeLiveControls = document.querySelectorAll('[data-live-control]');
+const homeLiveCard = document.querySelector('#home-live-card');
+const homeLiveFollowToggle = document.querySelector('#home-live-follow');
+const homeLiveReturnButton = document.querySelector('#home-live-return');
+const homeLiveFullscreenButton = document.querySelector('#home-live-fullscreen');
 const homeQuickFolderInput = document.querySelector('#home-folder-quick');
 const scrollTargetButtons = document.querySelectorAll('[data-scroll-to]');
 const sectionToggles = document.querySelectorAll('[data-section-toggle]');
 const sectionPanels = document.querySelectorAll('[data-section]');
 const sectionJumpButtons = document.querySelectorAll('[data-section-jump]');
+const liveFollowToggle = document.querySelector('#live-follow');
+const liveReturnButton = document.querySelector('#live-return');
+const liveFullscreenButton = document.querySelector('#live-fullscreen');
+const liveFontIncreaseButton = document.querySelector('#live-font-increase');
+const liveFontDecreaseButton = document.querySelector('#live-font-decrease');
+const liveTailSizeSelect = document.querySelector('#live-tail-size');
+const liveStreamCard = document.querySelector('#live-stream-card');
+const jobFollowToggle = document.querySelector('#job-follow');
+const jobTailSizeSelect = document.querySelector('#job-tail-size');
+const jobReturnButton = document.querySelector('#job-return');
+const jobTextContainer = document.querySelector('#job-text');
 
 const typingQueue = [];
 let typingInProgress = false;
@@ -131,6 +146,19 @@ const folderFilters = {
 const DESTINATION_STORAGE_KEY = 'grabadora:last-destination-folder';
 const LAST_SECTION_STORAGE_KEY = 'grabadora:last-section';
 const LIVE_CHUNK_INTERVAL = 4000;
+const HOME_TAIL_FOLLOW_KEY = 'grabadora:tail:home-follow';
+const LIVE_TAIL_FOLLOW_KEY = 'grabadora:tail:live-follow';
+const JOB_TAIL_FOLLOW_KEY = 'grabadora:tail:job-follow';
+const LIVE_TAIL_SIZE_KEY = 'grabadora:tail:live-size';
+const JOB_TAIL_SIZE_KEY = 'grabadora:tail:job-size';
+const LIVE_FONT_STEP = 0.1;
+const LIVE_FONT_MIN = 0.8;
+const LIVE_FONT_MAX = 1.6;
+
+const tailControllers = new Map();
+const fullscreenBindings = [];
+
+let liveFontScale = 1;
 
 let liveSessionId = null;
 let liveMediaStream = null;
@@ -328,6 +356,169 @@ function handleHomeQuickFolderChange(event) {
   persistDestinationFolder(value);
 }
 
+function getTailLimit(container) {
+  const raw = Number(container?.dataset?.tailLimit);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+
+function renderTailSnapshot(container) {
+  if (!container) return;
+  const text = container.dataset.fullText ?? '';
+  const placeholder =
+    container.dataset.stream === 'true'
+      ? 'Procesando y transcribiendo en vivo…'
+      : 'Transcripción no disponible aún.';
+  if (text) {
+    renderTranscript(container, text, { placeholder });
+  }
+}
+
+function setTailLimit(container, limit) {
+  if (!container) return;
+  const numeric = Number(limit);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    container.dataset.tailLimit = String(Math.floor(numeric));
+  } else {
+    delete container.dataset.tailLimit;
+  }
+  if (container.dataset.fullText) {
+    renderTailSnapshot(container);
+  }
+}
+
+function createTailController({ container, toggle, returnButton, storageKey }) {
+  if (!container) return null;
+  let internalUpdate = false;
+
+  const apply = (follow, { persist = true, reason = 'manual', skipDispatch = false } = {}) => {
+    const enabled = Boolean(follow);
+    container.dataset.followPreference = enabled ? 'true' : 'false';
+    if (toggle) {
+      toggle.checked = enabled;
+    }
+    if (returnButton) {
+      returnButton.hidden = enabled;
+      returnButton.setAttribute('aria-hidden', enabled ? 'true' : 'false');
+    }
+    container.dataset.autoScroll = enabled ? 'true' : 'false';
+    if (enabled) {
+      scrollContainerToEnd(container);
+    } else {
+      updateAutoScrollFlag(container, reason);
+    }
+    if (persist && storageKey) {
+      safeLocalStorageSet(storageKey, enabled ? '1' : '0');
+    }
+    if (!skipDispatch) {
+      internalUpdate = true;
+      container.dispatchEvent(
+        new CustomEvent('tail:follow-change', {
+          detail: { follow: enabled, reason, source: 'controller' },
+        }),
+      );
+      internalUpdate = false;
+    }
+  };
+
+  const stored = storageKey ? safeLocalStorageGet(storageKey) : '';
+  let initial;
+  if (stored !== '') {
+    initial = stored !== '0' && stored !== 'false';
+  } else if (toggle) {
+    initial = toggle.checked;
+  } else {
+    initial = container.dataset.followPreference !== 'false';
+  }
+
+  container.dataset.followPreference = initial ? 'true' : 'false';
+  apply(initial, { persist: false, reason: 'init', skipDispatch: true });
+
+  toggle?.addEventListener('change', (event) => {
+    apply(event.target.checked, { reason: 'manual' });
+  });
+
+  returnButton?.addEventListener('click', () => {
+    apply(true, { reason: 'return' });
+  });
+
+  container.addEventListener('tail:follow-change', (event) => {
+    if (internalUpdate) return;
+    const detail = event.detail || {};
+    const enabled = Boolean(detail.follow);
+    container.dataset.followPreference = enabled ? 'true' : 'false';
+    if (toggle) {
+      toggle.checked = enabled;
+    }
+    if (returnButton) {
+      returnButton.hidden = enabled;
+      returnButton.setAttribute('aria-hidden', enabled ? 'true' : 'false');
+    }
+    if (detail.reason !== 'scroll' && storageKey) {
+      safeLocalStorageSet(storageKey, enabled ? '1' : '0');
+    }
+    if (enabled) {
+      scrollContainerToEnd(container);
+    } else {
+      updateAutoScrollFlag(container, detail.reason || 'external');
+    }
+  });
+
+  container.addEventListener('tail:auto-scroll', (event) => {
+    if (!returnButton) return;
+    const detail = event.detail || {};
+    if (!detail.followPreference && !detail.auto) {
+      returnButton.hidden = false;
+      returnButton.setAttribute('aria-hidden', 'false');
+    } else if (detail.followPreference && detail.auto) {
+      returnButton.hidden = true;
+      returnButton.setAttribute('aria-hidden', 'true');
+    }
+  });
+
+  tailControllers.set(container, { setFollow: apply });
+  return { setFollow: apply };
+}
+
+function syncFullscreenBodyState() {
+  const active = Boolean(document.querySelector('.home-live-panel.is-fullscreen, .live-stream-session.is-fullscreen'));
+  document.body.classList.toggle('tail-fullscreen-open', active);
+}
+
+function updateFullscreenButton(button, active) {
+  if (!button) return;
+  const label = active ? button.dataset.exitFullscreenLabel : button.dataset.fullscreenLabel;
+  const labelNode = button.querySelector('.button-label');
+  if (labelNode && label) {
+    labelNode.textContent = label;
+  } else if (label) {
+    button.textContent = label;
+  }
+  button.setAttribute('aria-pressed', active ? 'true' : 'false');
+}
+
+function setupFullscreenToggle(button, target) {
+  if (!button || !target) return;
+  const apply = (active) => {
+    target.classList.toggle('is-fullscreen', active);
+    updateFullscreenButton(button, active);
+    syncFullscreenBodyState();
+  };
+  button.addEventListener('click', () => {
+    apply(!target.classList.contains('is-fullscreen'));
+  });
+  updateFullscreenButton(button, target.classList.contains('is-fullscreen'));
+  fullscreenBindings.push({ button, target, apply });
+}
+
+function applyLiveFontScale(scale) {
+  if (!liveStreamOutput) return;
+  const clamped = Math.min(LIVE_FONT_MAX, Math.max(LIVE_FONT_MIN, scale));
+  liveFontScale = clamped;
+  liveStreamOutput.style.setProperty('--tail-font-scale', clamped.toFixed(2));
+  liveStreamOutput.dataset.fontScale = clamped.toFixed(2);
+  homeLiveOutput?.style.setProperty('--tail-font-scale', clamped.toFixed(2));
+}
+
 function splitIntoParagraphs(text) {
   return (text ?? '')
     .split(/\n{2,}/)
@@ -366,7 +557,8 @@ function resetStreamingContainer(container, placeholder) {
   container.dataset.typing = 'false';
   container.dataset.typingToken = '';
   container.replaceChildren();
-  container.dataset.autoScroll = 'true';
+  const followPreference = container.dataset.followPreference !== 'false';
+  container.dataset.autoScroll = followPreference ? 'true' : 'false';
   if (placeholder) {
     const placeholderNode = document.createElement('p');
     placeholderNode.classList.add('placeholder');
@@ -389,32 +581,108 @@ function isContainerNearBottom(container) {
   return distanceFromScrollEnd(container) <= getAutoScrollThreshold(container);
 }
 
-function updateAutoScrollFlag(container) {
+function updateAutoScrollFlag(container, reason = 'scroll') {
   if (!container) return;
-  container.dataset.autoScroll = isContainerNearBottom(container) ? 'true' : 'false';
+  const nearBottom = isContainerNearBottom(container);
+  const followPreference = container.dataset.followPreference !== 'false';
+  const nextValue = followPreference && nearBottom;
+  const previousValue = container.dataset.autoScroll === 'true';
+  container.dataset.autoScroll = nextValue ? 'true' : 'false';
+  if (previousValue !== nextValue) {
+    container.dispatchEvent(
+      new CustomEvent('tail:auto-scroll', {
+        detail: {
+          auto: nextValue,
+          nearBottom,
+          followPreference,
+          reason,
+        },
+      }),
+    );
+  }
 }
 
 function ensureAutoScrollTracking(container) {
   if (!container || container.dataset.autoScrollTracking === 'true') return;
   const handleScroll = () => {
+    const evaluate = () => {
+      const nearBottom = isContainerNearBottom(container);
+      const followPreference = container.dataset.followPreference !== 'false';
+      if (!nearBottom && followPreference) {
+        container.dataset.followPreference = 'false';
+        container.dataset.autoScroll = 'false';
+        container.dispatchEvent(
+          new CustomEvent('tail:follow-change', {
+            detail: { follow: false, reason: 'scroll' },
+          }),
+        );
+      }
+      updateAutoScrollFlag(container, 'scroll');
+    };
     if (typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(() => updateAutoScrollFlag(container));
+      window.requestAnimationFrame(evaluate);
     } else {
-      updateAutoScrollFlag(container);
+      evaluate();
     }
   };
   container.dataset.autoScrollTracking = 'true';
+  if (!container.dataset.followPreference) {
+    container.dataset.followPreference = 'true';
+  }
   if (!container.dataset.autoScroll) {
-    container.dataset.autoScroll = 'true';
+    container.dataset.autoScroll = container.dataset.followPreference !== 'false' ? 'true' : 'false';
   }
   container.addEventListener('scroll', handleScroll, { passive: true });
-  updateAutoScrollFlag(container);
+  updateAutoScrollFlag(container, 'init');
 }
 
 livePreviewTargets.forEach((output) => ensureAutoScrollTracking(output));
 ensureAutoScrollTracking(studentPreviewBody);
 ensureAutoScrollTracking(modalText);
 ensureAutoScrollTracking(liveStreamOutput);
+
+const homeTailController = createTailController({
+  container: homeLiveOutput,
+  toggle: homeLiveFollowToggle,
+  returnButton: homeLiveReturnButton,
+  storageKey: HOME_TAIL_FOLLOW_KEY,
+});
+
+const liveTailController = createTailController({
+  container: liveStreamOutput,
+  toggle: liveFollowToggle,
+  returnButton: liveReturnButton,
+  storageKey: LIVE_TAIL_FOLLOW_KEY,
+});
+
+const jobTailController = createTailController({
+  container: jobTextContainer,
+  toggle: jobFollowToggle,
+  returnButton: jobReturnButton,
+  storageKey: JOB_TAIL_FOLLOW_KEY,
+});
+
+const storedLiveTail = Number(safeLocalStorageGet(LIVE_TAIL_SIZE_KEY));
+const defaultLiveTail = Number(liveTailSizeSelect?.value || 200);
+const initialLiveTail = Number.isFinite(storedLiveTail) && storedLiveTail > 0 ? storedLiveTail : defaultLiveTail;
+if (liveTailSizeSelect) {
+  liveTailSizeSelect.value = String(initialLiveTail);
+}
+setTailLimit(liveStreamOutput, initialLiveTail);
+setTailLimit(homeLiveOutput, initialLiveTail);
+
+const storedJobTail = Number(safeLocalStorageGet(JOB_TAIL_SIZE_KEY));
+const defaultJobTail = Number(jobTailSizeSelect?.value || 200);
+const initialJobTail = Number.isFinite(storedJobTail) && storedJobTail > 0 ? storedJobTail : defaultJobTail;
+if (jobTailSizeSelect) {
+  jobTailSizeSelect.value = String(initialJobTail);
+}
+setTailLimit(jobTextContainer, initialJobTail);
+
+setupFullscreenToggle(homeLiveFullscreenButton, homeLiveCard);
+setupFullscreenToggle(liveFullscreenButton, liveStreamCard);
+
+applyLiveFontScale(1);
 
 function scrollContainerToEnd(container) {
   if (!container) return;
@@ -426,7 +694,7 @@ function scrollContainerToEnd(container) {
     } else {
       container.scrollTop = container.scrollHeight;
     }
-    updateAutoScrollFlag(container);
+    updateAutoScrollFlag(container, 'manual');
   };
   if (typeof window.requestAnimationFrame === 'function') {
     window.requestAnimationFrame(performScroll);
@@ -476,6 +744,8 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
     }
 
     const targetParagraphs = splitIntoParagraphs(sanitized);
+    const tailLimit = getTailLimit(container);
+    const displayParagraphs = tailLimit > 0 ? targetParagraphs.slice(-tailLimit) : targetParagraphs;
     const previousFull = container.dataset.fullText || '';
     const shouldReset = !previousFull || !sanitized.startsWith(previousFull);
     if (shouldReset) {
@@ -484,10 +754,10 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
     }
 
     const previousParagraphs = JSON.parse(container.dataset.paragraphs || '[]');
-    trimParagraphNodes(container, targetParagraphs.length);
+    trimParagraphNodes(container, displayParagraphs.length);
 
     const animations = [];
-    targetParagraphs.forEach((paragraphText, index) => {
+    displayParagraphs.forEach((paragraphText, index) => {
       const paragraphElement = ensureParagraph(container, index);
       const previousText = shouldReset ? '' : previousParagraphs[index] ?? paragraphElement.textContent ?? '';
       if (!paragraphText) {
@@ -514,7 +784,7 @@ function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll
 
     const finalize = () => {
       container.dataset.fullText = sanitized;
-      container.dataset.paragraphs = JSON.stringify(targetParagraphs);
+      container.dataset.paragraphs = JSON.stringify(displayParagraphs);
       container.dataset.typing = 'false';
       if (autoScroll) {
         scrollContainerToEnd(container);
@@ -613,27 +883,37 @@ function renderTranscript(element, text, { placeholder = 'Transcripción no disp
 
   if (element.tagName === 'PRE') {
     element.textContent = safeText || placeholder;
+    element.dataset.fullText = safeText;
+    element.dataset.paragraphs = JSON.stringify([]);
     return;
   }
 
   if (!safeText) {
     element.textContent = placeholder;
+    element.dataset.fullText = '';
+    element.dataset.paragraphs = JSON.stringify([]);
     return;
   }
 
   const chunks = splitIntoParagraphs(safeText);
+  const tailLimit = getTailLimit(element);
+  const displayChunks = tailLimit > 0 ? chunks.slice(-tailLimit) : chunks;
 
-  if (!chunks.length) {
+  if (!displayChunks.length) {
     element.textContent = placeholder;
+    element.dataset.fullText = safeText;
+    element.dataset.paragraphs = JSON.stringify([]);
     return;
   }
 
   element.replaceChildren();
-  for (const chunk of chunks) {
+  for (const chunk of displayChunks) {
     const paragraph = document.createElement('p');
     paragraph.textContent = chunk;
     element.appendChild(paragraph);
   }
+  element.dataset.fullText = safeText;
+  element.dataset.paragraphs = JSON.stringify(displayChunks);
 }
 
 function renderStreamingView(container, item, options = {}) {
@@ -2435,6 +2715,39 @@ homeFolderSummary?.addEventListener('click', (event) => {
   setActiveSection('library', { fallback: 'home' });
   window.requestAnimationFrame(() => {
     folderGroupsContainer?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+});
+
+liveTailSizeSelect?.addEventListener('change', (event) => {
+  const limit = Number(event.target.value);
+  if (!Number.isFinite(limit) || limit <= 0) return;
+  safeLocalStorageSet(LIVE_TAIL_SIZE_KEY, String(limit));
+  setTailLimit(liveStreamOutput, limit);
+  setTailLimit(homeLiveOutput, limit);
+  updateLivePreview(cachedResults);
+});
+
+jobTailSizeSelect?.addEventListener('change', (event) => {
+  const limit = Number(event.target.value);
+  if (!Number.isFinite(limit) || limit <= 0) return;
+  safeLocalStorageSet(JOB_TAIL_SIZE_KEY, String(limit));
+  setTailLimit(jobTextContainer, limit);
+});
+
+liveFontIncreaseButton?.addEventListener('click', () => {
+  applyLiveFontScale(liveFontScale + LIVE_FONT_STEP);
+});
+
+liveFontDecreaseButton?.addEventListener('click', () => {
+  applyLiveFontScale(liveFontScale - LIVE_FONT_STEP);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  fullscreenBindings.forEach(({ target, apply }) => {
+    if (target?.classList?.contains('is-fullscreen')) {
+      apply(false);
+    }
   });
 });
 

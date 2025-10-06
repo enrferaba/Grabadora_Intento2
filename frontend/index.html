@@ -94,8 +94,72 @@
             </div>
           </section>
 
-          <div class="home-grid">
-            <div class="home-grid__primary">
+          <div class="home-layout">
+            <section
+              id="home-live-card"
+              class="card home-live-panel home-layout__live"
+              aria-labelledby="home-live-heading"
+            >
+              <div class="card-header">
+                <h2 id="home-live-heading">Transcripción en vivo</h2>
+                <p class="section-lead">
+                  Visualiza los últimos fragmentos de audio en tiempo real con auto-scroll y controles sincronizados con el
+                  Centro en vivo.
+                </p>
+              </div>
+              <div class="home-live-body">
+                <div class="tail-toolbar" aria-hidden="true">
+                  <button type="button" id="home-live-return" class="tail-return" hidden>Volver al final</button>
+                </div>
+                <div class="home-live-output-wrapper">
+                  <div
+                    id="home-live-output"
+                    class="live-output live-output--expanded"
+                    data-live-output
+                    aria-live="polite"
+                    data-auto-scroll-threshold="64"
+                  >
+                    Selecciona una transcripción o inicia una nueva grabación para verla aquí.
+                  </div>
+                </div>
+              </div>
+              <footer class="home-live-footer">
+                <div class="home-live-status">
+                  <span id="home-live-status" aria-live="polite">Listo para empezar una sesión.</span>
+                  <label class="toggle follow-toggle" for="home-live-follow">
+                    <input id="home-live-follow" type="checkbox" checked />
+                    <span>Seguir al final</span>
+                  </label>
+                </div>
+                <div class="home-live-actions">
+                  <button type="button" class="secondary" data-live-control="start">
+                    <span class="icon">▶️</span>
+                    <span>Iniciar</span>
+                  </button>
+                  <button type="button" class="ghost" data-live-control="pause">
+                    <span class="icon">⏸</span>
+                    <span>Pausar</span>
+                  </button>
+                  <button type="button" class="primary" data-live-control="finish">
+                    <span class="icon">💾</span>
+                    <span>Finalizar y guardar</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost"
+                    id="home-live-fullscreen"
+                    data-fullscreen-target="home-live-card"
+                    data-fullscreen-label="Pantalla completa"
+                    data-exit-fullscreen-label="Salir pantalla completa"
+                  >
+                    <span class="icon">🖥️</span>
+                    <span class="button-label">Pantalla completa</span>
+                  </button>
+                </div>
+              </footer>
+            </section>
+
+            <div class="home-layout__sidebar" aria-label="Panel secundario">
               <section class="card upload-card" aria-labelledby="upload-heading">
                 <div class="card-header">
                   <h2 id="upload-heading">Transcripción rápida</h2>
@@ -194,53 +258,6 @@
                 </div>
                 <div class="home-library-content">
                   <div class="home-folder-summary" id="home-folder-summary" aria-live="polite"></div>
-                  <div class="home-recent" aria-live="polite">
-                    <div class="home-recent-header">
-                      <h3>Últimas transcripciones</h3>
-                      <button type="button" class="ghost" data-section-jump="library">Ir a biblioteca</button>
-                    </div>
-                    <div class="home-recent-table" id="home-recent-list" role="region" aria-label="Transcripciones recientes"></div>
-                  </div>
-                </div>
-              </section>
-            </div>
-
-            <aside class="home-grid__secondary" aria-label="Panel de seguimiento">
-              <section class="card home-live-card" aria-labelledby="home-live-heading">
-                <div class="card-header">
-                  <h2 id="home-live-heading">Transcripción en vivo</h2>
-                  <p class="section-lead">Visualiza los últimos fragmentos de audio en tiempo real con control directo desde Inicio.</p>
-                </div>
-                <div class="home-live-preview">
-                  <div
-                    id="home-live-output"
-                    class="live-output live-output--compact"
-                    data-live-output
-                    aria-live="polite"
-                    data-auto-scroll-threshold="64"
-                  >
-                    Selecciona una transcripción o inicia una nueva grabación para verla aquí.
-                  </div>
-                  <div class="home-live-controls">
-                    <span id="home-live-status" class="home-live-status" aria-live="polite">Listo para empezar una sesión.</span>
-                    <div class="home-live-buttons">
-                      <button type="button" class="secondary" data-live-control="start">
-                        <span class="icon">▶️</span>
-                        <span>Iniciar</span>
-                      </button>
-                      <button type="button" class="ghost" data-live-control="pause">
-                        <span class="icon">⏸</span>
-                        <span>Pausar</span>
-                      </button>
-                      <button type="button" class="primary" data-live-control="finish">
-                        <span class="icon">💾</span>
-                        <span>Finalizar y guardar</span>
-                      </button>
-                    </div>
-                    <p class="home-live-helper">
-                      Los controles están sincronizados con el Centro en vivo para evitar duplicados.
-                    </p>
-                  </div>
                 </div>
               </section>
 
@@ -268,7 +285,18 @@
                   <button type="button" class="pill" data-section-jump="benefits">✨ Explorar beneficios</button>
                 </div>
               </section>
-            </aside>
+            </div>
+
+            <section class="card home-recent-card home-layout__full" aria-labelledby="home-recent-heading">
+              <div class="card-header home-recent-header">
+                <div>
+                  <h2 id="home-recent-heading">Recientes</h2>
+                  <p class="section-lead">Últimas transcripciones y su estado actual.</p>
+                </div>
+                <button type="button" class="ghost" data-section-jump="library">Ir a biblioteca</button>
+              </div>
+              <div class="home-recent-table" id="home-recent-list" role="region" aria-label="Transcripciones recientes"></div>
+            </section>
           </div>
         </div>
       </section>
@@ -464,11 +492,13 @@
                   </div>
                 </div>
 
-                <div class="live-stream-session">
-                  <h3 class="live-panel-title">Sesión en curso</h3>
-                  <div class="live-stream-status" id="live-stream-status" role="status" aria-live="polite">
-                    Tu texto aparecerá aquí cuando empieces a hablar.
-                  </div>
+                <div class="live-stream-session" id="live-stream-card">
+                  <header class="live-session-header">
+                    <h3 class="live-panel-title">Sesión en curso</h3>
+                    <div class="live-stream-status" id="live-stream-status" role="status" aria-live="polite">
+                      Tu texto aparecerá aquí cuando empieces a hablar.
+                    </div>
+                  </header>
                   <dl class="live-kpi-grid">
                     <div>
                       <dt>Palabras / min</dt>
@@ -483,7 +513,47 @@
                       <dd data-live-kpi="dropped">0</dd>
                     </div>
                   </dl>
-                  <div id="live-stream-output" class="live-stream-output" aria-live="polite"></div>
+                  <div class="live-stream-output-area">
+                    <button type="button" id="live-return" class="tail-return" hidden>Volver al final</button>
+                    <div
+                      id="live-stream-output"
+                      class="live-stream-output live-output--expanded"
+                      data-live-output
+                      aria-live="polite"
+                    ></div>
+                  </div>
+                  <div class="live-session-controls">
+                    <div class="live-tail-options">
+                      <label class="toggle follow-toggle" for="live-follow">
+                        <input id="live-follow" type="checkbox" checked />
+                        <span>Seguir al final</span>
+                      </label>
+                      <label class="combo" for="live-tail-size">
+                        <span class="combo-label">Segmentos visibles</span>
+                        <select id="live-tail-size">
+                          <option value="50">50</option>
+                          <option value="200" selected>200</option>
+                          <option value="500">500</option>
+                          <option value="1000">1000</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div class="live-session-buttons">
+                      <button type="button" id="live-font-decrease" class="ghost" aria-label="Reducir tamaño de texto">A-</button>
+                      <button type="button" id="live-font-increase" class="ghost" aria-label="Aumentar tamaño de texto">A+</button>
+                      <button
+                        type="button"
+                        class="secondary"
+                        id="live-fullscreen"
+                        data-fullscreen-target="live-stream-card"
+                        data-fullscreen-label="Pantalla completa"
+                        data-exit-fullscreen-label="Salir pantalla completa"
+                      >
+                        <span class="icon">🖥️</span>
+                        <span class="button-label">Pantalla completa</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -564,7 +634,8 @@
                 <p class="section-lead">El visor sigue el streaming mientras se procesa y se consolida al finalizar.</p>
               </div>
               <div class="job-text-toolbar">
-                <label class="toggle" for="job-follow">
+                <button type="button" id="job-return" class="ghost tail-return-inline" hidden>Volver al final</button>
+                <label class="toggle follow-toggle" for="job-follow">
                   <input id="job-follow" type="checkbox" checked />
                   <span>Seguir al final automáticamente</span>
                 </label>
