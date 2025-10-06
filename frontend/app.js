@@ -23,6 +23,8 @@ const languageSelect = document.querySelector('#language');
 const modelSelect = document.querySelector('#model-size');
 const deviceSelect = document.querySelector('#device-preference');
 const liveOutput = document.querySelector('#live-output');
+const homeLiveOutput = document.querySelector('#home-live-output');
+const livePreviewTargets = [liveOutput, homeLiveOutput].filter(Boolean);
 const copyTranscriptBtn = document.querySelector('#copy-transcript');
 const metricTotal = document.querySelector('[data-metric="total"]');
 const metricCompleted = document.querySelector('[data-metric="completed"]');
@@ -381,7 +383,7 @@ function ensureAutoScrollTracking(container) {
   updateAutoScrollFlag(container);
 }
 
-ensureAutoScrollTracking(liveOutput);
+livePreviewTargets.forEach((output) => ensureAutoScrollTracking(output));
 ensureAutoScrollTracking(studentPreviewBody);
 ensureAutoScrollTracking(modalText);
 ensureAutoScrollTracking(liveStreamOutput);
@@ -2263,11 +2265,13 @@ folderGroupsContainer?.addEventListener('click', (event) => {
   const id = Number(trigger.getAttribute('data-folder-transcription'));
   if (!Number.isFinite(id)) return;
   selectedTranscriptionId = id;
-  if (liveOutput) {
-    liveOutput.dataset.autoScroll = 'true';
+  if (livePreviewTargets.length) {
+    livePreviewTargets.forEach((output) => {
+      output.dataset.autoScroll = 'true';
+    });
   }
   updateLivePreview(cachedResults);
-  scrollContainerToEnd(liveOutput);
+  livePreviewTargets.forEach((output) => scrollContainerToEnd(output));
 });
 
 homePendingList?.addEventListener('click', (event) => {
@@ -2422,8 +2426,20 @@ function updateStudentPreview(item) {
 }
 
 function updateLivePreview(results) {
-  if (!liveOutput) return;
+  if (!livePreviewTargets.length) return;
   const safeResults = Array.isArray(results) ? results : [];
+  const renderToTargets = (item, options = {}) => {
+    livePreviewTargets.forEach((output) => {
+      renderStreamingView(output, item, options);
+    });
+  };
+  const resetTargets = (message) => {
+    livePreviewTargets.forEach((output) => {
+      resetStreamingContainer(output, message);
+      output.dataset.stream = 'false';
+    });
+  };
+
   if (selectedTranscriptionId) {
     const selected = safeResults.find((item) => item.id === selectedTranscriptionId);
     if (selected) {
@@ -2431,7 +2447,7 @@ function updateLivePreview(results) {
       if (selected.id !== currentLiveTranscriptionId || text !== currentLiveText) {
         currentLiveTranscriptionId = selected.id;
         currentLiveText = text;
-        renderStreamingView(liveOutput, selected, {
+        renderToTargets(selected, {
           placeholder: 'Procesando y transcribiendo en vivo…',
         });
         updateStudentPreview(selected);
@@ -2441,6 +2457,7 @@ function updateLivePreview(results) {
     }
     return;
   }
+
   const active =
     safeResults.find((item) => item.status === 'processing' && item.text) ||
     safeResults.find((item) => item.status === 'completed' && item.text);
@@ -2449,20 +2466,17 @@ function updateLivePreview(results) {
     if (active.id !== currentLiveTranscriptionId || text !== currentLiveText) {
       currentLiveTranscriptionId = active.id;
       currentLiveText = text;
-      renderStreamingView(liveOutput, active, {
+      renderToTargets(active, {
         placeholder: 'Procesando y transcribiendo en vivo…',
       });
       updateStudentPreview(active);
     }
     return;
   }
+
   currentLiveTranscriptionId = null;
   currentLiveText = '';
-  resetStreamingContainer(
-    liveOutput,
-    'Selecciona cualquier transcripción para previsualizarla aquí.',
-  );
-  liveOutput.dataset.stream = 'false';
+  resetTargets('Selecciona cualquier transcripción para previsualizarla aquí.');
   updateStudentPreview(null);
 }
 
@@ -2484,12 +2498,14 @@ async function openModal(id) {
     modal.hidden = false;
     const message = `No se pudo obtener la transcripción: ${error.message}`;
     modalText.textContent = message;
-    if (liveOutput) {
-      renderStreamingView(
-        liveOutput,
-        { text: message, status: 'completed' },
-        { autoScroll: false },
-      );
+    if (livePreviewTargets.length) {
+      livePreviewTargets.forEach((output) => {
+        renderStreamingView(
+          output,
+          { text: message, status: 'completed' },
+          { autoScroll: false },
+        );
+      });
     }
     resetCopyFeedback();
   }
