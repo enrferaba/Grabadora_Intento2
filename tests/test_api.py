@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import io
 import os
 import sys
 import typing
+import wave
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 
@@ -69,6 +71,19 @@ def _make_upload(
     buffer.write(data)
     buffer.seek(0)
     return UploadFile(file=buffer, filename=filename, headers={"content-type": content_type})
+
+
+def _make_silent_wav_bytes(duration_ms: int = 250) -> bytes:
+    sample_rate = 16_000
+    total_samples = int(sample_rate * duration_ms / 1000)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        frames = b"\x00\x00" * total_samples
+        wav_file.writeframes(frames)
+    return buffer.getvalue()
 
 
 def _run_background_tasks(background_tasks: BackgroundTasks) -> None:
@@ -254,6 +269,41 @@ def test_batch_upload_and_payment_flow(test_env):
         transcription_detail = transcriptions.get_transcription(first_id, session=session)
         assert transcription_detail.premium_enabled is True
         assert transcription_detail.premium_notes
+
+
+def test_live_transcription_session(test_env):
+    _prepare_database()
+
+    from app.database import get_session
+    from app.routers import transcriptions
+    from app.schemas import LiveFinalizeRequest, LiveSessionCreateRequest
+
+    session_response = transcriptions.create_live_session(
+        LiveSessionCreateRequest(language="es", model_size="small", device_preference="cpu")
+    )
+    session_id = session_response.session_id
+    assert session_id
+
+    chunk_bytes = _make_silent_wav_bytes()
+    upload = _make_upload("chunk.wav", data=chunk_bytes, content_type="audio/wav")
+    chunk_result = transcriptions.push_live_chunk(session_id=session_id, chunk=upload)
+    assert chunk_result.session_id == session_id
+    assert chunk_result.chunk_count == 1
+
+    with get_session() as session:
+        from app.models import TranscriptionStatus
+
+        finalize = transcriptions.finalize_live_session(
+            session_id=session_id,
+            payload=LiveFinalizeRequest(destination_folder="en-vivo", subject="Sesión demo"),
+            session=session,
+        )
+        assert finalize.transcription_id is not None
+        detail = transcriptions.get_transcription(finalize.transcription_id, session=session)
+        assert detail.output_folder == "en-vivo"
+        assert detail.status in {TranscriptionStatus.COMPLETED, TranscriptionStatus.FAILED}
+
+    assert session_id not in transcriptions.LIVE_SESSIONS
 
 
 def test_debug_event_trim(test_env):

@@ -13,7 +13,9 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Dashboard con métricas en vivo** (totales, completadas, minutos procesados, etc.) y vista estilo ChatGPT con animación adaptativa que escribe según el modelo y el dispositivo usado, desplazando la vista automáticamente.
 - **Beneficios premium simulados** con checkout y confirmación que desbloquean notas IA enriquecidas sin mostrar importes hasta definir tu estrategia comercial.
 - **Selector de idioma** con español (predeterminado), inglés y francés, además de autodetección cuando lo necesites.
+- **Autocompletado de carpetas** que recuerda la última carpeta usada, sugiere destinos existentes y sincroniza el modo en vivo con el formulario principal.
 - **Modo estudiante web**: vista ligera con anuncios educativos y ejecución local accesible en `student.html` o desde el botón “Abrir simulador independiente”.
+- **Transcripción en vivo** que captura audio del navegador, permite elegir modelo/dispositivo y convierte la sesión en una transcripción almacenada con sus TXT generados.
 - **Inicio de sesión con Google (OAuth 2.0)** listo para conectar con tus credenciales y personalizar la experiencia del dashboard.
 - **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
 - **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado y comprueban la compatibilidad con las versiones recientes de faster-whisper.
@@ -197,11 +199,14 @@ Al confirmar una compra, la API genera notas premium automáticamente (`app/util
 
 ## Ideas de mejora a corto plazo
 
-- **Persistir filtros personalizados:** guardar en `localStorage` la etiqueta, estado y búsqueda seleccionados en la biblioteca para retomar el contexto al volver a entrar.
-- **Lector de eventos en tiempo real:** exponer un panel cronológico con los `debug_events` más recientes para seguir el progreso sin tener que abrir cada tarjeta.
-- **Diagnóstico de dependencias:** detectar avisos como la ausencia de `hf_xet` o la incompatibilidad de `torchaudio` y sugerir la instalación o actualización adecuada desde la interfaz.
-- **Acciones masivas en carpetas:** permitir descargar, reintentar o borrar en lote todos los elementos de una carpeta o los que coinciden con un filtro determinado.
-- **Anotaciones rápidas por asignatura:** guardar notas o recordatorios asociados a cada carpeta/tema para documentar qué falta por repasar.
+- **Persistir filtros personalizados:** guardar en `localStorage` la etiqueta, estado y búsqueda seleccionados en la biblioteca para retomar el contexto al volver a entrar. Esto reduce clics repetitivos cuando trabajas con muchas materias.
+- **Lector de eventos en tiempo real:** exponer un panel cronológico con los `debug_events` más recientes para seguir el progreso sin abrir cada tarjeta. Ayuda a detectar cuellos de botella o fallos de VAD mientras ocurren.
+- **Diagnóstico de dependencias:** detectar avisos como la ausencia de `hf_xet` o la incompatibilidad de `torchaudio` y sugerir la instalación o actualización adecuada desde la interfaz. Prioriza la salud del backend y evita sorpresas en producción.
+- **Acciones masivas en carpetas:** permitir descargar, reintentar o borrar en lote todos los elementos de una carpeta o los que coinciden con un filtro determinado. Acelera la higiene de la biblioteca cuando llegan tandas grandes.
+- **Anotaciones rápidas por asignatura:** guardar notas o recordatorios asociados a cada carpeta/tema para documentar qué falta por repasar. Mantiene el contexto pedagógico en la misma herramienta.
+- **Alertas de calidad en vivo:** añadir métricas de latencia y confianza durante las sesiones de streaming para saber cuándo conviene cambiar de modelo o dispositivo.
+- **Respaldo automático de sesiones en vivo:** subir fragmentos firmados al almacenamiento definitivo mientras se graba para mitigar pérdidas si el navegador se cierra o falla la red.
+- **Resumen incremental por IA:** generar resúmenes parciales conforme se transcribe para dar feedback inmediato a los alumnos y enfocar la revisión en lo importante.
 
 ## Estructura de carpetas
 

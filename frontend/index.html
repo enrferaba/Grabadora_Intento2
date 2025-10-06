@@ -182,11 +182,18 @@
                 type="text"
                 name="destination_folder"
                 placeholder="Ej: clase-historia"
+                list="destination-folder-options"
                 required
               />
+              <datalist id="destination-folder-options"></datalist>
               <p class="hint">La transcripción en TXT se guardará en esta carpeta dentro del directorio configurado.</p>
             </div>
 
+          </div>
+
+          <div class="live-inline-hint" id="destination-saved-hint" hidden>
+            <span class="icon">💾</span>
+            <span>Guardando última carpeta usada…</span>
           </div>
 
           <button type="submit" class="primary upload-button">
@@ -200,6 +207,85 @@
           </div>
           <div id="upload-status" class="upload-status" aria-live="polite"></div>
         </div>
+      </section>
+
+      <section class="card span-2 live-stream-card" aria-labelledby="live-stream-heading">
+        <div class="card-header">
+          <h2 id="live-stream-heading">Transcripción en línea</h2>
+          <p class="section-lead">Graba con tu micrófono, conserva el audio y obtén subtítulos mientras hablas.</p>
+        </div>
+
+        <div class="live-stream-controls">
+          <div class="field">
+            <label class="form-label" for="live-language">Idioma</label>
+            <select id="live-language" name="live_language">
+              <option value="">Detección automática</option>
+              <option value="es" selected>Español</option>
+              <option value="en">Inglés</option>
+              <option value="fr">Francés</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="live-model">Modelo</label>
+            <select id="live-model" name="live_model" data-default="large-v3">
+              <option value="large-v3" selected>large-v3</option>
+              <option value="large-v2">large-v2</option>
+              <option value="medium">medium</option>
+              <option value="small">small</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="live-device">Dispositivo</label>
+            <select id="live-device" name="live_device" data-default="gpu">
+              <option value="gpu" selected>GPU / CUDA</option>
+              <option value="cpu">CPU</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="live-folder">Carpeta destino</label>
+            <input
+              id="live-folder"
+              type="text"
+              name="live_folder"
+              placeholder="Ej: clases-en-vivo"
+              list="destination-folder-options"
+            />
+          </div>
+
+          <div class="field">
+            <label class="form-label" for="live-subject">Temario / notas</label>
+            <input
+              id="live-subject"
+              type="text"
+              name="live_subject"
+              placeholder="Tema, práctica, teoría…"
+            />
+          </div>
+        </div>
+
+        <div class="live-stream-actions">
+          <button type="button" id="live-start" class="primary">
+            <span class="icon">🎙️</span>
+            <span>Iniciar transmisión</span>
+          </button>
+          <button type="button" id="live-stop" class="secondary" disabled>
+            <span class="icon">⏹</span>
+            <span>Detener y guardar</span>
+          </button>
+          <button type="button" id="live-reset" class="ghost" disabled>
+            <span class="icon">🧹</span>
+            <span>Descartar sesión</span>
+          </button>
+        </div>
+
+        <div class="live-stream-status" id="live-stream-status" role="status" aria-live="polite">
+          Tu texto aparecerá aquí cuando empieces a hablar.
+        </div>
+
+        <div id="live-stream-output" class="live-stream-output" aria-live="polite"></div>
       </section>
 
       <section class="card span-2 live-card" aria-labelledby="live-heading">

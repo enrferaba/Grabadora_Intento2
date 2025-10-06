@@ -82,6 +82,18 @@ const folderTopicFilter = document.querySelector('#folder-topic');
 const folderSearchInput = document.querySelector('#folder-search');
 const folderResetButton = document.querySelector('#folder-reset');
 const systemAlerts = document.querySelector('#system-alerts');
+const destinationOptionsList = document.querySelector('#destination-folder-options');
+const destinationSavedHint = document.querySelector('#destination-saved-hint');
+const liveLanguageSelect = document.querySelector('#live-language');
+const liveModelSelect = document.querySelector('#live-model');
+const liveDeviceSelect = document.querySelector('#live-device');
+const liveFolderInput = document.querySelector('#live-folder');
+const liveSubjectInput = document.querySelector('#live-subject');
+const liveStartButton = document.querySelector('#live-start');
+const liveStopButton = document.querySelector('#live-stop');
+const liveResetButton = document.querySelector('#live-reset');
+const liveStreamStatus = document.querySelector('#live-stream-status');
+const liveStreamOutput = document.querySelector('#live-stream-output');
 
 const typingQueue = [];
 let typingInProgress = false;
@@ -93,6 +105,15 @@ const folderFilters = {
   topic: 'all',
   search: '',
 };
+const DESTINATION_STORAGE_KEY = 'grabadora:last-destination-folder';
+const LIVE_CHUNK_INTERVAL = 4000;
+
+let liveSessionId = null;
+let liveMediaStream = null;
+let liveRecorder = null;
+let liveChunkChain = Promise.resolve();
+let liveSessionActive = false;
+let destinationHintTimeout = null;
 
 const FOLDER_TAG_LABELS = {
   temario: 'Temario',
@@ -143,6 +164,100 @@ function computeResultsSignature(results) {
       return `${item.id}:${item.status}:${updatedAt}:${(item.text || '').length}:${latestEvent}`;
     })
     .join('|');
+}
+
+function safeLocalStorageGet(key) {
+  try {
+    return window.localStorage?.getItem(key) ?? '';
+  } catch (error) {
+    console.warn('No se pudo leer localStorage:', error);
+    return '';
+  }
+}
+
+function safeLocalStorageSet(key, value) {
+  try {
+    if (value) {
+      window.localStorage?.setItem(key, value);
+    } else {
+      window.localStorage?.removeItem(key);
+    }
+  } catch (error) {
+    console.warn('No se pudo escribir en localStorage:', error);
+  }
+}
+
+function hideDestinationSavedHint() {
+  if (!destinationSavedHint) return;
+  destinationSavedHint.hidden = true;
+  if (destinationHintTimeout) {
+    window.clearTimeout(destinationHintTimeout);
+    destinationHintTimeout = null;
+  }
+}
+
+function persistDestinationFolder(value) {
+  const trimmed = (value || '').trim();
+  safeLocalStorageSet(DESTINATION_STORAGE_KEY, trimmed);
+  if (!destinationSavedHint) {
+    return;
+  }
+  if (!trimmed) {
+    hideDestinationSavedHint();
+    return;
+  }
+  destinationSavedHint.hidden = false;
+  if (destinationHintTimeout) {
+    window.clearTimeout(destinationHintTimeout);
+  }
+  destinationHintTimeout = window.setTimeout(() => {
+    hideDestinationSavedHint();
+  }, 1600);
+}
+
+function getStoredDestinationFolder() {
+  return safeLocalStorageGet(DESTINATION_STORAGE_KEY) || '';
+}
+
+function updateDestinationOptions(items) {
+  if (!destinationOptionsList) return;
+  const folders = new Set();
+  const stored = getStoredDestinationFolder();
+  if (stored) {
+    folders.add(stored);
+  }
+  if (Array.isArray(items)) {
+    for (const entry of items) {
+      const folderName = (entry?.output_folder || entry?.destination_folder || '').trim();
+      if (folderName) {
+        folders.add(folderName);
+      }
+    }
+  }
+  destinationOptionsList.innerHTML = '';
+  Array.from(folders)
+    .sort((a, b) => a.localeCompare(b, 'es'))
+    .forEach((folder) => {
+      const option = document.createElement('option');
+      option.value = folder;
+      destinationOptionsList.appendChild(option);
+    });
+}
+
+function handleDestinationInputChange(event) {
+  const value = event?.target?.value ?? destinationInput?.value ?? '';
+  persistDestinationFolder(value);
+  if (liveFolderInput && !liveFolderInput.value) {
+    liveFolderInput.value = value;
+  }
+}
+
+function handleLiveFolderChange(event) {
+  const value = event?.target?.value ?? liveFolderInput?.value ?? '';
+  persistDestinationFolder(value);
+  if (destinationInput && !destinationInput.value) {
+    destinationInput.value = value;
+  }
 }
 
 function splitIntoParagraphs(text) {
@@ -231,6 +346,7 @@ function ensureAutoScrollTracking(container) {
 ensureAutoScrollTracking(liveOutput);
 ensureAutoScrollTracking(studentPreviewBody);
 ensureAutoScrollTracking(modalText);
+ensureAutoScrollTracking(liveStreamOutput);
 
 function scrollContainerToEnd(container) {
   if (!container) return;
@@ -1005,6 +1121,7 @@ function renderFolderLibrary(items) {
   if (!folderGroupsContainer) return;
   cachedFolderGroups = buildFolderGroups(items);
   updateFolderTopicOptions(cachedFolderGroups);
+  updateDestinationOptions(items);
   applyFolderFilters();
 }
 
@@ -1391,6 +1508,273 @@ function showStudentPlanInstructions(plan) {
   checkoutStatus.classList.add('success');
 }
 
+function supportsLiveStreaming() {
+  return Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
+}
+
+function setLiveStreamStatus(message, variant = 'info') {
+  if (!liveStreamStatus) return;
+  liveStreamStatus.textContent = message;
+  liveStreamStatus.dataset.state = variant === 'error' ? 'error' : 'info';
+}
+
+function resetLiveStreamUI(options = {}) {
+  if (!liveStreamOutput) return;
+  const placeholder = options.placeholder || 'Tu texto aparecerá aquí cuando empieces a hablar.';
+  resetStreamingContainer(liveStreamOutput, placeholder);
+  liveStreamOutput.dataset.stream = 'false';
+}
+
+function updateLiveControls() {
+  const supported = supportsLiveStreaming();
+  if (liveStartButton) {
+    liveStartButton.disabled = !supported || liveSessionActive;
+  }
+  if (liveStopButton) {
+    liveStopButton.disabled = !liveSessionActive;
+  }
+  if (liveResetButton) {
+    liveResetButton.disabled = !liveSessionId;
+  }
+  if (!supported) {
+    setLiveStreamStatus(
+      'Tu navegador no permite grabación en vivo. Usa Chrome, Edge o un navegador compatible para habilitarlo.',
+      'error',
+    );
+  }
+}
+
+function buildLiveSessionPayload() {
+  const language = liveLanguageSelect?.value?.trim();
+  const model = liveModelSelect?.value?.trim();
+  const device = liveDeviceSelect?.value?.trim();
+  return {
+    language: language || null,
+    model_size: model || null,
+    device_preference: device || null,
+  };
+}
+
+function applyLiveResult(result, options = {}) {
+  if (!liveStreamOutput) return;
+  const final = options.final === true;
+  const item = {
+    text: result?.text ?? '',
+    status: final ? 'completed' : 'processing',
+    model_size: result?.model_size || liveModelSelect?.value || '',
+    device_preference: result?.device_preference || liveDeviceSelect?.value || '',
+    duration: result?.duration,
+    runtime_seconds: result?.runtime_seconds,
+  };
+  renderStreamingView(liveStreamOutput, item, {
+    placeholder: 'Esperando audio en vivo…',
+  });
+  liveStreamOutput.dataset.stream = final ? 'false' : 'true';
+  if (final) {
+    scrollContainerToEnd(liveStreamOutput);
+  }
+}
+
+async function sendLiveChunk(blob) {
+  if (!liveSessionId || !blob || !blob.size) {
+    return;
+  }
+  const formData = new FormData();
+  const extension = blob.type && blob.type.includes('wav') ? '.wav' : '.webm';
+  formData.append('chunk', blob, `chunk-${Date.now()}${extension}`);
+  const response = await fetchJSON(`${API_BASE}/live/sessions/${liveSessionId}/chunk`, {
+    method: 'POST',
+    body: formData,
+  });
+  applyLiveResult(response);
+  const chunkCount = Number(response?.chunk_count ?? 0);
+  setLiveStreamStatus(
+    chunkCount > 0
+      ? `Transcribiendo en vivo (${chunkCount} fragmento${chunkCount === 1 ? '' : 's'})…`
+      : 'Transcribiendo en vivo…',
+  );
+}
+
+function enqueueLiveChunk(blob) {
+  if (!blob || !blob.size || !liveSessionId) return;
+  liveChunkChain = liveChunkChain
+    .then(() => sendLiveChunk(blob))
+    .catch((error) => {
+      console.error('Fallo al procesar fragmento en vivo:', error);
+      setLiveStreamStatus(`Error al procesar el audio: ${error.message}`, 'error');
+      liveSessionActive = false;
+      throw error;
+    });
+  return liveChunkChain;
+}
+
+async function startLiveSession() {
+  if (liveSessionActive || !supportsLiveStreaming()) {
+    updateLiveControls();
+    return;
+  }
+  try {
+    setLiveStreamStatus('Creando sesión en vivo…');
+    const payload = buildLiveSessionPayload();
+    const session = await fetchJSON(`${API_BASE}/live/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    liveSessionId = session?.session_id;
+    if (!liveSessionId) {
+      throw new Error('No se pudo iniciar la sesión en vivo');
+    }
+    const folder = liveFolderInput?.value?.trim();
+    if (folder) {
+      persistDestinationFolder(folder);
+    }
+    liveSessionActive = true;
+    liveChunkChain = Promise.resolve();
+    liveMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const preferredMime =
+      typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : undefined;
+    liveRecorder = preferredMime
+      ? new MediaRecorder(liveMediaStream, { mimeType: preferredMime })
+      : new MediaRecorder(liveMediaStream);
+    liveRecorder.addEventListener('dataavailable', (event) => {
+      if (event.data && event.data.size) {
+        enqueueLiveChunk(event.data);
+      }
+    });
+    liveRecorder.addEventListener('stop', () => {
+      if (liveMediaStream) {
+        liveMediaStream.getTracks().forEach((track) => track.stop());
+        liveMediaStream = null;
+      }
+    });
+    liveRecorder.addEventListener('error', (event) => {
+      const message = event?.error?.message || 'Error desconocido del grabador';
+      setLiveStreamStatus(`La grabación en vivo falló: ${message}`, 'error');
+      liveSessionActive = false;
+      if (liveRecorder && liveRecorder.state !== 'inactive') {
+        liveRecorder.stop();
+      }
+    });
+    resetLiveStreamUI({ placeholder: 'Escuchando… di algo para comenzar.' });
+    liveRecorder.start(LIVE_CHUNK_INTERVAL);
+    setLiveStreamStatus('Grabando… habla cerca del micrófono para recibir texto.');
+  } catch (error) {
+    console.error('No se pudo iniciar la sesión en vivo:', error);
+    liveSessionId = null;
+    liveSessionActive = false;
+    setLiveStreamStatus(`No se pudo iniciar la sesión en vivo: ${error.message}`, 'error');
+    if (liveMediaStream) {
+      liveMediaStream.getTracks().forEach((track) => track.stop());
+      liveMediaStream = null;
+    }
+    if (liveRecorder && liveRecorder.state !== 'inactive') {
+      liveRecorder.stop();
+    }
+  } finally {
+    updateLiveControls();
+  }
+}
+
+async function finalizeLiveSession() {
+  if (!liveSessionId) return;
+  const folder = liveFolderInput?.value?.trim();
+  if (folder) {
+    persistDestinationFolder(folder);
+  }
+  try {
+    const payload = {
+      destination_folder: folder || getStoredDestinationFolder() || undefined,
+      subject: liveSubjectInput?.value?.trim() || undefined,
+      language: liveLanguageSelect?.value?.trim() || undefined,
+      model_size: liveModelSelect?.value?.trim() || undefined,
+      device_preference: liveDeviceSelect?.value?.trim() || undefined,
+    };
+    const result = await fetchJSON(`${API_BASE}/live/sessions/${liveSessionId}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    applyLiveResult(result, { final: true });
+    setLiveStreamStatus('Sesión guardada correctamente.');
+    liveSessionId = null;
+    liveSessionActive = false;
+    liveChunkChain = Promise.resolve();
+    liveRecorder = null;
+    if (liveSubjectInput) {
+      liveSubjectInput.value = '';
+    }
+    await refreshTranscriptions({ force: true });
+  } catch (error) {
+    console.error('No se pudo finalizar la sesión en vivo:', error);
+    setLiveStreamStatus(`No se pudo guardar la sesión: ${error.message}`, 'error');
+    liveSessionActive = false;
+    throw error;
+  } finally {
+    updateLiveControls();
+  }
+}
+
+async function stopLiveSession() {
+  if (!liveSessionId) {
+    return;
+  }
+  setLiveStreamStatus('Deteniendo y guardando la sesión en vivo…');
+  if (liveRecorder && liveRecorder.state !== 'inactive') {
+    liveRecorder.stop();
+  }
+  if (liveMediaStream) {
+    liveMediaStream.getTracks().forEach((track) => track.stop());
+    liveMediaStream = null;
+  }
+  try {
+    await liveChunkChain.catch(() => {});
+    await finalizeLiveSession();
+  } catch (error) {
+    // El mensaje ya se registró en finalizeLiveSession
+  } finally {
+    updateLiveControls();
+  }
+}
+
+async function discardLiveSession() {
+  if (!liveSessionId) {
+    resetLiveStreamUI();
+    setLiveStreamStatus('Sesión descartada. Lista para empezar de nuevo.');
+    updateLiveControls();
+    return;
+  }
+  if (liveRecorder && liveRecorder.state !== 'inactive') {
+    liveRecorder.stop();
+  }
+  if (liveMediaStream) {
+    liveMediaStream.getTracks().forEach((track) => track.stop());
+    liveMediaStream = null;
+  }
+  try {
+    await liveChunkChain.catch(() => {});
+  } catch (error) {
+    console.warn('Error al esperar la cola de fragmentos en vivo:', error);
+  }
+  try {
+    await fetchJSON(`${API_BASE}/live/sessions/${liveSessionId}`, {
+      method: 'DELETE',
+    });
+  } catch (error) {
+    console.warn('No se pudo descartar la sesión en vivo en el servidor:', error);
+  } finally {
+    liveSessionId = null;
+    liveSessionActive = false;
+    liveChunkChain = Promise.resolve();
+    liveRecorder = null;
+    resetLiveStreamUI();
+    setLiveStreamStatus('Sesión descartada. Lista para empezar de nuevo.');
+    updateLiveControls();
+  }
+}
+
 async function createCheckout(planSlug) {
   if (!selectedTranscriptionId) {
     checkoutStatus.textContent = 'Selecciona primero una transcripción en la lista.';
@@ -1474,15 +1858,26 @@ uploadForm?.addEventListener('submit', async (event) => {
     const queuedCount = Array.isArray(response?.items) ? response.items.length : 1;
     uploadStatus.textContent = `${queuedCount} archivo(s) en cola. Procesando transcripciones...`;
     uploadStatus.classList.remove('error');
+    persistDestinationFolder(destinationFolder);
+    const preservedModel = modelSelect?.value;
+    const preservedDevice = deviceSelect?.value;
+    const preservedLanguage = languageSelect?.value;
     uploadForm.reset();
-    if (modelSelect && modelSelect.dataset.default) {
-      modelSelect.value = modelSelect.dataset.default;
+    if (modelSelect) {
+      modelSelect.value = preservedModel || modelSelect.dataset.default || modelSelect.value;
     }
-    if (deviceSelect && deviceSelect.dataset.default) {
-      deviceSelect.value = deviceSelect.dataset.default;
+    if (deviceSelect) {
+      deviceSelect.value = preservedDevice || deviceSelect.dataset.default || deviceSelect.value;
     }
     if (languageSelect) {
-      languageSelect.value = languageSelect.querySelector('option[selected]')?.value ?? '';
+      const fallbackLanguage = languageSelect.querySelector('option[selected]')?.value ?? '';
+      languageSelect.value = preservedLanguage || fallbackLanguage;
+    }
+    if (destinationInput) {
+      destinationInput.value = destinationFolder;
+    }
+    if (liveFolderInput && !liveFolderInput.value) {
+      liveFolderInput.value = destinationFolder;
     }
     updateFilePreview();
     await refreshTranscriptions({ force: true });
@@ -1499,6 +1894,26 @@ fileTrigger?.addEventListener('click', (event) => {
 });
 
 fileInput?.addEventListener('change', updateFilePreview);
+const lastDestinationFolder = getStoredDestinationFolder();
+if (lastDestinationFolder) {
+  if (destinationInput) {
+    destinationInput.value = lastDestinationFolder;
+  }
+  if (liveFolderInput && !liveFolderInput.value) {
+    liveFolderInput.value = lastDestinationFolder;
+  }
+}
+updateDestinationOptions([]);
+resetLiveStreamUI();
+setLiveStreamStatus('Tu texto aparecerá aquí cuando empieces a hablar.');
+updateLiveControls();
+liveStartButton?.addEventListener('click', startLiveSession);
+liveStopButton?.addEventListener('click', stopLiveSession);
+liveResetButton?.addEventListener('click', discardLiveSession);
+destinationInput?.addEventListener('change', handleDestinationInputChange);
+destinationInput?.addEventListener('blur', handleDestinationInputChange);
+liveFolderInput?.addEventListener('change', handleLiveFolderChange);
+liveFolderInput?.addEventListener('blur', handleLiveFolderChange);
 searchInput?.addEventListener('input', handleSearch);
 filterPremium?.addEventListener('change', (event) => {
   premiumOnly = event.target.checked;
