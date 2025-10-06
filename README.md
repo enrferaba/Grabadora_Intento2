@@ -9,6 +9,7 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Base de datos SQLite / SQLAlchemy** con búsqueda por texto, asignatura y estado.
 - **Generación automática de archivos `.txt`** y estructura extensible para futuros planes premium con IA externa.
 - **Interfaz web** en `/` con selector multimedia animado, validación de audio/video y barra de progreso en tiempo real.
+- **Biblioteca por carpetas** con filtros por etiquetas, estado, número de tema y búsqueda libre para localizar transcripciones rápidas.
 - **Dashboard con métricas en vivo** (totales, completadas, minutos procesados, etc.) y vista estilo ChatGPT con animación adaptativa que escribe según el modelo y el dispositivo usado, desplazando la vista automáticamente.
 - **Beneficios premium simulados** con checkout y confirmación que desbloquean notas IA enriquecidas sin mostrar importes hasta definir tu estrategia comercial.
 - **Selector de idioma** con español (predeterminado), inglés y francés, además de autodetección cuando lo necesites.
@@ -193,6 +194,14 @@ Las pruebas activan el transcriptor simulado para validar el ciclo completo sin 
 ## Contenido premium y notas IA
 
 Al confirmar una compra, la API genera notas premium automáticamente (`app/utils/notes.py`). El motor actual resume, destaca ideas y propone próximos pasos de manera heurística, listo para que sustituyas la lógica por tu integración favorita (OpenAI, Azure, etc.) cuando habilites cobros reales.
+
+## Ideas de mejora a corto plazo
+
+- **Persistir filtros personalizados:** guardar en `localStorage` la etiqueta, estado y búsqueda seleccionados en la biblioteca para retomar el contexto al volver a entrar.
+- **Lector de eventos en tiempo real:** exponer un panel cronológico con los `debug_events` más recientes para seguir el progreso sin tener que abrir cada tarjeta.
+- **Diagnóstico de dependencias:** detectar avisos como la ausencia de `hf_xet` o la incompatibilidad de `torchaudio` y sugerir la instalación o actualización adecuada desde la interfaz.
+- **Acciones masivas en carpetas:** permitir descargar, reintentar o borrar en lote todos los elementos de una carpeta o los que coinciden con un filtro determinado.
+- **Anotaciones rápidas por asignatura:** guardar notas o recordatorios asociados a cada carpeta/tema para documentar qué falta por repasar.
 
 ## Estructura de carpetas
 

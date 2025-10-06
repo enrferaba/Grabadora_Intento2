@@ -77,6 +77,7 @@ const studentFollowToggle = document.querySelector('#student-follow');
 const openStudentBtn = document.querySelector('#open-student-web');
 const folderGroupsContainer = document.querySelector('#folder-groups');
 const folderCategoryFilter = document.querySelector('#folder-category');
+const folderStatusFilter = document.querySelector('#folder-status');
 const folderTopicFilter = document.querySelector('#folder-topic');
 const folderSearchInput = document.querySelector('#folder-search');
 const folderResetButton = document.querySelector('#folder-reset');
@@ -88,6 +89,7 @@ let cachedResults = [];
 let cachedFolderGroups = [];
 const folderFilters = {
   category: 'all',
+  status: 'all',
   topic: 'all',
   search: '',
 };
@@ -812,6 +814,12 @@ function updateFolderTopicOptions(groups) {
 function filterFolderGroups(groups) {
   const searchTerm = folderFilters.search;
   return groups.filter((group) => {
+    if (folderFilters.status !== 'all') {
+      const hasMatch = group.items.some((item) => matchesFolderStatus(item, folderFilters.status));
+      if (!hasMatch) {
+        return false;
+      }
+    }
     if (folderFilters.category !== 'all') {
       if (
         folderFilters.category === 'tema' &&
@@ -848,6 +856,23 @@ function filterFolderGroups(groups) {
     }
     return true;
   });
+}
+
+function matchesFolderStatus(item, filterValue) {
+  if (!item) return false;
+  const status = (item.status || '').toLowerCase();
+  switch (filterValue) {
+    case 'in-progress':
+      return status === 'pending' || status === 'processing';
+    case 'completed':
+      return status === 'completed';
+    case 'failed':
+      return status === 'failed';
+    case 'premium':
+      return Boolean(item.premium_enabled);
+    default:
+      return true;
+  }
 }
 
 function createFolderGroupNode(group) {
@@ -1483,6 +1508,10 @@ folderCategoryFilter?.addEventListener('change', (event) => {
   folderFilters.category = event.target.value;
   applyFolderFilters();
 });
+folderStatusFilter?.addEventListener('change', (event) => {
+  folderFilters.status = event.target.value;
+  applyFolderFilters();
+});
 folderTopicFilter?.addEventListener('change', (event) => {
   folderFilters.topic = event.target.value;
   applyFolderFilters();
@@ -1493,9 +1522,11 @@ folderSearchInput?.addEventListener('input', (event) => {
 });
 folderResetButton?.addEventListener('click', () => {
   folderFilters.category = 'all';
+  folderFilters.status = 'all';
   folderFilters.topic = 'all';
   folderFilters.search = '';
   if (folderCategoryFilter) folderCategoryFilter.value = 'all';
+  if (folderStatusFilter) folderStatusFilter.value = 'all';
   if (folderTopicFilter) folderTopicFilter.value = 'all';
   if (folderSearchInput) folderSearchInput.value = '';
   applyFolderFilters();
