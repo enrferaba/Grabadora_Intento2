@@ -650,6 +650,17 @@ class WhisperXTranscriber(BaseTranscriber):
         assert self._model is not None
 
         device = self._normalize_device(self.device_preference or settings.whisper_device)
+        preferred = (self.device_preference or settings.whisper_device or "").lower()
+        if preferred in {"cuda", "gpu"} and device != "cuda":
+            emit(
+                "device.unavailable",
+                "CUDA no está disponible para WhisperX; se usará CPU",
+                {
+                    "requested": self.device_preference or settings.whisper_device or "auto",
+                    "torch_cuda": bool(torch and torch.cuda.is_available()),
+                },
+                "warning",
+            )
         if not language and not getattr(settings, "whisper_language", None):
             detected = _detect_language_fast(audio_path, device, debug_callback=emit)
             if detected:
@@ -888,31 +899,56 @@ class FasterWhisperTranscriber(BaseTranscriber):
     def _ensure_model(self, debug_callback=None) -> None:
         if self._model is not None:
             return
+
+        def emit(
+            stage: str,
+            message: str,
+            extra: Optional[Dict[str, object]] = None,
+            level: str = "info",
+        ) -> None:
+            if debug_callback:
+                debug_callback(stage, message, extra, level)
+
+        requested_label = self.device_preference or settings.whisper_device or "auto"
+        preferred = requested_label.lower()
+        want_cuda = preferred in {"cuda", "gpu"}
+        torch_available = bool(torch and torch.cuda.is_available())
+
         initial_device = self._resolve_device()
+        if want_cuda and initial_device != "cuda":
+            emit(
+                "device.unavailable",
+                "CUDA no está disponible para faster-whisper; se usará CPU",
+                {
+                    "requested": requested_label,
+                    "torch_cuda": torch_available,
+                    "force_cuda": bool(settings.whisper_force_cuda),
+                },
+                "warning",
+            )
+
         last_error: Optional[Exception] = None
         cpu_threads = _resolve_cpu_threads()
         num_workers = _resolve_fw_num_workers()
+        loaded_device: Optional[str] = None
 
         for device in self._candidate_devices(initial_device):
             for compute_type in self._candidate_compute_types(device):
+                forced_cuda = device == "cuda" and settings.whisper_force_cuda and not torch_available
+                emit(
+                    "load-model",
+                    "Cargando modelo faster-whisper de respaldo",
+                    {
+                        "model": self.model_size,
+                        "device": device,
+                        "compute_type": compute_type,
+                        "cpu_threads": cpu_threads,
+                        "num_workers": num_workers,
+                        "forced_cuda": forced_cuda,
+                    },
+                    "info",
+                )
                 try:
-                    forced_cuda = device == "cuda" and settings.whisper_force_cuda and not (
-                        torch is not None and torch.cuda.is_available()
-                    )
-                    if debug_callback:
-                        debug_callback(
-                            "load-model",
-                            "Cargando modelo faster-whisper de respaldo",
-                            {
-                                "model": self.model_size,
-                                "device": device,
-                                "compute_type": compute_type,
-                                "cpu_threads": cpu_threads,
-                                "num_workers": num_workers,
-                                "forced_cuda": forced_cuda,
-                            },
-                            "info",
-                        )
                     self._model = FasterWhisperModel(  # type: ignore[call-arg]
                         self.model_size,
                         device=device,
@@ -921,33 +957,71 @@ class FasterWhisperTranscriber(BaseTranscriber):
                         num_workers=num_workers,
                         download_root=str(settings.models_cache_dir),
                     )
+                    loaded_device = device
                     if device == "cuda" and torch is not None:
                         torch.cuda.empty_cache()
-                    return
+                    break
                 except Exception as exc:  # pragma: no cover - depends on runtime environment
                     last_error = exc
+                    if device == "cuda":
+                        emit(
+                            "device.cuda-error",
+                            "Fallo al inicializar CUDA; probando alternativas",
+                            {
+                                "model": self.model_size,
+                                "compute_type": compute_type,
+                                "error": str(exc),
+                            },
+                            "warning",
+                        )
+                    emit(
+                        "load-model.retry",
+                        "Reintentando carga de modelo faster-whisper",
+                        {
+                            "model": self.model_size,
+                            "device": device,
+                            "compute_type": compute_type,
+                            "cpu_threads": cpu_threads,
+                            "num_workers": num_workers,
+                            "error": str(exc),
+                        },
+                        "warning",
+                    )
                     if torch is not None and device == "cuda":
                         try:
                             torch.cuda.empty_cache()
                         except Exception:
                             pass
-                    if debug_callback:
-                        debug_callback(
-                            "load-model.retry",
-                            "Reintentando carga de modelo faster-whisper",
-                            {
-                                "model": self.model_size,
-                                "device": device,
-                                "compute_type": compute_type,
-                                "cpu_threads": cpu_threads,
-                                "num_workers": num_workers,
-                                "error": str(exc),
-                            },
-                            "warning",
-                        )
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Unable to load faster-whisper model with available configurations")
+                    continue
+            if self._model is not None:
+                break
+
+        if self._model is None:
+            emit(
+                "load-model.failed",
+                "No se pudo cargar faster-whisper con la configuración disponible",
+                {
+                    "model": self.model_size,
+                    "requested": requested_label,
+                    "torch_cuda": torch_available,
+                    "error": str(last_error) if last_error else None,
+                },
+                "error",
+            )
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Unable to load faster-whisper model with available configurations")
+
+        if initial_device == "cuda" and loaded_device != "cuda":
+            emit(
+                "device.fallback",
+                "CUDA falló; se usará CPU para faster-whisper",
+                {
+                    "requested": requested_label,
+                    "torch_cuda": torch_available,
+                },
+                "warning",
+            )
 
     def _estimate_duration(self, audio_path: Path) -> Optional[float]:
         try:
