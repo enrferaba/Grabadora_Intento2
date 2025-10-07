@@ -407,6 +407,157 @@ function populateBeamSelect(select, defaultBeam) {
   }
 }
 
+function normalizeStatus(status) {
+  const value = (status || '').toLowerCase();
+  if (value === 'failed') return 'error';
+  if (value === 'pending') return 'queued';
+  if (value === 'processing') return 'processing';
+  if (value === 'completed') return 'completed';
+  return value || 'queued';
+}
+
+function hashString(value) {
+  let hash = 0;
+  const text = String(value);
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0; // eslint-disable-line no-bitwise
+  }
+  return hash.toString(36);
+}
+
+function humanizeFolderSegment(segment) {
+  const normalized = String(segment || '').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'General';
+  return normalized.replace(/(^|\s)\w/g, (match) => match.toUpperCase());
+}
+
+function deriveFolderSegments(raw) {
+  if (raw == null) return ['General'];
+  const normalized = String(raw).replace(/\\/g, '/');
+  const parts = normalized
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return ['General'];
+  return parts.map(humanizeFolderSegment);
+}
+
+function buildFoldersFromTranscriptionsPayload(items) {
+  const map = new Map();
+  const ensureSegmentPath = (segments, createdAt) => {
+    let parentPath = '';
+    let parentId = null;
+    segments.forEach((segment) => {
+      const path = `${parentPath}/${segment}`;
+      if (!map.has(path)) {
+        const folder = {
+          id: `fld-${hashString(path)}`,
+          name: segment,
+          parentId,
+          path,
+          createdAt: createdAt || new Date().toISOString(),
+        };
+        map.set(path, folder);
+      }
+      parentId = map.get(path).id;
+      parentPath = path;
+    });
+  };
+
+  items.forEach((item) => {
+    const segments = deriveFolderSegments(item.output_folder);
+    ensureSegmentPath(segments, item.created_at);
+  });
+
+  if (!map.size) {
+    ensureSegmentPath(['General'], new Date().toISOString());
+  }
+
+  return {
+    folders: Array.from(map.values()),
+    byPath: map,
+  };
+}
+
+function mapTranscriptionToJob(item, folderIndex) {
+  const segments = deriveFolderSegments(item.output_folder);
+  const folderPath = segments.reduce((acc, segment) => `${acc}/${segment}`, '');
+  const folder = folderIndex.get(folderPath);
+  return {
+    id: String(item.id),
+    name: item.original_filename,
+    status: normalizeStatus(item.status),
+    rawStatus: item.status,
+    durationSec: Number.isFinite(item.duration) ? item.duration : null,
+    language: item.language ?? '',
+    model: item.model_size ?? '',
+    beam: item.beam_size ?? null,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    folderId: folder ? folder.id : null,
+    folderPath,
+    outputFolder: segments.join('/'),
+    devicePreference: item.device_preference ?? '',
+    runtimeSeconds: item.runtime_seconds ?? null,
+    transcriptPath: item.transcript_path ?? null,
+  };
+}
+
+function computeStatsFromJobs(jobs, referenceItems = []) {
+  const todayKey = new Date().toISOString().slice(0, 10);
+  let totalMinutes = 0;
+  let todayMinutes = 0;
+  let todayCount = 0;
+  let queue = 0;
+
+  jobs.forEach((job) => {
+    const minutes = Number(job.durationSec || 0) / 60;
+    if (Number.isFinite(minutes)) {
+      totalMinutes += minutes;
+      const createdAt = job.createdAt ? new Date(job.createdAt) : null;
+      if (createdAt && !Number.isNaN(createdAt.getTime())) {
+        const createdKey = createdAt.toISOString().slice(0, 10);
+        if (createdKey === todayKey) {
+          todayMinutes += minutes;
+          todayCount += 1;
+        }
+      }
+    }
+    if (job.status === 'processing' || job.status === 'queued') {
+      queue += 1;
+    }
+  });
+
+  const reference = [...referenceItems]
+    .sort((a, b) => {
+      const aDate = new Date(a.updated_at || a.created_at || 0).getTime();
+      const bDate = new Date(b.updated_at || b.created_at || 0).getTime();
+      return bDate - aDate;
+    })
+    .find(Boolean);
+  const fallbackJob = jobs.find(Boolean);
+  const device = (reference?.device_preference || fallbackJob?.devicePreference || '').toLowerCase();
+  const model = reference?.model_size || fallbackJob?.model || DEFAULT_MODEL;
+  const mode =
+    device === 'cuda' || device === 'gpu'
+      ? 'GPU'
+      : device === 'cpu'
+      ? 'CPU'
+      : device
+      ? device.toUpperCase()
+      : 'Automático';
+
+  return {
+    totalMinutes: Math.max(0, Math.round(totalMinutes)),
+    todayMinutes: Math.max(0, Math.round(todayMinutes)),
+    totalCount: jobs.length,
+    todayCount,
+    queue,
+    mode,
+    model,
+  };
+}
+
 function updateBeamRecommendation(context, { forceValue = false } = {}) {
   if (!context?.model) return;
   const config = getModelConfig(context.model.value);
@@ -615,18 +766,6 @@ async function triggerDownload(url, fallbackContent, filename, mimeType = 'text/
       alert('No fue posible descargar el archivo solicitado.');
     }
   }
-  jobs.forEach((job) => {
-    const row = document.createElement('tr');
-    row.dataset.jobId = job.id;
-    row.innerHTML = `
-      <td>${job.name}</td>
-      <td>${formatStatus(job.status)}</td>
-      <td>${formatDuration(job.durationSec)}</td>
-      <td>${formatDate(job.updatedAt)}</td>
-    `;
-    row.addEventListener('click', () => openJob(job.id));
-    body.appendChild(row);
-  });
 }
 
 function setupTheme() {
@@ -750,6 +889,46 @@ const liveSession = {
   timer: null,
   cursor: 0,
 };
+
+const jobPolling = {
+  timer: null,
+  jobId: null,
+};
+
+function stopJobPolling() {
+  if (jobPolling.timer) {
+    clearInterval(jobPolling.timer);
+    jobPolling.timer = null;
+  }
+  jobPolling.jobId = null;
+}
+
+function shouldContinueJobPolling(jobId) {
+  const state = store.getState();
+  const job = state.jobs.find((item) => item.id === jobId);
+  if (!job) return false;
+  return job.status === 'processing' || job.status === 'queued';
+}
+
+function evaluateJobPolling(jobId) {
+  if (!shouldContinueJobPolling(jobId)) {
+    stopJobPolling();
+    return false;
+  }
+  return true;
+}
+
+function startJobPolling(jobId) {
+  const targetId = String(jobId);
+  stopJobPolling();
+  if (!evaluateJobPolling(targetId)) return;
+  jobPolling.jobId = targetId;
+  jobPolling.timer = setInterval(() => {
+    if (!evaluateJobPolling(targetId)) return;
+    loadJobDetail(targetId, { startPolling: false, suppressErrors: true });
+  }, 3000);
+}
+
 function goToRoute(route, { updateHash = true, persist = true } = {}) {
   const normalized = ROUTES.includes(route) ? route : 'home';
   elements.views.forEach((view) => {
@@ -775,6 +954,9 @@ function goToRoute(route, { updateHash = true, persist = true } = {}) {
       suppressHashChange = true;
       window.location.hash = targetHash;
     }
+  }
+  if (normalized !== 'job') {
+    stopJobPolling();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1171,16 +1353,21 @@ function renderJobDetail(state) {
     while (list.children.length > 3) list.removeChild(list.lastChild);
     return;
   }
-  const { job, text, segments, folderPath } = detail;
-  const displayed = segments && segments.length ? segments.slice(-state.job.maxSegments) : [text];
-  tailControllers.job.render(displayed.join(''));
+  const { job, text, segments, folderPath, debugEvents } = detail;
+  const fallbackText = text && text.trim() ? text : 'La transcripción se está generando y se actualizará automáticamente.';
+  const displayed = segments && segments.length ? segments.slice(-state.job.maxSegments) : [fallbackText];
+  tailControllers.job.render(displayed.join('\n'));
   elements.job.title.textContent = job.name;
-  elements.job.subtitle.textContent = `Actualizado ${formatDate(job.updatedAt)} · ${formatDuration(job.durationSec)}`;
+  const subtitleParts = [];
+  subtitleParts.push(formatStatus(job.status));
+  if (job.updatedAt) subtitleParts.push(`Actualizado ${formatDate(job.updatedAt)}`);
+  if (Number.isFinite(job.durationSec)) subtitleParts.push(formatDuration(job.durationSec));
+  elements.job.subtitle.textContent = subtitleParts.join(' · ');
   elements.job.status.textContent = formatStatus(job.status);
   elements.job.folder.textContent = folderPath ? folderPath.slice(1) : '—';
   elements.job.duration.textContent = formatDuration(job.durationSec);
-  elements.job.language.textContent = job.language?.toUpperCase() ?? '—';
-  elements.job.model.textContent = job.model ?? '—';
+  elements.job.language.textContent = job.language ? job.language.toUpperCase() : '—';
+  elements.job.model.textContent = job.model || '—';
   if (elements.job.beam) elements.job.beam.textContent = job.beam ? `Beam ${job.beam}` : '—';
   elements.job.wer.textContent = job.status === 'completed' ? '3.4%' : '—';
   elements.job.move.disabled = false;
@@ -1189,9 +1376,12 @@ function renderJobDetail(state) {
   elements.job.downloadSrt.disabled = false;
   elements.job.exportMd.disabled = false;
   elements.job.audio.hidden = false;
-  elements.job.audio.href = `/api/jobs/${job.id}/audio`;
+  elements.job.audio.href = `/api/transcriptions/${job.id}/audio`;
   elements.job.logs.hidden = false;
-  elements.job.logs.href = `/api/jobs/${job.id}/logs`;
+  elements.job.logs.href = `/api/transcriptions/${job.id}/logs`;
+  elements.job.logs.title = debugEvents?.length
+    ? 'Descarga los eventos y diagnósticos de esta transcripción.'
+    : 'Aún no hay eventos registrados; el archivo incluirá un mensaje informativo.';
 
   const list = elements.job.breadcrumbs;
   while (list.children.length > 3) list.removeChild(list.lastChild);
@@ -1246,71 +1436,147 @@ function computeRecent(jobs) {
     .slice(0, 5);
 }
 
-async function loadStats() {
-  try {
-    const response = await fetch('/api/stats');
-    if (!response.ok) throw new Error('Respuesta no válida');
-    const stats = await response.json();
-    store.setState((prev) => ({ ...prev, stats }));
-  } catch (error) {
-    console.warn('Usando estadísticas de ejemplo', error);
-    store.setState((prev) => ({ ...prev, stats: SAMPLE_DATA.stats }));
-  }
-}
-
-async function loadFolders() {
-  try {
-    const response = await fetch('/api/folders');
-    if (!response.ok) throw new Error('Respuesta no válida');
-    const folders = await response.json();
-    store.setState((prev) => ({ ...prev, folders }));
-  } catch (error) {
-    console.warn('Usando carpetas de ejemplo', error);
-    store.setState((prev) => ({ ...prev, folders: SAMPLE_DATA.folders }));
-  }
-}
-
 async function loadJobs() {
   try {
-    const response = await fetch('/api/jobs');
+    const response = await fetch('/api/transcriptions');
     if (!response.ok) throw new Error('Respuesta no válida');
     const payload = await response.json();
-    const jobs = Array.isArray(payload)
-      ? payload.map((job) => ({ ...job, beam: job.beam ?? job.beam_size ?? null }))
+    const results = Array.isArray(payload?.results)
+      ? payload.results
+      : Array.isArray(payload)
+      ? payload
       : [];
-    store.setState((prev) => ({ ...prev, jobs, recentJobs: computeRecent(jobs) }));
+    const folderData = buildFoldersFromTranscriptionsPayload(results);
+    const jobs = results.map((item) => mapTranscriptionToJob(item, folderData.byPath));
+    const stats = computeStatsFromJobs(jobs, results);
+    store.setState((prev) => {
+      const folderIds = new Set(folderData.folders.map((folder) => folder.id));
+      let selectedFolderId = prev.selectedFolderId;
+      if (selectedFolderId && !folderIds.has(selectedFolderId)) {
+        selectedFolderId = null;
+      }
+      if (!selectedFolderId && folderData.folders.length) {
+        selectedFolderId = folderData.folders[0].id;
+      }
+      return {
+        ...prev,
+        jobs,
+        recentJobs: computeRecent(jobs),
+        folders: folderData.folders,
+        stats,
+        selectedFolderId,
+      };
+    });
   } catch (error) {
     console.warn('Usando transcripciones de ejemplo', error);
-    store.setState((prev) => ({ ...prev, jobs: SAMPLE_DATA.jobs, recentJobs: computeRecent(SAMPLE_DATA.jobs) }));
+    store.setState((prev) => ({
+      ...prev,
+      jobs: SAMPLE_DATA.jobs,
+      recentJobs: computeRecent(SAMPLE_DATA.jobs),
+      folders: SAMPLE_DATA.folders,
+      stats: SAMPLE_DATA.stats,
+      selectedFolderId: prev.selectedFolderId ?? SAMPLE_DATA.folders[0]?.id ?? null,
+    }));
   }
 }
 
-async function loadJobDetail(jobId) {
-  const current = store.getState().jobs.find((job) => job.id === jobId);
+async function loadJobDetail(jobId, { startPolling = true, suppressErrors = false } = {}) {
+  const jobIdStr = String(jobId);
+  const state = store.getState();
+  const current = state.jobs.find((job) => job.id === jobIdStr);
   if (!current) return;
   try {
-    const response = await fetch(`/api/jobs/${jobId}/text`);
+    const response = await fetch(`/api/transcriptions/${jobIdStr}`);
     if (!response.ok) throw new Error('Respuesta no válida');
     const payload = await response.json();
-    const folderMap = new Map(store.getState().folders.map((folder) => [folder.id, folder]));
-    const folderPath = current.folderId && folderMap.get(current.folderId) ? folderMap.get(current.folderId).path : '';
-    store.setState((prev) => ({
-      ...prev,
-      job: {
-        ...prev.job,
-        detail: {
-          job: current,
-          text: payload.text ?? '',
-          segments: payload.segments ?? null,
-          folderPath,
+    const folderSegments = deriveFolderSegments(payload.output_folder ?? current.outputFolder);
+    const folderPath = folderSegments.reduce((acc, segment) => `${acc}/${segment}`, '');
+    const segments = Array.isArray(payload.speakers)
+      ? payload.speakers
+          .map((segment) => (segment && segment.text ? String(segment.text).trim() : ''))
+          .filter(Boolean)
+          .map((segment) => `${segment}\n`)
+      : null;
+    const debugEvents = Array.isArray(payload.debug_events) ? payload.debug_events : [];
+    const folderLookup = new Map(state.folders.map((folder) => [folder.path, folder]));
+    let foldersForUpdate = state.folders;
+    if (folderPath && !folderLookup.has(folderPath)) {
+      const updatedFolders = [...state.folders];
+      let parentPath = '';
+      let parentId = null;
+      folderSegments.forEach((segment) => {
+        const path = `${parentPath}/${segment}`;
+        if (!folderLookup.has(path)) {
+          const folder = {
+            id: `fld-${hashString(path)}`,
+            name: segment,
+            parentId,
+            path,
+            createdAt: payload.created_at || new Date().toISOString(),
+          };
+          folderLookup.set(path, folder);
+          updatedFolders.push(folder);
+        }
+        parentId = folderLookup.get(path).id;
+        parentPath = path;
+      });
+      foldersForUpdate = updatedFolders;
+    }
+    const folderEntry = folderLookup.get(folderPath);
+    store.setState((prev) => {
+      const jobs = prev.jobs.map((job) =>
+        job.id === jobIdStr
+          ? {
+              ...job,
+              status: normalizeStatus(payload.status ?? job.rawStatus),
+              rawStatus: payload.status ?? job.rawStatus,
+              durationSec: payload.duration ?? job.durationSec,
+              language: payload.language ?? job.language,
+              model: payload.model_size ?? job.model,
+              beam: payload.beam_size ?? job.beam,
+              updatedAt: payload.updated_at ?? job.updatedAt,
+              createdAt: payload.created_at ?? job.createdAt,
+              devicePreference: payload.device_preference ?? job.devicePreference,
+              runtimeSeconds: payload.runtime_seconds ?? job.runtimeSeconds,
+              transcriptPath: payload.transcript_path ?? job.transcriptPath,
+              folderId: folderEntry ? folderEntry.id : job.folderId,
+              folderPath: folderPath || job.folderPath,
+              outputFolder: folderSegments.join('/'),
+            }
+          : job,
+      );
+      const stats = computeStatsFromJobs(jobs);
+      const activeJob = jobs.find((job) => job.id === jobIdStr) || current;
+      return {
+        ...prev,
+        jobs,
+        folders: foldersForUpdate,
+        stats,
+        recentJobs: computeRecent(jobs),
+        job: {
+          ...prev.job,
+          detail: {
+            job: activeJob,
+            text: payload.text ?? '',
+            segments,
+            folderPath: activeJob.folderPath,
+            debugEvents,
+          },
         },
-      },
-    }));
+      };
+    });
+    if (startPolling) {
+      startJobPolling(jobIdStr);
+    } else {
+      evaluateJobPolling(jobIdStr);
+    }
   } catch (error) {
-    console.warn('Usando detalle de ejemplo', error);
-    const sample = SAMPLE_DATA.texts[jobId];
-    const folderMap = new Map(store.getState().folders.map((folder) => [folder.id, folder]));
+    if (!suppressErrors) {
+      console.warn('Usando detalle de ejemplo', error);
+    }
+    const folderMap = new Map(state.folders.map((folder) => [folder.id, folder]));
     const folderPath = current.folderId && folderMap.get(current.folderId) ? folderMap.get(current.folderId).path : '';
+    const sample = SAMPLE_DATA.texts[jobIdStr];
     store.setState((prev) => ({
       ...prev,
       job: {
@@ -1320,14 +1586,20 @@ async function loadJobDetail(jobId) {
           text: sample?.text ?? '',
           segments: sample?.segments ?? null,
           folderPath,
+          debugEvents: sample?.debugEvents ?? [],
         },
       },
     }));
+    if (startPolling) {
+      startJobPolling(jobIdStr);
+    } else {
+      evaluateJobPolling(jobIdStr);
+    }
   }
 }
 
 async function loadInitialData() {
-  await Promise.all([loadStats(), loadFolders(), loadJobs()]);
+  await loadJobs();
 }
 function formatStatus(status) {
   switch (status) {
@@ -1534,7 +1806,7 @@ async function handleUploadSubmit(event) {
     elements.upload.feedback.textContent = `Subida parcial: ${completed} archivo(s) listo(s), ${failed} con error.`;
   } else if (completed) {
     elements.upload.feedback.textContent = 'Archivos encolados correctamente.';
-    await loadStats().catch((error) => console.warn('No se pudieron refrescar las métricas', error));
+    await loadJobs().catch((error) => console.warn('No se pudieron refrescar las transcripciones', error));
   } else if (failed) {
     elements.upload.feedback.textContent = 'No se pudo subir ningún archivo. Revisa el tamaño y el formato.';
   }
