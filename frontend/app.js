@@ -1855,6 +1855,7 @@ function setupDiagnostics() {
   });
 }
 async function init() {
+  console.info('init start');
   setupTheme();
   setupAnchorGuards();
   setupRouter();
