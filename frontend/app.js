@@ -200,10 +200,14 @@ const elements = {
     feedback: document.getElementById('upload-feedback'),
     diarization: document.getElementById('upload-diarization'),
     vad: document.getElementById('upload-vad'),
+    progress: document.getElementById('upload-progress'),
+    fileList: document.getElementById('upload-file-list'),
+    submit: document.querySelector('#upload-form button[type="submit"]'),
   },
   benefits: {
     pricing: document.getElementById('pricing-grid'),
     prompt: document.getElementById('codex-prompt'),
+    copy: document.getElementById('copy-prompt'),
   },
   library: {
     tree: document.getElementById('folder-tree'),
@@ -263,6 +267,8 @@ const elements = {
   datalist: document.getElementById('folder-options'),
   diagnostics: document.getElementById('open-diagnostics'),
 };
+
+let suppressHashChange = false;
 
 const preferences = {
   get(key, fallback) {
@@ -522,17 +528,33 @@ const liveSession = {
   timer: null,
   cursor: 0,
 };
-function goToRoute(route) {
-  if (!ROUTES.includes(route)) route = 'home';
+function goToRoute(route, { updateHash = true, persist = true } = {}) {
+  const normalized = ROUTES.includes(route) ? route : 'home';
   elements.views.forEach((view) => {
-    const matches = view.dataset.route === route;
+    const matches = view.dataset.route === normalized;
     view.classList.toggle('view--active', matches);
     view.toggleAttribute('hidden', !matches);
   });
   elements.navButtons.forEach((button) => {
-    button.classList.toggle('is-active', button.dataset.routeTarget === route);
+    const isActive = button.dataset.routeTarget === normalized;
+    if (button.classList.contains('nav-btn')) {
+      button.classList.toggle('is-active', isActive);
+      if (isActive) {
+        button.setAttribute('aria-current', 'page');
+      } else {
+        button.removeAttribute('aria-current');
+      }
+    }
   });
-  preferences.set(LOCAL_KEYS.lastRoute, route);
+  if (persist) preferences.set(LOCAL_KEYS.lastRoute, normalized);
+  if (updateHash) {
+    const targetHash = `#${normalized}`;
+    if (window.location.hash !== targetHash) {
+      suppressHashChange = true;
+      window.location.hash = targetHash;
+    }
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function handleNavigation(event) {
@@ -541,10 +563,42 @@ function handleNavigation(event) {
   event.preventDefault();
   goToRoute(target.dataset.routeTarget);
 }
+function handleRouteKey(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const target = event.target.closest('[data-route-target]');
+  if (!target) return;
+  event.preventDefault();
+  goToRoute(target.dataset.routeTarget);
+}
 
-elements.navButtons.forEach((button) => button.addEventListener('click', handleNavigation));
+function getRouteFromHash() {
+  const hash = window.location.hash.replace('#', '').trim();
+  return ROUTES.includes(hash) ? hash : null;
+}
+
+function setupRouter() {
+  document.addEventListener('click', handleNavigation);
+  document.addEventListener('keydown', handleRouteKey);
+  window.addEventListener('hashchange', () => {
+    if (suppressHashChange) {
+      suppressHashChange = false;
+      return;
+    }
+    const hashRoute = getRouteFromHash();
+    goToRoute(hashRoute ?? 'home', { updateHash: false });
+  });
+  elements.navButtons.forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.routeTarget === route);
+  });
+  preferences.set(LOCAL_KEYS.lastRoute, route);
+}
 
 function initRouteFromStorage() {
+  const hashRoute = getRouteFromHash();
+  if (hashRoute) {
+    goToRoute(hashRoute, { updateHash: false });
+    return;
+  }
   const lastRoute = preferences.get(LOCAL_KEYS.lastRoute, 'home');
   goToRoute(lastRoute);
 }
@@ -594,6 +648,77 @@ function renderFolderOptions(folders) {
       option.value = folder.path.slice(1);
       elements.datalist.appendChild(option);
     });
+}
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes)) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  const formatted = value >= 10 || index === 0 ? Math.round(value) : value.toFixed(1);
+  return `${formatted} ${units[index]}`;
+}
+
+function renderPendingFiles(files) {
+  const list = elements.upload.fileList;
+  if (!list) return;
+  list.innerHTML = '';
+  if (!files.length) {
+    list.hidden = true;
+    return;
+  }
+  files.forEach((file) => {
+    const item = document.createElement('li');
+    const name = document.createElement('span');
+    name.textContent = file.name;
+    const size = document.createElement('span');
+    size.textContent = formatFileSize(file.size);
+    item.append(name, size);
+    list.appendChild(item);
+  });
+  list.hidden = false;
+}
+
+function prefillFolderInputs(state) {
+  if (!state.folders.length) return;
+  const explicit = state.selectedFolderId
+    ? state.folders.find((folder) => folder.id === state.selectedFolderId)
+    : null;
+  const fallback = explicit ?? state.folders[0];
+  if (!fallback) return;
+  const path = fallback.path.startsWith('/') ? fallback.path.slice(1) : fallback.path;
+  if (path) {
+    const uploadField = elements.upload.folder;
+    const quickField = elements.home.quickFolder;
+    const liveField = elements.live.folder;
+    if (uploadField && (!uploadField.value.trim() || document.activeElement !== uploadField)) {
+      uploadField.value = path;
+    }
+    if (quickField && (!quickField.value.trim() || document.activeElement !== quickField)) {
+      quickField.value = path;
+    }
+    if (liveField && (!liveField.value.trim() || document.activeElement !== liveField)) {
+      liveField.value = path;
+    }
+  }
+}
+
+function setUploadProgress(percent) {
+  const progress = elements.upload.progress;
+  if (!progress) return;
+  progress.hidden = false;
+  progress.value = Math.max(0, Math.min(100, percent));
+}
+
+function resetUploadProgress() {
+  const progress = elements.upload.progress;
+  if (!progress) return;
+  progress.value = 0;
+  progress.hidden = true;
 }
 
 function buildFolderTree(folders) {
@@ -840,6 +965,7 @@ store.subscribe((state, prev) => {
     renderFolderTree(state);
     renderFolderOptions(state.folders);
     renderLibraryBreadcrumb(state);
+    prefillFolderInputs(state);
   }
   if (
     state.jobs !== prev.jobs ||
@@ -903,6 +1029,99 @@ async function loadJobs() {
     store.setState((prev) => ({ ...prev, jobs: SAMPLE_DATA.jobs, recentJobs: computeRecent(SAMPLE_DATA.jobs) }));
   }
 }
+function formatStatus(status) {
+  switch (status) {
+    case 'processing':
+      return 'Procesando';
+    case 'completed':
+      return 'Completa';
+    case 'queued':
+      return 'En cola';
+    case 'error':
+      return 'Error';
+    default:
+      return status;
+  }
+}
+
+function formatDuration(seconds = 0) {
+  if (!Number.isFinite(seconds)) return '—';
+  const totalMinutes = Math.floor(seconds / 60);
+  const mins = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const secs = Math.floor(seconds % 60);
+  if (hours) {
+    return `${hours}h ${String(mins).padStart(2, '0')}m`;
+  }
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return new Intl.DateTimeFormat('es-ES', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
+function createId(prefix) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function ensureFolderPath(pathInput) {
+  const normalized = pathInput.trim();
+  if (!normalized) return null;
+  const parts = normalized.split('/').map((part) => part.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const existingMap = new Map(store.getState().folders.map((folder) => [folder.path, folder]));
+  const folders = [...store.getState().folders];
+  let parentId = null;
+  let currentPath = '';
+  let finalId = null;
+  parts.forEach((segment) => {
+    currentPath += `/${segment}`;
+    let folder = existingMap.get(currentPath);
+    if (!folder) {
+      folder = {
+        id: createId('fld'),
+        name: segment,
+        parentId,
+        path: currentPath,
+        createdAt: new Date().toISOString(),
+      };
+      existingMap.set(currentPath, folder);
+      folders.push(folder);
+    }
+    parentId = folder.id;
+    finalId = folder.id;
+  });
+  store.setState((prev) => ({ ...prev, folders }));
+  return finalId;
+}
+function setupLiveControls() {
+  elements.home.start.addEventListener('click', startLiveSession);
+  elements.live.start.addEventListener('click', startLiveSession);
+  elements.home.pause.addEventListener('click', pauseLiveSession);
+  elements.live.pause.addEventListener('click', pauseLiveSession);
+  elements.home.resume.addEventListener('click', resumeLiveSession);
+  elements.live.resume.addEventListener('click', resumeLiveSession);
+  elements.home.finish.addEventListener('click', finishLiveSession);
+  elements.live.finish.addEventListener('click', finishLiveSession);
+
+  elements.live.tailSize.value = String(store.getState().live.maxSegments);
+  elements.live.tailSize.addEventListener('change', (event) => {
+    const value = Number(event.target.value);
+    preferences.set(LOCAL_KEYS.liveTailSize, value);
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        maxSegments: value,
+        segments: prev.live.segments.slice(-value),
+      },
+    }));
+  });
 
 async function loadJobDetail(jobId) {
   const current = store.getState().jobs.find((job) => job.id === jobId);
@@ -1018,29 +1237,6 @@ function ensureFolderPath(pathInput) {
   store.setState((prev) => ({ ...prev, folders }));
   return finalId;
 }
-function setupLiveControls() {
-  elements.home.start.addEventListener('click', startLiveSession);
-  elements.live.start.addEventListener('click', startLiveSession);
-  elements.home.pause.addEventListener('click', pauseLiveSession);
-  elements.live.pause.addEventListener('click', pauseLiveSession);
-  elements.home.resume.addEventListener('click', resumeLiveSession);
-  elements.live.resume.addEventListener('click', resumeLiveSession);
-  elements.home.finish.addEventListener('click', finishLiveSession);
-  elements.live.finish.addEventListener('click', finishLiveSession);
-
-  elements.live.tailSize.value = String(store.getState().live.maxSegments);
-  elements.live.tailSize.addEventListener('change', (event) => {
-    const value = Number(event.target.value);
-    preferences.set(LOCAL_KEYS.liveTailSize, value);
-    store.setState((prev) => ({
-      ...prev,
-      live: {
-        ...prev.live,
-        maxSegments: value,
-        segments: prev.live.segments.slice(-value),
-      },
-    }));
-  });
 
 let pendingFiles = [];
 
@@ -1092,19 +1288,27 @@ async function uploadFileToApi(file, folderPath, options) {
 async function handleUploadSubmit(event) {
   event.preventDefault();
   const files = pendingFiles.length ? pendingFiles : Array.from(elements.upload.input.files).filter(isMediaFile);
+  const { submit } = elements.upload;
+  if (submit) submit.disabled = true;
   if (!files.length) {
     elements.upload.feedback.textContent = 'Selecciona o arrastra al menos un archivo de audio.';
+    if (submit) submit.disabled = false;
+    resetUploadProgress();
     return;
   }
   const folderPath = elements.upload.folder.value.trim();
   if (!folderPath) {
     elements.upload.feedback.textContent = 'Indica una carpeta destino.';
+    if (submit) submit.disabled = false;
+    resetUploadProgress();
     return;
   }
   const normalizedFolderPath = normalizePath(folderPath);
   const folderId = ensureFolderPath(folderPath);
   if (!folderId) {
     elements.upload.feedback.textContent = 'No se pudo preparar la carpeta indicada.';
+    if (submit) submit.disabled = false;
+    resetUploadProgress();
     return;
   }
   const jobs = [...store.getState().jobs];
@@ -1112,8 +1316,17 @@ async function handleUploadSubmit(event) {
   const language = elements.upload.language.value || '';
   const model = elements.upload.model.value;
   const devicePreference = model === 'large-v3' ? 'gpu' : 'cpu';
+  const totalFiles = files.length;
   let completed = 0;
   let failed = 0;
+  elements.upload.feedback.textContent = 'Preparando subida…';
+  setUploadProgress(0);
+
+  const updateOverallProgress = (currentCompleted, partial) => {
+    if (!totalFiles) return;
+    const percent = Math.round(((currentCompleted + partial) / totalFiles) * 100);
+    setUploadProgress(percent);
+  };
 
   for (const file of files) {
     try {
@@ -1122,6 +1335,8 @@ async function handleUploadSubmit(event) {
         model,
         devicePreference,
         onProgress(percent) {
+          const fractional = percent / 100;
+          updateOverallProgress(completed, fractional);
           elements.upload.feedback.textContent = `Subiendo ${file.name} (${percent}%)…`;
         },
       });
@@ -1138,7 +1353,8 @@ async function handleUploadSubmit(event) {
         updatedAt: now.toISOString(),
       });
       completed += 1;
-      elements.upload.feedback.textContent = `Archivo ${file.name} en cola (${completed}/${files.length}).`;
+      updateOverallProgress(completed, 0);
+      elements.upload.feedback.textContent = `Archivo ${file.name} en cola (${completed}/${totalFiles}).`;
     } catch (error) {
       console.error('Falló la subida', error);
       failed += 1;
@@ -1158,11 +1374,17 @@ async function handleUploadSubmit(event) {
 
   elements.upload.form.reset();
   pendingFiles = [];
+  renderPendingFiles(pendingFiles);
+  prefillFolderInputs(store.getState());
   elements.upload.dropzone.classList.remove('dropzone--active');
+  window.setTimeout(() => resetUploadProgress(), 900);
+  if (submit) submit.disabled = false;
 }
 
 function setupDropzone() {
   const { dropzone, trigger, input } = elements.upload;
+  resetUploadProgress();
+  renderPendingFiles([]);
   trigger.addEventListener('click', () => input.click());
   dropzone.addEventListener('dragover', (event) => {
     event.preventDefault();
@@ -1175,15 +1397,55 @@ function setupDropzone() {
     event.preventDefault();
     dropzone.classList.remove('dropzone--active');
     pendingFiles = Array.from(event.dataTransfer.files).filter(isMediaFile);
+    renderPendingFiles(pendingFiles);
+    resetUploadProgress();
     elements.upload.feedback.textContent = pendingFiles.length
       ? `${pendingFiles.length} archivo(s) listo(s) para subir.`
       : 'Los archivos arrastrados no son audio o video compatibles.';
   });
   input.addEventListener('change', () => {
     pendingFiles = Array.from(input.files || []).filter(isMediaFile);
+    renderPendingFiles(pendingFiles);
+    resetUploadProgress();
     elements.upload.feedback.textContent = pendingFiles.length
       ? `${pendingFiles.length} archivo(s) listo(s) para subir.`
       : '';
+  });
+}
+
+function setupPromptCopy() {
+  const { prompt, copy } = elements.benefits;
+  if (!prompt || !copy) return;
+  copy.addEventListener('click', async () => {
+    const previous = copy.textContent;
+    const markCopied = () => {
+      copy.textContent = '¡Copiado!';
+      copy.disabled = true;
+      window.setTimeout(() => {
+        copy.textContent = previous;
+        copy.disabled = false;
+      }, 1200);
+    };
+    try {
+      await navigator.clipboard.writeText(prompt.value);
+      markCopied();
+    } catch (error) {
+      let copied = false;
+      try {
+        prompt.focus();
+        prompt.select();
+        copied = document.execCommand ? document.execCommand('copy') : false;
+        window.getSelection()?.removeAllRanges();
+      } catch (fallbackError) {
+        console.error('Fallo el método de copia alternativo', fallbackError);
+      }
+      if (copied) {
+        markCopied();
+        return;
+      }
+      console.error('No se pudo copiar el prompt', error);
+      alert('No se pudo copiar el prompt automáticamente. Copia manualmente desde el área de texto.');
+    }
   });
 }
 function normalizePath(path) {
@@ -1270,6 +1532,29 @@ function moveJob(jobId, destinationPath) {
   });
   loadJobDetail(jobId);
 }
+function setupLiveControls() {
+  elements.home.start.addEventListener('click', startLiveSession);
+  elements.live.start.addEventListener('click', startLiveSession);
+  elements.home.pause.addEventListener('click', pauseLiveSession);
+  elements.live.pause.addEventListener('click', pauseLiveSession);
+  elements.home.resume.addEventListener('click', resumeLiveSession);
+  elements.live.resume.addEventListener('click', resumeLiveSession);
+  elements.home.finish.addEventListener('click', finishLiveSession);
+  elements.live.finish.addEventListener('click', finishLiveSession);
+
+  elements.live.tailSize.value = String(store.getState().live.maxSegments);
+  elements.live.tailSize.addEventListener('change', (event) => {
+    const value = Number(event.target.value);
+    preferences.set(LOCAL_KEYS.liveTailSize, value);
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        maxSegments: value,
+        segments: prev.live.segments.slice(-value),
+      },
+    }));
+  });
 
 function openJob(jobId) {
   goToRoute('job');
@@ -1582,8 +1867,10 @@ function setupDiagnostics() {
 }
 async function init() {
   setupTheme();
+  setupRouter();
   renderPricingPlans();
   injectPrompt();
+  setupPromptCopy();
   setupDropzone();
   elements.upload.form.addEventListener('submit', handleUploadSubmit);
   setupFilters();
