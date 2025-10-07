@@ -326,6 +326,12 @@ const elements = {
     downloadTxt: document.getElementById('job-download-txt'),
     downloadSrt: document.getElementById('job-download-srt'),
     exportMd: document.getElementById('job-export-md'),
+    liveStatus: document.getElementById('job-live-status'),
+    progress: document.getElementById('job-progress'),
+    progressBar: document.getElementById('job-progress-bar'),
+    progressFill: document.getElementById('job-progress-fill'),
+    progressLabel: document.getElementById('job-progress-label'),
+    progressEta: document.getElementById('job-progress-eta'),
     status: document.getElementById('job-status'),
     folder: document.getElementById('job-folder'),
     duration: document.getElementById('job-duration'),
@@ -824,7 +830,9 @@ function createTailController({ scroller, text, followToggle, returnButton, pref
 
   const scrollToEnd = (smooth = false) => {
     const behavior = smooth ? 'smooth' : 'auto';
-    requestAnimationFrame(() => sentinel.scrollIntoView({ behavior, block: 'end' }));
+    requestAnimationFrame(() => {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+    });
   };
 
   const setFollow = (value) => {
@@ -894,6 +902,8 @@ const jobPolling = {
   timer: null,
   jobId: null,
 };
+
+const jobTextCache = new Map();
 
 function stopJobPolling() {
   if (jobPolling.timer) {
@@ -1329,6 +1339,214 @@ function renderLiveStatus(status) {
   if (elements.live.finish) elements.live.finish.disabled = status === 'idle';
 }
 
+function buildSegmentsFromEvents(events) {
+  if (!Array.isArray(events)) return [];
+  const collected = new Map();
+  events.forEach((event) => {
+    if (!event || event.stage !== 'transcribe.segment') return;
+    const extra = event.extra || {};
+    const text = typeof extra.text === 'string' ? extra.text.trim() : '';
+    if (!text) return;
+    const index = Number(extra.index);
+    const key = Number.isFinite(index) ? index : collected.size;
+    collected.set(key, text);
+  });
+  return Array.from(collected.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, text]) => text);
+}
+
+function extractDurationFromEvents(events) {
+  if (!Array.isArray(events)) return null;
+  let duration = null;
+  events.forEach((event) => {
+    if (!event) return;
+    const extra = event.extra || {};
+    if (event.stage === 'analyze.duration') {
+      const seconds = Number(extra.seconds ?? extra.duration ?? extra.total_seconds ?? extra.ms / 1000);
+      if (Number.isFinite(seconds)) {
+        duration = duration == null ? seconds : Math.max(duration, seconds);
+      }
+    }
+    if (event.stage === 'transcribe.segment') {
+      const end = Number(extra.end);
+      if (Number.isFinite(end)) {
+        duration = duration == null ? end : Math.max(duration, end);
+      }
+    }
+  });
+  return duration;
+}
+
+function formatClock(seconds = 0) {
+  if (!Number.isFinite(seconds)) return '—';
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatEta(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  const total = Math.ceil(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const parts = [];
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (!hours && secs) parts.push(`${secs}s`);
+  if (!parts.length) parts.push('1s');
+  return `Quedan ~${parts.join(' ')}`;
+}
+
+function computeJobProgressState(job, debugEvents) {
+  const events = Array.isArray(debugEvents) ? debugEvents : [];
+  const durationFromEvents = extractDurationFromEvents(events);
+  const jobDuration = Number.isFinite(job.durationSec) ? job.durationSec : null;
+  const totalSeconds = Number.isFinite(jobDuration)
+    ? jobDuration
+    : Number.isFinite(durationFromEvents)
+    ? durationFromEvents
+    : null;
+
+  let processedSeconds = job.status === 'completed' && Number.isFinite(totalSeconds) ? totalSeconds : 0;
+  let sawSegment = false;
+  let sawModelLoad = false;
+  let sawTranscribeStart = false;
+  let startTimestamp = null;
+  let errorEvent = null;
+
+  events.forEach((event) => {
+    if (!event) return;
+    const stage = event.stage || '';
+    const extra = event.extra || {};
+    if (stage === 'processing-start' && event.timestamp) {
+      const parsed = Date.parse(event.timestamp);
+      if (!Number.isNaN(parsed)) {
+        startTimestamp = parsed;
+      }
+    }
+    if (stage === 'load-model' || stage === 'load-model.retry') {
+      sawModelLoad = true;
+    }
+    if (stage === 'transcribe.start') {
+      sawTranscribeStart = true;
+    }
+    if (stage === 'transcribe.segment') {
+      sawSegment = true;
+      const end = Number(extra.end);
+      if (Number.isFinite(end)) {
+        processedSeconds = Math.max(processedSeconds, end);
+      }
+    }
+    if (stage === 'transcribe.completed' && Number.isFinite(totalSeconds)) {
+      processedSeconds = Math.max(processedSeconds, totalSeconds);
+    }
+    if (stage.endsWith('.error') || stage === 'processing-missing-file') {
+      errorEvent = event;
+    }
+  });
+
+  if (Number.isFinite(totalSeconds) && job.status === 'completed') {
+    processedSeconds = Math.max(processedSeconds, totalSeconds);
+  }
+
+  let percent = null;
+  if (Number.isFinite(totalSeconds) && totalSeconds > 0) {
+    percent = Math.min(1, processedSeconds / totalSeconds);
+  } else if (job.status === 'completed') {
+    percent = 1;
+  }
+
+  let etaSeconds = null;
+  if (
+    percent != null &&
+    percent < 1 &&
+    Number.isFinite(totalSeconds) &&
+    startTimestamp &&
+    processedSeconds > 0
+  ) {
+    const elapsed = Math.max(1, (Date.now() - startTimestamp) / 1000);
+    const speed = processedSeconds / elapsed;
+    if (speed > 0.05) {
+      etaSeconds = Math.max(0, (totalSeconds - processedSeconds) / speed);
+    }
+  }
+
+  const label = Number.isFinite(totalSeconds)
+    ? `${formatClock(processedSeconds)} / ${formatClock(totalSeconds)}`
+    : processedSeconds > 0
+    ? `${formatClock(processedSeconds)} procesados`
+    : '';
+
+  let statusText = '';
+  if (job.status === 'error') {
+    statusText = errorEvent?.message ? `Error: ${errorEvent.message}` : 'La transcripción se detuvo con errores.';
+  } else if (job.status === 'completed') {
+    statusText = 'Transcripción completada.';
+  } else if (sawSegment) {
+    statusText = Number.isFinite(totalSeconds)
+      ? `Transcribiendo… ${formatClock(processedSeconds)} / ${formatClock(totalSeconds)}`
+      : 'Transcribiendo…';
+  } else if (sawTranscribeStart) {
+    statusText = 'Analizando audio…';
+  } else if (sawModelLoad) {
+    statusText = `Descargando modelo ${job.model || 'seleccionado'}…`;
+  } else if (job.status === 'processing') {
+    statusText = 'Preparando transcripción…';
+  } else {
+    statusText = formatStatus(job.status);
+  }
+
+  return {
+    showBar: percent != null,
+    percent: percent ?? 0,
+    label,
+    etaText: etaSeconds ? formatEta(etaSeconds) : '',
+    statusText,
+  };
+}
+
+function renderJobProgress(job, debugEvents) {
+  const { progress, progressBar, progressFill, progressLabel, progressEta, liveStatus } = elements.job;
+  if (!progress || !progressBar || !progressFill || !progressLabel || !progressEta) return;
+  const info = computeJobProgressState(job, debugEvents);
+  if (liveStatus) {
+    const fallback =
+      job.status === 'completed'
+        ? 'Transcripción completada.'
+        : job.status === 'processing'
+        ? 'Preparando transcripción…'
+        : formatStatus(job.status);
+    liveStatus.textContent = info?.statusText || fallback;
+  }
+  if (!info || !info.showBar) {
+    progress.hidden = true;
+    progressFill.style.width = '0%';
+    progressBar.setAttribute('aria-valuenow', '0');
+    if (!info) {
+      progressLabel.textContent = '00:00 / 00:00';
+      progressEta.textContent = '—';
+    } else {
+      progressLabel.textContent = info.label || '';
+      progressEta.textContent = info.etaText || '—';
+    }
+    return;
+  }
+
+  const percentValue = Math.max(0, Math.min(100, Math.round(info.percent * 100)));
+  progress.hidden = false;
+  progressFill.style.width = `${percentValue}%`;
+  progressBar.setAttribute('aria-valuenow', String(percentValue));
+  progressLabel.textContent = info.label || `${percentValue}%`;
+  progressEta.textContent = info.etaText || '—';
+}
+
 function renderJobDetail(state) {
   const detail = state.job.detail;
   if (!detail) {
@@ -1349,6 +1567,16 @@ function renderJobDetail(state) {
     elements.job.model.textContent = '—';
     if (elements.job.beam) elements.job.beam.textContent = '—';
     elements.job.wer.textContent = '—';
+    if (elements.job.liveStatus) {
+      elements.job.liveStatus.textContent = 'Selecciona una transcripción para ver el progreso.';
+    }
+    if (elements.job.progress) {
+      elements.job.progress.hidden = true;
+      if (elements.job.progressFill) elements.job.progressFill.style.width = '0%';
+      if (elements.job.progressBar) elements.job.progressBar.setAttribute('aria-valuenow', '0');
+      if (elements.job.progressLabel) elements.job.progressLabel.textContent = '00:00 / 00:00';
+      if (elements.job.progressEta) elements.job.progressEta.textContent = '—';
+    }
     const list = elements.job.breadcrumbs;
     while (list.children.length > 3) list.removeChild(list.lastChild);
     return;
@@ -1356,7 +1584,8 @@ function renderJobDetail(state) {
   const { job, text, segments, folderPath, debugEvents } = detail;
   const fallbackText = text && text.trim() ? text : 'La transcripción se está generando y se actualizará automáticamente.';
   const displayed = segments && segments.length ? segments.slice(-state.job.maxSegments) : [fallbackText];
-  tailControllers.job.render(displayed.join('\n'));
+  tailControllers.job.render(displayed.join('\n\n'));
+  renderJobProgress(job, debugEvents);
   elements.job.title.textContent = job.name;
   const subtitleParts = [];
   subtitleParts.push(formatStatus(job.status));
@@ -1491,13 +1720,34 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
     const payload = await response.json();
     const folderSegments = deriveFolderSegments(payload.output_folder ?? current.outputFolder);
     const folderPath = folderSegments.reduce((acc, segment) => `${acc}/${segment}`, '');
-    const segments = Array.isArray(payload.speakers)
+    const debugEvents = Array.isArray(payload.debug_events) ? payload.debug_events : [];
+    const payloadSegments = Array.isArray(payload.speakers)
       ? payload.speakers
           .map((segment) => (segment && segment.text ? String(segment.text).trim() : ''))
           .filter(Boolean)
-          .map((segment) => `${segment}\n`)
       : null;
-    const debugEvents = Array.isArray(payload.debug_events) ? payload.debug_events : [];
+    const eventSegments = buildSegmentsFromEvents(debugEvents);
+    const normalizedSegments =
+      payloadSegments && payloadSegments.length
+        ? payloadSegments
+        : eventSegments.length
+        ? eventSegments
+        : null;
+    const durationFromEvents = extractDurationFromEvents(debugEvents);
+    const payloadDuration = Number(payload.duration);
+    const resolvedDuration = Number.isFinite(payloadDuration) && payloadDuration > 0
+      ? payloadDuration
+      : Number.isFinite(durationFromEvents) && durationFromEvents > 0
+      ? durationFromEvents
+      : Number.isFinite(current.durationSec)
+      ? current.durationSec
+      : null;
+    const incomingText = typeof payload.text === 'string' ? payload.text : '';
+    const cachedText = jobTextCache.get(jobIdStr) || '';
+    const resolvedText = incomingText && incomingText.trim() ? incomingText : cachedText;
+    if (incomingText && incomingText.trim()) {
+      jobTextCache.set(jobIdStr, incomingText);
+    }
     const folderLookup = new Map(state.folders.map((folder) => [folder.path, folder]));
     let foldersForUpdate = state.folders;
     if (folderPath && !folderLookup.has(folderPath)) {
@@ -1524,27 +1774,27 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
     }
     const folderEntry = folderLookup.get(folderPath);
     store.setState((prev) => {
-      const jobs = prev.jobs.map((job) =>
-        job.id === jobIdStr
-          ? {
-              ...job,
-              status: normalizeStatus(payload.status ?? job.rawStatus),
-              rawStatus: payload.status ?? job.rawStatus,
-              durationSec: payload.duration ?? job.durationSec,
-              language: payload.language ?? job.language,
-              model: payload.model_size ?? job.model,
-              beam: payload.beam_size ?? job.beam,
-              updatedAt: payload.updated_at ?? job.updatedAt,
-              createdAt: payload.created_at ?? job.createdAt,
-              devicePreference: payload.device_preference ?? job.devicePreference,
-              runtimeSeconds: payload.runtime_seconds ?? job.runtimeSeconds,
-              transcriptPath: payload.transcript_path ?? job.transcriptPath,
-              folderId: folderEntry ? folderEntry.id : job.folderId,
-              folderPath: folderPath || job.folderPath,
-              outputFolder: folderSegments.join('/'),
-            }
-          : job,
-      );
+      const jobs = prev.jobs.map((job) => {
+        if (job.id !== jobIdStr) return job;
+        const nextDuration = Number.isFinite(resolvedDuration) ? resolvedDuration : job.durationSec;
+        return {
+          ...job,
+          status: normalizeStatus(payload.status ?? job.rawStatus),
+          rawStatus: payload.status ?? job.rawStatus,
+          durationSec: nextDuration,
+          language: payload.language ?? job.language,
+          model: payload.model_size ?? job.model,
+          beam: payload.beam_size ?? job.beam,
+          updatedAt: payload.updated_at ?? job.updatedAt,
+          createdAt: payload.created_at ?? job.createdAt,
+          devicePreference: payload.device_preference ?? job.devicePreference,
+          runtimeSeconds: payload.runtime_seconds ?? job.runtimeSeconds,
+          transcriptPath: payload.transcript_path ?? job.transcriptPath,
+          folderId: folderEntry ? folderEntry.id : job.folderId,
+          folderPath: folderPath || job.folderPath,
+          outputFolder: folderSegments.join('/'),
+        };
+      });
       const stats = computeStatsFromJobs(jobs);
       const activeJob = jobs.find((job) => job.id === jobIdStr) || current;
       return {
@@ -1557,8 +1807,8 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
           ...prev.job,
           detail: {
             job: activeJob,
-            text: payload.text ?? '',
-            segments,
+            text: resolvedText,
+            segments: normalizedSegments,
             folderPath: activeJob.folderPath,
             debugEvents,
           },

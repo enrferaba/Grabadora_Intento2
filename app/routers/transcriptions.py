@@ -652,6 +652,7 @@ def process_transcription(
     )
     try:
         stored_path: Optional[str] = None
+        existing_duration: Optional[float] = None
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
             if transcription is None:
@@ -662,6 +663,7 @@ def process_transcription(
             transcription.device_preference = resolved_device
             transcription.runtime_seconds = None
             stored_path = transcription.stored_path
+            existing_duration = transcription.duration
 
         assert stored_path is not None
         audio_path = Path(stored_path)
@@ -681,6 +683,29 @@ def process_transcription(
                 level="warning",
             )
             return
+
+        duration_hint: Optional[float] = existing_duration
+        if duration_hint is None:
+            try:
+                audio_info = AudioSegment.from_file(audio_path)
+                duration_hint = len(audio_info) / 1000.0
+            except Exception as exc:  # pragma: no cover - depende del runtime
+                logger.debug(
+                    "No se pudo estimar la duración preliminar para %s: %s",
+                    audio_path,
+                    exc,
+                )
+            else:
+                append_debug_event(
+                    transcription_id,
+                    "analyze.duration",
+                    "Duración estimada del audio",
+                    extra={"seconds": duration_hint},
+                )
+                with get_session() as update_session:
+                    partial = update_session.get(Transcription, transcription_id)
+                    if partial is not None and not partial.duration:
+                        partial.duration = duration_hint
 
         result = transcriber.transcribe(
             audio_path,
