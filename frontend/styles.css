@@ -1036,6 +1036,12 @@ body.has-modal {
   overflow: hidden;
 }
 
+.pricing-card__payment {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-soft);
+}
+
 .prompt-text {
   width: 100%;
   border-radius: var(--radius-md);
