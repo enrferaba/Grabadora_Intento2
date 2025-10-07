@@ -355,11 +355,13 @@ html.dark .topbar {
   font-size: 1rem;
   line-height: 1.6;
   overflow-y: auto;
-  min-height: clamp(320px, 65vh, 820px);
+  overflow-x: hidden;
+  min-height: clamp(320px, 55vh, 820px);
+  max-height: clamp(320px, 65vh, 820px);
 }
 
 .live-panel .live-tail {
-  height: clamp(320px, 65vh, 820px);
+  height: clamp(320px, 60vh, 820px);
 }
 
 .live-view .live-tail {
@@ -367,7 +369,8 @@ html.dark .topbar {
 }
 
 .job-tail {
-  min-height: clamp(320px, 60vh, 760px);
+  min-height: clamp(320px, 55vh, 760px);
+  max-height: clamp(320px, 62vh, 780px);
   background: var(--job-bg);
 }
 

@@ -109,6 +109,7 @@ const WHISPER_MODELS = [
 
 const BEAM_OPTIONS = [1, 2, 3, 4, 5, 8];
 const DEFAULT_MODEL = 'large-v3';
+const NUMERIC_ID_PATTERN = /^\d+$/;
 
 const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
@@ -226,6 +227,7 @@ const SAMPLE_LIVE_SEGMENTS = [
   'Puedes pausar la sesión si necesitas responder preguntas en vivo.\n',
   'Al finalizar, descarga el .txt o exporta a Markdown para compartirlo con tu equipo.\n',
 ];
+const STREAM_SEGMENT_LIMIT = 400;
 const elements = {
   themeToggle: document.getElementById('theme-toggle'),
   navButtons: document.querySelectorAll('[data-route-target]'),
@@ -820,6 +822,16 @@ const store = createStore({
     detail: null,
     maxSegments: preferences.get(LOCAL_KEYS.jobTailSize, 200),
   },
+  stream: {
+    jobId: null,
+    jobName: '',
+    status: 'idle',
+    text: '',
+    segments: [],
+    debugEvents: [],
+    durationSec: null,
+    updatedAt: null,
+  },
 });
 
 function createTailController({ scroller, text, followToggle, returnButton, preferenceKey }) {
@@ -1289,30 +1301,121 @@ function renderLibraryTable(state) {
     });
 }
 function renderLiveSegments(segments) {
-  const content = segments.length ? segments.join('') : 'Inicia una sesión para ver la transcripción en directo.';
-  tailControllers.home.render(content);
-  tailControllers.live.render(segments.length ? content : 'Conecta el micro para comenzar.');
+  const content = segments.length ? segments.join('') : 'Conecta el micro para comenzar.';
+  tailControllers.live.render(content);
 }
 
-function renderLiveStatus(status) {
+function computeLiveStatusMessage(status) {
   const modelValue = elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
   const modelConfig = getModelConfig(modelValue);
   const beamValue = Number(elements.live.beam?.value || modelConfig.recommendedBeam);
-  if (elements.home.status) {
-    switch (status) {
-      case 'recording':
-        elements.home.status.textContent = `Grabando en vivo con ${modelConfig.label.split('·')[0].trim()} · beam ${beamValue}`;
-        break;
-      case 'paused':
-        elements.home.status.textContent = 'Sesión en pausa. Reanuda cuando estés listo.';
-        break;
-      case 'completed':
-        elements.home.status.textContent = 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
-        break;
-      default:
-        elements.home.status.textContent = 'Listo para grabar.';
+  switch (status) {
+    case 'recording':
+      return `Grabando en vivo con ${modelConfig.label.split('·')[0].trim()} · beam ${beamValue}`;
+    case 'paused':
+      return 'Sesión en pausa. Reanuda cuando estés listo.';
+    case 'completed':
+      return 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
+    default:
+      return 'Listo para grabar.';
+  }
+}
+
+function computeStreamStatusMessage(stream) {
+  if (!stream?.jobId) return null;
+  const name = stream.jobName?.trim();
+  const suffix = name ? ` · ${name}` : '';
+  switch (stream.status) {
+    case 'processing':
+      return `Transcribiendo${suffix}`;
+    case 'queued':
+      return `En cola${suffix}`;
+    case 'completed':
+      return `Transcripción completada${suffix}`;
+    case 'error':
+      return `Error en la transcripción${suffix}`;
+    default:
+      return `Seguimiento activo${suffix}`;
+  }
+}
+
+function buildStreamContent(stream) {
+  if (!stream) return '';
+  const segments = Array.isArray(stream.segments) ? stream.segments : [];
+  const joinedSegments = segments.length ? segments.join('\n\n') : '';
+  const text = typeof stream.text === 'string' ? stream.text : '';
+  const hasText = text && text.trim();
+  const hasSegments = Boolean(joinedSegments);
+  if (hasText && hasSegments) {
+    if (text.includes(joinedSegments)) {
+      return text;
+    }
+    if (joinedSegments.includes(text)) {
+      return joinedSegments;
+    }
+    return text.length >= joinedSegments.length ? text : joinedSegments;
+  }
+  if (hasText) return text;
+  if (hasSegments) return joinedSegments;
+  return '';
+}
+
+function renderHomePanel(state) {
+  if (!tailControllers.home) return;
+  const { stream, live } = state;
+  if (stream.jobId) {
+    const content = buildStreamContent(stream);
+    if (content) {
+      tailControllers.home.render(content);
+    } else {
+      const fallback = stream.jobName
+        ? `Transcribiendo ${stream.jobName}…`
+        : stream.status === 'queued'
+        ? 'Transcripción en cola…'
+        : 'Transcripción en curso…';
+      tailControllers.home.render(fallback);
+    }
+    return;
+  }
+  const liveContent = live.segments.length
+    ? live.segments.join('')
+    : 'Inicia una sesión para ver la transcripción en directo.';
+  tailControllers.home.render(liveContent);
+}
+
+function updateHomeStatus(state) {
+  if (!elements.home.status) return;
+  const stream = state.stream;
+  if (stream?.jobId) {
+    let message = '';
+    const debugEvents = Array.isArray(stream.debugEvents) ? stream.debugEvents : [];
+    const job = state.jobs.find((item) => String(item.id) === String(stream.jobId));
+    const detail = state.job.detail && String(state.job.detail.job.id) === String(stream.jobId) ? state.job.detail : null;
+    const jobForProgress = detail?.job || job;
+    if (jobForProgress) {
+      const info = computeJobProgressState(jobForProgress, debugEvents);
+      if (info?.statusText) {
+        message = info.statusText;
+        if (info.etaText && info.percent != null && info.percent < 1) {
+          message += ` · ${info.etaText}`;
+        }
+      }
+    }
+    if (!message) {
+      message = computeStreamStatusMessage(stream) || '';
+    }
+    if (message) {
+      if (stream.jobName && !message.includes(stream.jobName)) {
+        message += ` · ${stream.jobName}`;
+      }
+      elements.home.status.textContent = message;
+      return;
     }
   }
+  elements.home.status.textContent = computeLiveStatusMessage(state.live.status);
+}
+
+function renderLiveStatus(status) {
   const isRecording = status === 'recording';
   const isPaused = status === 'paused';
 
@@ -1586,6 +1689,7 @@ function renderJobDetail(state) {
   const displayed = segments && segments.length ? segments.slice(-state.job.maxSegments) : [fallbackText];
   tailControllers.job.render(displayed.join('\n\n'));
   renderJobProgress(job, debugEvents);
+  const numericId = /^\d+$/.test(String(job.id));
   elements.job.title.textContent = job.name;
   const subtitleParts = [];
   subtitleParts.push(formatStatus(job.status));
@@ -1604,13 +1708,26 @@ function renderJobDetail(state) {
   elements.job.downloadTxt.disabled = false;
   elements.job.downloadSrt.disabled = false;
   elements.job.exportMd.disabled = false;
-  elements.job.audio.hidden = false;
-  elements.job.audio.href = `/api/transcriptions/${job.id}/audio`;
-  elements.job.logs.hidden = false;
-  elements.job.logs.href = `/api/transcriptions/${job.id}/logs`;
-  elements.job.logs.title = debugEvents?.length
-    ? 'Descarga los eventos y diagnósticos de esta transcripción.'
-    : 'Aún no hay eventos registrados; el archivo incluirá un mensaje informativo.';
+  if (elements.job.audio) {
+    elements.job.audio.hidden = !numericId;
+    if (numericId) {
+      elements.job.audio.href = `/api/transcriptions/${job.id}/audio`;
+    } else {
+      elements.job.audio.removeAttribute('href');
+    }
+  }
+  if (elements.job.logs) {
+    elements.job.logs.hidden = !numericId;
+    if (numericId) {
+      elements.job.logs.href = `/api/transcriptions/${job.id}/logs`;
+      elements.job.logs.title = debugEvents?.length
+        ? 'Descarga los eventos y diagnósticos de esta transcripción.'
+        : 'Aún no hay eventos registrados; el archivo incluirá un mensaje informativo.';
+    } else {
+      elements.job.logs.removeAttribute('href');
+      elements.job.logs.removeAttribute('title');
+    }
+  }
 
   const list = elements.job.breadcrumbs;
   while (list.children.length > 3) list.removeChild(list.lastChild);
@@ -1655,10 +1772,96 @@ store.subscribe((state, prev) => {
   if (state.live.status !== prev.live.status) {
     renderLiveStatus(state.live.status);
   }
+  if (state.stream !== prev.stream || state.live.segments !== prev.live.segments) {
+    renderHomePanel(state);
+  }
+  if (state.stream !== prev.stream || state.live.status !== prev.live.status) {
+    updateHomeStatus(state);
+  }
   if (state.job.detail !== prev.job.detail || state.job.maxSegments !== prev.job.maxSegments) {
     renderJobDetail(state);
   }
 });
+
+function maybeUpdateActiveStream() {
+  const state = store.getState();
+  const current = state.stream;
+  const trackedStatuses = new Set(['processing', 'queued']);
+  const processing = state.jobs
+    .filter((job) => trackedStatuses.has(job.status))
+    .sort((a, b) => {
+      const aDate = new Date(a.updatedAt || a.createdAt || Date.now()).getTime();
+      const bDate = new Date(b.updatedAt || b.createdAt || Date.now()).getTime();
+      return bDate - aDate;
+    });
+  if (processing.length) {
+    const next = processing[0];
+    const jobIdStr = String(next.id);
+    const shouldPrime = current.jobId !== jobIdStr;
+    const needsStatusUpdate =
+      !shouldPrime &&
+      (
+        current.status !== next.status ||
+        current.jobName !== next.name ||
+        current.updatedAt !== next.updatedAt ||
+        (Number.isFinite(next.durationSec) && next.durationSec !== current.durationSec)
+      );
+    if (shouldPrime || needsStatusUpdate) {
+      store.setState((prev) => ({
+        ...prev,
+        stream: {
+          jobId: jobIdStr,
+          jobName: next.name,
+          status: next.status,
+          text: shouldPrime ? '' : prev.stream.text,
+          segments: shouldPrime ? [] : prev.stream.segments,
+          debugEvents: shouldPrime ? [] : prev.stream.debugEvents,
+          durationSec: shouldPrime ? null : prev.stream.durationSec,
+          updatedAt: next.updatedAt,
+        },
+      }));
+      if (shouldPrime) {
+        tailControllers.home?.setFollow(true);
+      }
+    }
+    if (shouldPrime || jobPolling.jobId !== jobIdStr) {
+      loadJobDetail(jobIdStr, { startPolling: true });
+    }
+    return;
+  }
+
+  if (current.jobId) {
+    const job = state.jobs.find((item) => item.id === current.jobId);
+    if (!job) {
+      store.setState((prev) => ({
+        ...prev,
+        stream: {
+          jobId: null,
+          jobName: '',
+          status: 'idle',
+          text: '',
+          segments: [],
+          debugEvents: [],
+          durationSec: null,
+          updatedAt: null,
+        },
+      }));
+      return;
+    }
+    if (current.status !== job.status || current.jobName !== job.name || current.updatedAt !== job.updatedAt) {
+      store.setState((prev) => ({
+        ...prev,
+        stream: {
+          ...prev.stream,
+          status: job.status,
+          jobName: job.name,
+          durationSec: Number.isFinite(job.durationSec) ? job.durationSec : prev.stream.durationSec,
+          updatedAt: job.updatedAt,
+        },
+      }));
+    }
+  }
+}
 function computeRecent(jobs) {
   return [...jobs]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
@@ -1696,6 +1899,7 @@ async function loadJobs() {
         selectedFolderId,
       };
     });
+    maybeUpdateActiveStream();
   } catch (error) {
     console.warn('Usando transcripciones de ejemplo', error);
     store.setState((prev) => ({
@@ -1706,6 +1910,7 @@ async function loadJobs() {
       stats: SAMPLE_DATA.stats,
       selectedFolderId: prev.selectedFolderId ?? SAMPLE_DATA.folders[0]?.id ?? null,
     }));
+    maybeUpdateActiveStream();
   }
 }
 
@@ -1721,6 +1926,7 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
     const folderSegments = deriveFolderSegments(payload.output_folder ?? current.outputFolder);
     const folderPath = folderSegments.reduce((acc, segment) => `${acc}/${segment}`, '');
     const debugEvents = Array.isArray(payload.debug_events) ? payload.debug_events : [];
+    const limitedEvents = debugEvents.slice(-600);
     const payloadSegments = Array.isArray(payload.speakers)
       ? payload.speakers
           .map((segment) => (segment && segment.text ? String(segment.text).trim() : ''))
@@ -1797,6 +2003,33 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
       });
       const stats = computeStatsFromJobs(jobs);
       const activeJob = jobs.find((job) => job.id === jobIdStr) || current;
+      const streamMatches = prev.stream.jobId === jobIdStr || (!prev.stream.jobId && activeJob.status === 'processing');
+      const streamSegments = normalizedSegments && normalizedSegments.length
+        ? normalizedSegments.slice(-STREAM_SEGMENT_LIMIT)
+        : streamMatches
+        ? prev.stream.segments
+        : [];
+      const streamText = resolvedText && resolvedText.trim()
+        ? resolvedText
+        : streamMatches
+        ? prev.stream.text
+        : '';
+      const stream = streamMatches
+        ? {
+            jobId: jobIdStr,
+            jobName: activeJob.name,
+            status: activeJob.status,
+            text: streamText,
+            segments: streamSegments,
+            debugEvents: limitedEvents,
+            durationSec: Number.isFinite(resolvedDuration)
+              ? resolvedDuration
+              : Number.isFinite(activeJob.durationSec)
+              ? activeJob.durationSec
+              : prev.stream.durationSec,
+            updatedAt: activeJob.updatedAt,
+          }
+        : prev.stream;
       return {
         ...prev,
         jobs,
@@ -1810,9 +2043,10 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
             text: resolvedText,
             segments: normalizedSegments,
             folderPath: activeJob.folderPath,
-            debugEvents,
+            debugEvents: limitedEvents,
           },
         },
+        stream,
       };
     });
     if (startPolling) {
@@ -1827,19 +2061,47 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
     const folderMap = new Map(state.folders.map((folder) => [folder.id, folder]));
     const folderPath = current.folderId && folderMap.get(current.folderId) ? folderMap.get(current.folderId).path : '';
     const sample = SAMPLE_DATA.texts[jobIdStr];
-    store.setState((prev) => ({
-      ...prev,
-      job: {
-        ...prev.job,
-        detail: {
-          job: current,
-          text: sample?.text ?? '',
-          segments: sample?.segments ?? null,
-          folderPath,
-          debugEvents: sample?.debugEvents ?? [],
+    store.setState((prev) => {
+      const streamMatches = prev.stream.jobId === jobIdStr;
+      const streamSegments = sample?.segments?.length
+        ? sample.segments.slice(-STREAM_SEGMENT_LIMIT)
+        : streamMatches
+        ? prev.stream.segments
+        : [];
+      const streamText = sample?.text?.trim()
+        ? sample.text
+        : streamMatches
+        ? prev.stream.text
+        : '';
+    const stream = streamMatches
+        ? {
+            jobId: jobIdStr,
+            jobName: current.name,
+            status: current.status,
+            text: streamText,
+            segments: streamSegments,
+            debugEvents: sample?.debugEvents?.slice(-600) ?? prev.stream.debugEvents,
+            durationSec: Number.isFinite(current.durationSec)
+              ? current.durationSec
+              : prev.stream.durationSec,
+            updatedAt: current.updatedAt,
+          }
+        : prev.stream;
+      return {
+        ...prev,
+        job: {
+          ...prev.job,
+          detail: {
+            job: current,
+            text: sample?.text ?? '',
+            segments: sample?.segments ?? null,
+            folderPath,
+            debugEvents: sample?.debugEvents ?? [],
+          },
         },
-      },
-    }));
+        stream,
+      };
+    });
     if (startPolling) {
       startJobPolling(jobIdStr);
     } else {
@@ -2399,8 +2661,14 @@ function setupJobActions() {
   elements.job.downloadTxt?.addEventListener('click', async () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
-    const url = `/api/transcriptions/${detail.job.id}.txt`;
-    await triggerDownload(url, detail.text, `${detail.job.id}.txt`);
+    const idStr = String(detail.job.id);
+    const filename = `${idStr}.txt`;
+    if (!NUMERIC_ID_PATTERN.test(idStr)) {
+      downloadFileFallback(filename, detail.text);
+      return;
+    }
+    const url = `/api/transcriptions/${idStr}.txt`;
+    await triggerDownload(url, detail.text, filename);
   });
 
   elements.job.downloadSrt?.addEventListener('click', async () => {
@@ -2410,8 +2678,14 @@ function setupJobActions() {
       ? detail.segments.map((segment, index) => `${index + 1}\n00:00:${String(index).padStart(2, '0')} --> 00:00:${String(index + 1).padStart(2, '0')}\n${segment}\n`)
       : [`1\n00:00:00 --> 00:10:00\n${detail.text}\n`];
     const fallback = lines.join('\n');
-    const url = `/api/transcriptions/${detail.job.id}.srt`;
-    await triggerDownload(url, fallback, `${detail.job.id}.srt`);
+    const idStr = String(detail.job.id);
+    const filename = `${idStr}.srt`;
+    if (!NUMERIC_ID_PATTERN.test(idStr)) {
+      downloadFileFallback(filename, fallback, 'application/x-subrip;charset=utf-8');
+      return;
+    }
+    const url = `/api/transcriptions/${idStr}.srt`;
+    await triggerDownload(url, fallback, filename);
   });
 
   elements.job.exportMd?.addEventListener('click', () => {
@@ -2566,6 +2840,8 @@ async function init() {
   setupFullscreenButtons();
   setupHomeShortcuts();
   setupDiagnostics();
+  renderHomePanel(store.getState());
+  updateHomeStatus(store.getState());
   await loadInitialData();
   initRouteFromStorage();
 }
