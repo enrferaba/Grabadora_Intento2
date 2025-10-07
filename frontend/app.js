@@ -405,6 +405,7 @@ async function triggerDownload(url, fallbackContent, filename, mimeType = 'text/
       alert('No fue posible descargar el archivo solicitado.');
     }
   }
+  updateThemeToggle(normalized);
 }
 
 function setupTheme() {
@@ -807,6 +808,7 @@ function renderLibraryBreadcrumb(state) {
     item.textContent = folder.name;
     list.appendChild(item);
   });
+  preferences.set(LOCAL_KEYS.lastRoute, route);
 }
 
 function renderLibraryTable(state) {
