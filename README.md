@@ -17,10 +17,20 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Autocompletado de carpetas** que recuerda la última carpeta usada, sugiere destinos existentes y sincroniza el modo en vivo con el formulario principal.
 - **Modo estudiante web**: vista ligera con anuncios educativos y ejecución local accesible en `student.html` o desde el botón “Abrir simulador independiente”.
 - **Transcripción en vivo** que captura audio del navegador, permite elegir modelo/dispositivo y convierte la sesión en una transcripción almacenada con sus TXT generados.
+- **Barra de progreso en Inicio y En vivo** que refleja segundos procesados y retraso estimado, con auto-actualización mientras hablas.
+- **Preparación guiada de modelos** con precarga y seguimiento porcentual cuando es necesario descargar Whisper o sus variantes.
 - **Diagnósticos de CUDA** con eventos de fallback detallados y avisos en la Biblioteca para que puedas corregir drivers o forzar la GPU cuando sea necesario.
 - **Inicio de sesión con Google (OAuth 2.0)** listo para conectar con tus credenciales y personalizar la experiencia del dashboard.
 - **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
 - **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado y comprueban la compatibilidad con las versiones recientes de faster-whisper.
+
+## Arquitectura y optimización de modelos
+
+- **Orquestación de modelos (`app/whisper_service.py`)**: concentra la inicialización de WhisperX, la detección de idioma y el fallback hacia `faster-whisper` o el transcriptor simulado. Aquí puedes ajustar cachés, tipos de cómputo por dispositivo, beam search y opciones avanzadas (`_build_asr_options`).
+- **Preparación asíncrona y seguimiento (`app/whisper_service.py` + `/api/transcriptions/models/*`)**: `request_model_preparation` usa un `ThreadPoolExecutor` para descargar modelos en segundo plano, expone progreso y errores, y comparte el estado a través de `_model_progress` para que el frontend muestre el avance porcentual antes de iniciar sesiones o subidas.
+- **Selección de modelos en API (`app/routers/transcriptions.py`)**: normaliza aliases y resuelve el dispositivo antes de invocar `get_transcriber`. Si deseas añadir nuevos tamaños o estrategias de balanceo, amplía los diccionarios `SUPPORTED_MODEL_SIZES` y `MODEL_ALIASES`.
+- **Parámetros dinámicos**: la configuración en `app/config.py` se inyecta en el servicio Whisper para fijar hilos, directorios de caché, modo multilingüe o uso forzado de GPU. Puedes sobreescribirla vía variables de entorno sin tocar el código.
+- **Scripts de benchmark (`scripts/benchmark_models.py`)**: útiles para medir los efectos de tus cambios de optimización directamente sobre tus datos históricos.
 
 ## Requisitos
 
@@ -61,6 +71,16 @@ python -m scripts.doctor
 ```
 
 El comando revisa las dependencias clave (FastAPI, SQLAlchemy, WhisperX, etc.) y muestra cómo resolver cualquier ausencia.
+
+## Transcripción en vivo desde el navegador
+
+1. **Permisos de micrófono**: el navegador solicitará acceso la primera vez. Usa Chrome, Edge o Firefox actualizados para aprovechar la API `MediaRecorder`.
+2. **Inicio**: desde el panel “En vivo” elige idioma, modelo y dispositivo. Al pulsar “Iniciar” se crea una sesión (`POST /api/transcriptions/live/sessions`) y comienza a enviarse audio en fragmentos `webm/opus`.
+3. **Preparación del modelo**: si el tamaño seleccionado no está en caché, la interfaz llama a `/api/transcriptions/models/prepare`, muestra el porcentaje descargado y continúa automáticamente cuando llega al 100 %.
+4. **Streaming incremental**: cada chunk se sube a `POST /api/transcriptions/live/sessions/{id}/chunk`. El backend consolida el audio en disco y re-transcribe todo el buffer para ofrecer texto acumulado, segmentos y métricas actualizadas sin perder el historial.
+5. **Pausa y reanudación**: aprovecha los controles del visor para detener la captura sin cerrar la sesión. El TTL de la sesión se renueva con cada actividad, por lo que no expirará mientras sigas hablando.
+6. **Finalización**: al pulsar “Finalizar & guardar” se detiene la grabación, se espera a que se procesen los últimos fragmentos y se invoca `POST /api/transcriptions/live/sessions/{id}/finalize` para crear una transcripción completa con su `.txt`. El historial del visor permanece visible hasta que inicies una nueva sesión.
+7. **Cancelación segura**: si cierras el navegador o hay un error, la interfaz solicita `DELETE /api/transcriptions/live/sessions/{id}` para limpiar memoria y archivos temporales.
 
 ### Copiar y pegar todo el flujo
 
@@ -139,6 +159,8 @@ La interfaz quedará disponible en http://127.0.0.1:8000/ y la API en http://127
 - `GET /api/payments/plans`: Listado de planes activos.
 - `POST /api/payments/checkout`: Crea un checkout para un plan y una transcripción concreta.
 - `POST /api/payments/{id}/confirm`: Marca la compra como completada y desbloquea las notas premium.
+- `POST /api/transcriptions/models/prepare`: Garantiza que el modelo seleccionado esté descargado y devuelve el progreso actual.
+- `GET /api/transcriptions/models/status`: Consulta el estado (idle, descargando, listo o error) de un modelo/dispositivo concretos.
 
 ## Modo estudiante en la web
 

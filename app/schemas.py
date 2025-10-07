@@ -163,3 +163,17 @@ class LiveFinalizeResponse(BaseModel):
     device_preference: Optional[str]
     language: Optional[str]
     beam_size: Optional[int] = None
+
+
+class ModelPreparationRequest(BaseModel):
+    model_size: Optional[str] = None
+    device_preference: Optional[str] = None
+
+
+class ModelPreparationStatus(BaseModel):
+    model_size: str
+    device_preference: str
+    status: str
+    progress: int = Field(ge=0, le=100)
+    message: str
+    error: Optional[str] = None

@@ -13,38 +13,41 @@ const PREMIUM_PLANS = [
   {
     slug: 'student-local',
     name: 'Estudiante Local',
-    price: '0 €',
+    price: '10 €',
     cadence: '/mes',
-    description: 'Procesa en tu propio equipo con notas y capítulos automáticos.',
+    description: 'Procesa en tu propio ordenador para pagar solo la licencia básica y conservar la privacidad.',
     perks: [
-      'Hasta 60 minutos por sesión en vivo',
-      'Notas rápidas y marcadores en pantalla',
-      'Exportación TXT y Markdown básica',
+      'Ejecución local ilimitada sin coste por minuto en la nube.',
+      'Renovación automática con tarjeta, débito o PayPal (puedes pausar cuando quieras).',
+      'Recordatorios de pago y validación de dispositivo para mantener el descuento educativo.',
     ],
+    paymentNote: 'Pagas 10 € al mes de forma recurrente. El cobro se gestiona desde tu panel con cancelación inmediata y recibos en PDF.',
   },
   {
     slug: 'starter-15',
-    name: 'Starter 15',
-    price: '12 €',
+    name: 'Starter Cloud',
+    price: '25 €',
     cadence: '/mes',
-    description: 'Horas en la nube con cola prioritaria y exportaciones enriquecidas.',
+    description: 'Minutos en la nube optimizados con colas prioritarias, exportaciones enriquecidas y soporte rápido.',
     perks: [
-      '15 horas/mes en servidores gestionados',
-      'Exportación DOCX y PDF',
-      'Soporte por correo en 24 h',
+      '30 horas/mes en servidores GPU gestionados con prioridad en colas.',
+      'Facturación con IVA y recibos automáticos para tarjetas corporativas o PayPal.',
+      'Notas automáticas, exportaciones DOCX/PDF y soporte en menos de 12 horas.',
     ],
+    paymentNote: 'Acepta tarjetas, PayPal y transferencias SEPA. Emitimos factura automática cada mes y puedes cambiar el método de pago al instante.',
   },
   {
     slug: 'pro-60',
-    name: 'Pro 60',
-    price: '29 €',
+    name: 'Pro Teams',
+    price: '59 €',
     cadence: '/mes',
-    description: 'Pensado para equipos: integraciones, diarización avanzada y enlaces compartidos.',
+    description: 'Pensado para equipos y productoras con integraciones, controles avanzados y asistencia dedicada.',
     perks: [
-      '60 horas/mes con reprocesado large-v3',
-      'Integraciones con Drive, Notion y webhooks',
-      'Enlaces seguros y control de versiones',
+      '120 horas/mes con reprocesado large-v3, diarización avanzada y backup redundante.',
+      'Pagos agrupados, órdenes de compra y facturación consolidada por departamento.',
+      'Integraciones con Drive, Notion, webhooks y soporte directo con gestor técnico.',
     ],
+    paymentNote: 'Disponible pago mensual o anual (2 meses de cortesía). Soportamos facturación multiempresa y límites de gasto por miembro.',
   },
 ];
 
@@ -219,14 +222,6 @@ const SAMPLE_DATA = {
   },
 };
 
-const SAMPLE_LIVE_SEGMENTS = [
-  'Conectando dispositivos y preparando el entorno de grabación...\n',
-  'Recordemos que la sesión de hoy se centra en técnicas para resumir clases largas.\n',
-  'Primer paso: identifica palabras clave y define etiquetas para tus carpetas.\n',
-  'Cuando detectes un cambio de tema, marca un hito para navegar después.\n',
-  'Puedes pausar la sesión si necesitas responder preguntas en vivo.\n',
-  'Al finalizar, descarga el .txt o exporta a Markdown para compartirlo con tu equipo.\n',
-];
 const STREAM_SEGMENT_LIMIT = 400;
 const elements = {
   themeToggle: document.getElementById('theme-toggle'),
@@ -257,6 +252,11 @@ const elements = {
     recentBody: document.getElementById('recent-table-body'),
     quickFolder: document.getElementById('quick-folder'),
     newTranscription: document.getElementById('home-new-transcription'),
+    progress: document.getElementById('home-live-progress'),
+    progressLabel: document.getElementById('home-live-progress-label'),
+    progressRate: document.getElementById('home-live-progress-rate'),
+    progressFill: document.getElementById('home-live-progress-fill'),
+    progressBar: document.getElementById('home-live-progress-bar'),
   },
   upload: {
     form: document.getElementById('upload-form'),
@@ -313,6 +313,11 @@ const elements = {
     kpis: document.querySelectorAll('[data-live-kpi]'),
     beam: document.getElementById('live-beam'),
     beamHint: document.getElementById('live-beam-hint'),
+    progress: document.getElementById('live-progress'),
+    progressLabel: document.getElementById('live-progress-label'),
+    progressRate: document.getElementById('live-progress-rate'),
+    progressFill: document.getElementById('live-progress-fill'),
+    progressBar: document.getElementById('live-progress-bar'),
   },
   job: {
     breadcrumbs: document.getElementById('job-breadcrumbs'),
@@ -346,6 +351,15 @@ const elements = {
   },
   datalist: document.getElementById('folder-options'),
   diagnostics: document.getElementById('open-diagnostics'),
+  modelPrep: {
+    container: document.getElementById('model-prep'),
+    title: document.getElementById('model-prep-title'),
+    message: document.getElementById('model-prep-message'),
+    percent: document.getElementById('model-prep-percent'),
+    bar: document.getElementById('model-prep-bar'),
+    fill: document.getElementById('model-prep-fill'),
+    cancel: document.getElementById('model-prep-cancel'),
+  },
 };
 
 let suppressHashChange = false;
@@ -612,9 +626,9 @@ function setupModelSelectors() {
       context.beam.addEventListener('change', () => {
         context.beam.dataset.dirty = 'true';
         if (context.model === elements.live.model) {
-          const status = store.getState().live.status;
-          if (status === 'recording' || status === 'paused') {
-            renderLiveStatus(status);
+          const liveState = store.getState().live;
+          if (liveState.status === 'recording' || liveState.status === 'paused') {
+            renderLiveStatus(liveState);
           }
         }
       });
@@ -625,9 +639,9 @@ function setupModelSelectors() {
       }
       updateBeamRecommendation(context, { forceValue: true });
       if (context.model === elements.live.model) {
-        const status = store.getState().live.status;
-        if (status === 'recording' || status === 'paused') {
-          renderLiveStatus(status);
+        const liveState = store.getState().live;
+        if (liveState.status === 'recording' || liveState.status === 'paused') {
+          renderLiveStatus(liveState);
         }
       }
     });
@@ -658,7 +672,10 @@ function setupModelSelectors() {
     });
   }
 
-  renderLiveStatus(store.getState().live.status);
+  const initialLiveState = store.getState().live;
+  renderLiveStatus(initialLiveState);
+  renderLiveKpis(initialLiveState);
+  renderLiveProgress(initialLiveState);
 }
 
 function currentTheme() {
@@ -727,14 +744,42 @@ function renderPricingPlans() {
     });
     card.appendChild(list);
 
+    if (plan.paymentNote) {
+      const payment = document.createElement('p');
+      payment.className = 'pricing-card__payment';
+      payment.textContent = plan.paymentNote;
+      card.appendChild(payment);
+    }
+
     const cta = document.createElement('a');
     cta.className = 'pricing-card__cta';
     cta.href = `/checkout?plan=${encodeURIComponent(plan.slug)}`;
     cta.textContent = 'Elegir plan';
+    cta.addEventListener('click', (event) => {
+      event.preventDefault();
+      handlePlanSelection(plan);
+    });
     card.appendChild(cta);
 
     elements.benefits.pricing.appendChild(card);
   });
+}
+
+function handlePlanSelection(plan) {
+  const deviceMessage =
+    plan.slug === 'student-local'
+      ? 'El procesamiento se realiza en tu ordenador y el modelo se descargará la primera vez para minimizar costes.'
+      : 'El audio se enviará cifrado a nuestros servidores GPU y podrás seguir el consumo y las facturas en el panel.';
+  const summary = [
+    plan.name,
+    `Precio: ${plan.price}${plan.cadence}`,
+    plan.paymentNote || null,
+    deviceMessage,
+    'Serás redirigido al checkout para completar el pago seguro.',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  alert(summary);
 }
 
 function injectPrompt() {
@@ -815,8 +860,25 @@ const store = createStore({
   libraryFilters: { status: 'all', language: 'all', model: 'all', search: '' },
   live: {
     segments: [],
+    text: '',
     status: 'idle',
+    sessionId: null,
+    duration: null,
+    runtimeSeconds: null,
+    language: null,
+    model: null,
+    device: null,
+    beam: null,
     maxSegments: preferences.get(LOCAL_KEYS.liveTailSize, 200),
+    startedAt: null,
+    pauseStartedAt: null,
+    totalPausedMs: 0,
+    lastChunkAt: null,
+    latencyMs: 0,
+    wpm: 0,
+    droppedChunks: 0,
+    error: null,
+    isFinalizing: false,
   },
   job: {
     detail: null,
@@ -839,6 +901,7 @@ function createTailController({ scroller, text, followToggle, returnButton, pref
   sentinel.setAttribute('aria-hidden', 'true');
   let follow = followToggle ? preferences.get(preferenceKey, true) : true;
   if (followToggle) followToggle.checked = follow;
+  let lastContent = '';
 
   const scrollToEnd = (smooth = false) => {
     const behavior = smooth ? 'smooth' : 'auto';
@@ -856,10 +919,29 @@ function createTailController({ scroller, text, followToggle, returnButton, pref
   };
 
   const render = (content) => {
-    text.textContent = content || '';
-    if (!text.contains(sentinel)) {
+    const nextContent = content || '';
+    const extendsPrevious = nextContent.startsWith(lastContent);
+    const hasGrown = extendsPrevious && nextContent.length > lastContent.length;
+
+    if (!extendsPrevious) {
+      text.textContent = nextContent;
+      if (!text.contains(sentinel)) {
+        text.appendChild(sentinel);
+      }
+    } else if (hasGrown) {
+      const suffix = nextContent.slice(lastContent.length);
+      if (!text.contains(sentinel)) {
+        text.appendChild(sentinel);
+      }
+      if (suffix) {
+        const node = document.createTextNode(suffix);
+        text.insertBefore(node, sentinel);
+      }
+    } else if (!text.contains(sentinel)) {
       text.appendChild(sentinel);
     }
+
+    lastContent = nextContent;
     if (follow) scrollToEnd(false);
   };
 
@@ -906,16 +988,258 @@ const tailControllers = {
 };
 
 const liveSession = {
-  timer: null,
-  cursor: 0,
+  sessionId: null,
+  mediaStream: null,
+  recorder: null,
+  chunkQueue: [],
+  sending: false,
+  chunkIndex: 0,
+  finishing: false,
 };
+
+let liveProgressTimer = null;
+
+const LIVE_CHUNK_INTERVAL_MS = 2000;
+const LIVE_CHUNK_MIME_TYPES = [
+  'audio/webm;codecs=opus',
+  'audio/ogg;codecs=opus',
+  'audio/webm',
+  'audio/ogg',
+];
+const MODEL_PREP_POLL_INTERVAL_MS = 900;
+const MODEL_PREP_TIMEOUT_MS = 10 * 60 * 1000;
+
+let modelPrepOverlaySession = null;
+
+function pickLiveMimeType() {
+  if (!window.MediaRecorder || !window.MediaRecorder.isTypeSupported) return null;
+  return LIVE_CHUNK_MIME_TYPES.find((type) => window.MediaRecorder.isTypeSupported(type)) || null;
+}
+
+function formatDeviceLabel(device) {
+  const normalized = (device || '').toLowerCase();
+  if (normalized === 'cuda' || normalized === 'gpu') return 'GPU';
+  return 'CPU';
+}
+
+function normalizeDevicePreference(deviceValue, fallbackDevice = 'gpu') {
+  if (!deviceValue) return fallbackDevice;
+  const normalized = deviceValue.toLowerCase();
+  if (normalized === 'cuda' || normalized === 'gpu') return 'gpu';
+  if (normalized === 'cpu') return 'cpu';
+  return fallbackDevice;
+}
+
+function resolveDevicePreference(modelValue, requestedDevice) {
+  const config = getModelConfig(modelValue);
+  const fallback = config?.preferredDevice || 'gpu';
+  return normalizeDevicePreference(requestedDevice, fallback);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function showModelPrepOverlay(model, device, contextMessage) {
+  const overlay = elements.modelPrep;
+  if (!overlay?.container) return null;
+  if (modelPrepOverlaySession?.cleanup) {
+    modelPrepOverlaySession.cleanup();
+  }
+  overlay.title.textContent = `Preparando ${model} (${formatDeviceLabel(device)})`;
+  overlay.message.textContent = contextMessage || 'Preparando el modelo…';
+  overlay.percent.textContent = '0%';
+  if (overlay.fill) overlay.fill.style.width = '0%';
+  overlay.bar?.setAttribute('aria-valuenow', '0');
+  const session = {
+    cancelled: false,
+    handleCancel: null,
+    cleanup: null,
+  };
+  session.cleanup = () => {
+    if (overlay.cancel && session.handleCancel) {
+      overlay.cancel.removeEventListener('click', session.handleCancel);
+      overlay.cancel.disabled = false;
+      overlay.cancel.textContent = 'Cancelar descarga';
+    }
+    session.handleCancel = null;
+  };
+  if (overlay.cancel) {
+    overlay.cancel.hidden = false;
+    overlay.cancel.disabled = false;
+    overlay.cancel.textContent = 'Cancelar descarga';
+    session.handleCancel = () => {
+      session.cancelled = true;
+      overlay.cancel.disabled = true;
+      overlay.cancel.textContent = 'Cancelando…';
+      overlay.message.textContent = 'Cancelando descarga. Puedes seguir usando la aplicación.';
+    };
+    overlay.cancel.addEventListener('click', session.handleCancel);
+  }
+  overlay.container.hidden = false;
+  modelPrepOverlaySession = session;
+  return session;
+}
+
+function updateModelPrepOverlay(status) {
+  const overlay = elements.modelPrep;
+  if (!overlay?.container) return;
+  if (modelPrepOverlaySession?.cancelled) return;
+  const progress = Number.isFinite(status?.progress) ? Math.max(0, Math.min(100, Math.round(status.progress))) : 0;
+  overlay.percent.textContent = `${progress}%`;
+  if (overlay.fill) overlay.fill.style.width = `${progress}%`;
+  overlay.bar?.setAttribute('aria-valuenow', String(progress));
+  if (status?.message) overlay.message.textContent = status.message;
+}
+
+function hideModelPrepOverlay(session = null) {
+  const overlay = elements.modelPrep;
+  if (!overlay?.container) return;
+  const active = session || modelPrepOverlaySession;
+  if (active?.cleanup) {
+    active.cleanup();
+  }
+  if (overlay.fill) overlay.fill.style.width = '0%';
+  overlay.bar?.setAttribute('aria-valuenow', '0');
+  overlay.percent.textContent = '0%';
+  if (overlay.message) overlay.message.textContent = 'Comprobando caché local…';
+  overlay.container.hidden = true;
+  if (modelPrepOverlaySession === active) {
+    modelPrepOverlaySession = null;
+  }
+}
+
+async function requestModelPreparation(model, device) {
+  const response = await fetch('/api/transcriptions/models/prepare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_size: model, device_preference: device }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || 'No se pudo preparar el modelo solicitado.');
+  }
+  return response.json();
+}
+
+async function fetchModelPreparationStatus(model, device) {
+  const params = new URLSearchParams();
+  if (model) params.set('model_size', model);
+  if (device) params.set('device_preference', device);
+  const response = await fetch(`/api/transcriptions/models/status?${params.toString()}`);
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || 'No se pudo consultar el estado del modelo.');
+  }
+  return response.json();
+}
+
+async function ensureModelReady(modelValue, devicePreference, contextMessage) {
+  const model = modelValue || DEFAULT_MODEL;
+  const normalizedDevice = resolveDevicePreference(model, devicePreference);
+  const context = contextMessage || 'iniciar la transcripción';
+  let overlaySession = null;
+  try {
+    const initial = await requestModelPreparation(model, normalizedDevice);
+    if (initial.status === 'error') {
+      throw new Error(initial.message || 'No se pudo preparar el modelo.');
+    }
+    if (initial.status === 'ready') {
+      hideModelPrepOverlay();
+      return true;
+    }
+    overlaySession = showModelPrepOverlay(model, normalizedDevice, `Preparando el modelo para ${context}.`);
+    updateModelPrepOverlay(initial);
+    let status = initial;
+    const deadline = Date.now() + MODEL_PREP_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (overlaySession?.cancelled) {
+        throw new Error('Descarga cancelada por el usuario.');
+      }
+      await delay(MODEL_PREP_POLL_INTERVAL_MS);
+      if (overlaySession?.cancelled) {
+        throw new Error('Descarga cancelada por el usuario.');
+      }
+      status = await fetchModelPreparationStatus(model, normalizedDevice);
+      updateModelPrepOverlay(status);
+      if (status.status === 'ready') {
+        hideModelPrepOverlay(overlaySession);
+        overlaySession = null;
+        return true;
+      }
+      if (status.status === 'error') {
+        throw new Error(status.message || 'No se pudo preparar el modelo.');
+      }
+    }
+    throw new Error('Tiempo de espera agotado preparando el modelo.');
+  } finally {
+    if (overlaySession) {
+      hideModelPrepOverlay(overlaySession);
+    }
+  }
+}
+
+function resetLiveSessionLocalState() {
+  if (liveSession.recorder && liveSession.recorder.state !== 'inactive') {
+    try {
+      liveSession.recorder.stop();
+    } catch (error) {
+      console.warn('No se pudo detener el MediaRecorder al limpiar la sesión', error);
+    }
+  }
+  liveSession.recorder = null;
+  if (liveSession.mediaStream) {
+    liveSession.mediaStream.getTracks().forEach((track) => track.stop());
+  }
+  liveSession.mediaStream = null;
+  liveSession.chunkQueue = [];
+  liveSession.sending = false;
+  liveSession.chunkIndex = 0;
+  liveSession.finishing = false;
+  liveSession.sessionId = null;
+}
+
+async function discardRemoteLiveSession(sessionId) {
+  if (!sessionId) return;
+  try {
+    await fetch(`/api/transcriptions/live/sessions/${sessionId}`, { method: 'DELETE' });
+  } catch (error) {
+    console.warn('No se pudo descartar la sesión en vivo en el servidor', error);
+  }
+}
 
 const jobPolling = {
   timer: null,
   jobId: null,
 };
 
+const JOB_TEXT_CACHE_LIMIT = 50;
 const jobTextCache = new Map();
+
+function pruneJobTextCache() {
+  const { jobs } = store.getState();
+  const activeJobIds = new Set(jobs.map((job) => String(job.id)));
+  for (const key of Array.from(jobTextCache.keys())) {
+    if (!activeJobIds.has(key)) {
+      jobTextCache.delete(key);
+    }
+  }
+  while (jobTextCache.size > JOB_TEXT_CACHE_LIMIT) {
+    const oldestKey = jobTextCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    jobTextCache.delete(oldestKey);
+  }
+}
+
+function rememberJobText(jobId, text) {
+  if (!text) return;
+  const key = String(jobId);
+  if (jobTextCache.has(key)) {
+    jobTextCache.delete(key);
+  }
+  jobTextCache.set(key, text);
+  pruneJobTextCache();
+}
 
 function stopJobPolling() {
   if (jobPolling.timer) {
@@ -1300,20 +1624,33 @@ function renderLibraryTable(state) {
       body.appendChild(row);
     });
 }
-function renderLiveSegments(segments) {
-  const content = segments.length ? segments.join('') : 'Conecta el micro para comenzar.';
+function renderLiveTail(liveState) {
+  if (!liveState) {
+    tailControllers.live.render('Conecta el micro para comenzar.');
+    return;
+  }
+  const hasText = typeof liveState.text === 'string' && liveState.text.trim();
+  const fromSegments = Array.isArray(liveState.segments) && liveState.segments.length
+    ? liveState.segments.join('')
+    : '';
+  const content = hasText ? liveState.text : fromSegments || 'Conecta el micro para comenzar.';
   tailControllers.live.render(content);
 }
 
-function computeLiveStatusMessage(status) {
-  const modelValue = elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
+function computeLiveStatusMessage(liveState) {
+  const status = liveState?.status ?? 'idle';
+  const modelValue = liveState?.model || elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
   const modelConfig = getModelConfig(modelValue);
-  const beamValue = Number(elements.live.beam?.value || modelConfig.recommendedBeam);
+  const beamValue = Number(
+    liveState?.beam ?? elements.live.beam?.value ?? modelConfig.recommendedBeam,
+  );
   switch (status) {
     case 'recording':
       return `Grabando en vivo con ${modelConfig.label.split('·')[0].trim()} · beam ${beamValue}`;
     case 'paused':
       return 'Sesión en pausa. Reanuda cuando estés listo.';
+    case 'finalizing':
+      return 'Guardando sesión en vivo…';
     case 'completed':
       return 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
     default:
@@ -1377,7 +1714,9 @@ function renderHomePanel(state) {
     }
     return;
   }
-  const liveContent = live.segments.length
+  const liveContent = live.text && live.text.trim()
+    ? live.text
+    : live.segments.length
     ? live.segments.join('')
     : 'Inicia una sesión para ver la transcripción en directo.';
   tailControllers.home.render(liveContent);
@@ -1412,34 +1751,110 @@ function updateHomeStatus(state) {
       return;
     }
   }
-  elements.home.status.textContent = computeLiveStatusMessage(state.live.status);
+  elements.home.status.textContent = computeLiveStatusMessage(state.live);
 }
 
-function renderLiveStatus(status) {
+function renderLiveStatus(liveState) {
+  const status = liveState.status;
   const isRecording = status === 'recording';
   const isPaused = status === 'paused';
+  const isIdle = status === 'idle';
+  const isFinalizing = status === 'finalizing';
+  const disableStart = isRecording || isPaused || isFinalizing;
 
-  if (elements.home.start) elements.home.start.disabled = isRecording || isPaused;
+  if (elements.home.start) elements.home.start.disabled = disableStart;
   if (elements.home.pause) {
     elements.home.pause.disabled = !isRecording;
-    elements.home.pause.hidden = isPaused;
+    elements.home.pause.hidden = isPaused || isFinalizing || isIdle;
   }
   if (elements.home.resume) {
     elements.home.resume.hidden = !isPaused;
     elements.home.resume.disabled = !isPaused;
   }
-  if (elements.home.finish) elements.home.finish.disabled = status === 'idle';
+  if (elements.home.finish) elements.home.finish.disabled = isIdle || isFinalizing;
 
-  if (elements.live.start) elements.live.start.disabled = isRecording || isPaused;
+  if (elements.live.start) elements.live.start.disabled = disableStart;
   if (elements.live.pause) {
     elements.live.pause.disabled = !isRecording;
-    elements.live.pause.hidden = isPaused;
+    elements.live.pause.hidden = isPaused || isFinalizing || isIdle;
   }
   if (elements.live.resume) {
     elements.live.resume.hidden = !isPaused;
     elements.live.resume.disabled = !isPaused;
   }
-  if (elements.live.finish) elements.live.finish.disabled = status === 'idle';
+  if (elements.live.finish) elements.live.finish.disabled = isIdle || isFinalizing;
+}
+
+function renderLiveProgress(liveState) {
+  const widgets = [
+    {
+      container: elements.home.progress,
+      label: elements.home.progressLabel,
+      rate: elements.home.progressRate,
+      fill: elements.home.progressFill,
+      bar: elements.home.progressBar,
+    },
+    {
+      container: elements.live.progress,
+      label: elements.live.progressLabel,
+      rate: elements.live.progressRate,
+      fill: elements.live.progressFill,
+      bar: elements.live.progressBar,
+    },
+  ];
+  const status = liveState?.status || 'idle';
+  const processedSeconds = Number.isFinite(liveState?.duration)
+    ? Math.max(0, liveState.duration)
+    : Number.isFinite(liveState?.runtimeSeconds)
+    ? Math.max(0, liveState.runtimeSeconds)
+    : 0;
+  const now = Date.now();
+  let elapsedMs = 0;
+  if (liveState?.startedAt) {
+    elapsedMs = now - liveState.startedAt;
+    if (liveState.pauseStartedAt) {
+      elapsedMs -= now - liveState.pauseStartedAt;
+    }
+    if (liveState.totalPausedMs) {
+      elapsedMs -= liveState.totalPausedMs;
+    }
+  }
+  if (elapsedMs < 0) elapsedMs = 0;
+  const elapsedSeconds = elapsedMs / 1000;
+  const shouldShow = ['recording', 'paused', 'finalizing'].includes(status) || processedSeconds > 0;
+  widgets.forEach((widget) => {
+    if (!widget?.container) return;
+    if (!shouldShow) {
+      widget.container.hidden = true;
+      if (widget.fill) widget.fill.style.width = '0%';
+      widget.bar?.setAttribute('aria-valuenow', '0');
+      if (widget.label) widget.label.textContent = '00:00 procesados';
+      if (widget.rate) widget.rate.textContent = 'Esperando audio…';
+      return;
+    }
+    widget.container.hidden = false;
+    const processed = processedSeconds > 0 ? processedSeconds : elapsedSeconds;
+    if (widget.label) widget.label.textContent = `${formatClock(processed)} procesados`;
+    const ratio = elapsedSeconds > 0 ? Math.min(1, processed / elapsedSeconds) : processed > 0 ? 1 : 0;
+    if (widget.fill) widget.fill.style.width = `${Math.round(ratio * 100)}%`;
+    widget.bar?.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+    let rateText = '';
+    if (status === 'paused') {
+      rateText = 'Grabación en pausa';
+    } else if (status === 'finalizing') {
+      rateText = 'Guardando sesión…';
+    } else if (status === 'completed') {
+      rateText = 'Sesión finalizada';
+    } else if (elapsedSeconds <= 0 && processedSeconds <= 0) {
+      rateText = 'Esperando audio…';
+    } else if (ratio >= 1) {
+      rateText = 'Al día en tiempo real';
+    } else {
+      const lag = Math.max(0, elapsedSeconds - processed);
+      rateText = lag > 1 ? `Retraso ${formatClock(lag)}` : 'Procesando…';
+    }
+    if (widget.rate) widget.rate.textContent = rateText;
+  });
 }
 
 function buildSegmentsFromEvents(events) {
@@ -1766,17 +2181,47 @@ store.subscribe((state, prev) => {
   if (state.recentJobs !== prev.recentJobs) {
     renderRecent(state.recentJobs);
   }
-  if (state.live.segments !== prev.live.segments) {
-    renderLiveSegments(state.live.segments);
+  if (state.live.text !== prev.live.text || state.live.segments !== prev.live.segments) {
+    renderLiveTail(state.live);
   }
-  if (state.live.status !== prev.live.status) {
-    renderLiveStatus(state.live.status);
+  if (
+    state.live.status !== prev.live.status ||
+    state.live.isFinalizing !== prev.live.isFinalizing
+  ) {
+    renderLiveStatus(state.live);
   }
-  if (state.stream !== prev.stream || state.live.segments !== prev.live.segments) {
+  if (
+    state.live.duration !== prev.live.duration ||
+    state.live.runtimeSeconds !== prev.live.runtimeSeconds ||
+    state.live.startedAt !== prev.live.startedAt ||
+    state.live.pauseStartedAt !== prev.live.pauseStartedAt ||
+    state.live.totalPausedMs !== prev.live.totalPausedMs ||
+    state.live.status !== prev.live.status ||
+    state.live.text !== prev.live.text
+  ) {
+    renderLiveProgress(state.live);
+  }
+  if (
+    state.stream !== prev.stream ||
+    state.live.text !== prev.live.text ||
+    state.live.segments !== prev.live.segments
+  ) {
     renderHomePanel(state);
   }
-  if (state.stream !== prev.stream || state.live.status !== prev.live.status) {
+  if (
+    state.stream !== prev.stream ||
+    state.live.status !== prev.live.status ||
+    state.live.isFinalizing !== prev.live.isFinalizing ||
+    state.live.text !== prev.live.text
+  ) {
     updateHomeStatus(state);
+  }
+  if (
+    state.live.latencyMs !== prev.live.latencyMs ||
+    state.live.wpm !== prev.live.wpm ||
+    state.live.droppedChunks !== prev.live.droppedChunks
+  ) {
+    renderLiveKpis(state.live);
   }
   if (state.job.detail !== prev.job.detail || state.job.maxSegments !== prev.job.maxSegments) {
     renderJobDetail(state);
@@ -1899,6 +2344,7 @@ async function loadJobs() {
         selectedFolderId,
       };
     });
+    pruneJobTextCache();
     maybeUpdateActiveStream();
   } catch (error) {
     console.warn('Usando transcripciones de ejemplo', error);
@@ -1910,6 +2356,7 @@ async function loadJobs() {
       stats: SAMPLE_DATA.stats,
       selectedFolderId: prev.selectedFolderId ?? SAMPLE_DATA.folders[0]?.id ?? null,
     }));
+    pruneJobTextCache();
     maybeUpdateActiveStream();
   }
 }
@@ -1952,7 +2399,7 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
     const cachedText = jobTextCache.get(jobIdStr) || '';
     const resolvedText = incomingText && incomingText.trim() ? incomingText : cachedText;
     if (incomingText && incomingText.trim()) {
-      jobTextCache.set(jobIdStr, incomingText);
+      rememberJobText(jobIdStr, incomingText);
     }
     const folderLookup = new Map(state.folders.map((folder) => [folder.path, folder]));
     let foldersForUpdate = state.folders;
@@ -2263,13 +2710,22 @@ async function handleUploadSubmit(event) {
   const language = elements.upload.language.value || '';
   const model = elements.upload.model.value;
   const modelConfig = getModelConfig(model);
-  const devicePreference = modelConfig.preferredDevice;
+  const devicePreference = resolveDevicePreference(model, modelConfig.preferredDevice);
   const beamValue = Number(elements.upload.beam?.value || modelConfig.recommendedBeam);
   const totalFiles = files.length;
   let completed = 0;
   let failed = 0;
   elements.upload.feedback.textContent = 'Preparando subida…';
   setUploadProgress(0);
+
+  try {
+    await ensureModelReady(model, devicePreference, 'procesar tus archivos');
+  } catch (error) {
+    elements.upload.feedback.textContent = error?.message || 'No se pudo preparar el modelo.';
+    if (submit) submit.disabled = false;
+    resetUploadProgress();
+    return;
+  }
 
   const updateOverallProgress = (currentCompleted, partial) => {
     if (!totalFiles) return;
@@ -2489,108 +2945,421 @@ function openJob(jobId) {
   goToRoute('job');
   loadJobDetail(jobId);
 }
-function appendLiveSegment(chunk) {
-  store.setState((prev) => {
-    const segments = [...prev.live.segments, chunk];
-    const trimmed = segments.slice(-prev.live.maxSegments);
-    return { ...prev, live: { ...prev.live, segments: trimmed } };
-  });
-}
-
-function updateLiveKpis() {
-  const segments = store.getState().live.segments;
-  const text = segments.join(' ');
-  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-  const minutes = Math.max(1, segments.length / 2);
+function renderLiveKpis(liveState) {
+  const latencyText = Number.isFinite(liveState.latencyMs) && liveState.latencyMs > 0
+    ? `${liveState.latencyMs} ms`
+    : '—';
+  const wpmText = Number.isFinite(liveState.wpm) && liveState.wpm > 0 ? String(liveState.wpm) : '0';
+  const droppedText = Number.isFinite(liveState.droppedChunks) ? String(liveState.droppedChunks) : '0';
   elements.live.kpis.forEach((node) => {
     const metric = node.dataset.liveKpi;
-    if (metric === 'wpm') node.textContent = Math.max(0, Math.round(words / minutes));
-    if (metric === 'latency') node.textContent = `${Math.floor(80 + Math.random() * 40)} ms`;
-    if (metric === 'dropped') node.textContent = Math.floor(Math.random() * 2);
+    if (metric === 'wpm') node.textContent = wpmText;
+    if (metric === 'latency') node.textContent = latencyText;
+    if (metric === 'dropped') node.textContent = droppedText;
   });
 }
 
-function stopLiveTimer() {
-  if (liveSession.timer) {
-    clearInterval(liveSession.timer);
-    liveSession.timer = null;
+function enqueueLiveChunk(blob) {
+  if (!blob || !blob.size || !liveSession.sessionId) return;
+  const index = liveSession.chunkIndex;
+  liveSession.chunkIndex += 1;
+  liveSession.chunkQueue.push({ blob, index, createdAt: Date.now() });
+  processLiveChunkQueue();
+}
+
+async function processLiveChunkQueue() {
+  if (liveSession.sending) return;
+  if (!liveSession.sessionId) {
+    liveSession.chunkQueue = [];
+    return;
+  }
+  const item = liveSession.chunkQueue.shift();
+  if (!item) return;
+  liveSession.sending = true;
+  const endpoint = `/api/transcriptions/live/sessions/${liveSession.sessionId}/chunk`;
+  try {
+    const formData = new FormData();
+    const filename = `chunk-${String(item.index).padStart(5, '0')}.webm`;
+    formData.append('chunk', item.blob, filename);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      let message = 'No se pudo enviar el fragmento en vivo.';
+      try {
+        const data = await response.json();
+        if (data?.detail) message = data.detail;
+      } catch (parseError) {
+        console.warn('No se pudo interpretar la respuesta del chunk en vivo', parseError);
+      }
+      throw new Error(message);
+    }
+    const payload = await response.json();
+    handleLiveChunkPayload(payload, Date.now() - item.createdAt);
+  } catch (error) {
+    console.error('Error al enviar fragmento en vivo', error);
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        droppedChunks: prev.live.droppedChunks + 1,
+        error: error?.message || 'No se pudo enviar el fragmento en vivo.',
+      },
+    }));
+  } finally {
+    liveSession.sending = false;
+    if (liveSession.chunkQueue.length) {
+      processLiveChunkQueue();
+    }
   }
 }
 
-function startLiveSession() {
-  if (store.getState().live.status === 'recording') return;
-  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'recording', segments: [] } }));
-  liveSession.cursor = 0;
-  stopLiveTimer();
-  liveSession.timer = setInterval(() => {
-    const chunk = SAMPLE_LIVE_SEGMENTS[liveSession.cursor % SAMPLE_LIVE_SEGMENTS.length];
-    liveSession.cursor += 1;
-    appendLiveSegment(chunk);
-    updateLiveKpis();
-  }, 1500);
+function waitForLiveQueueToFlush() {
+  return new Promise((resolve) => {
+    const poll = () => {
+      if (!liveSession.sending && liveSession.chunkQueue.length === 0) {
+        resolve();
+      } else {
+        window.setTimeout(poll, 120);
+      }
+    };
+    poll();
+  });
+}
+
+async function stopLiveRecorder() {
+  if (!liveSession.recorder) return;
+  const recorder = liveSession.recorder;
+  if (recorder.state === 'inactive') return;
+  await new Promise((resolve) => {
+    recorder.addEventListener('stop', () => resolve(), { once: true });
+    try {
+      recorder.stop();
+    } catch (error) {
+      console.warn('No se pudo detener el MediaRecorder', error);
+      resolve();
+    }
+  });
+}
+
+function handleLiveChunkPayload(payload, uploadLatencyMs) {
+  const segments = Array.isArray(payload?.segments) ? payload.segments : [];
+  const segmentTexts = segments
+    .map((segment) => (segment && typeof segment.text === 'string' ? segment.text.trim() : ''))
+    .filter(Boolean);
+  const aggregatedText = typeof payload?.text === 'string' ? payload.text : '';
+  const latencyFromRuntime = Number.isFinite(payload?.runtime_seconds)
+    ? Math.max(0, Math.round(payload.runtime_seconds * 1000))
+    : null;
+  const latencyMs = latencyFromRuntime ?? (Number.isFinite(uploadLatencyMs) ? Math.round(uploadLatencyMs) : null);
+  store.setState((prev) => {
+    const previous = prev.live;
+    const trimmed = segmentTexts.slice(-previous.maxSegments);
+    const combinedText = aggregatedText && aggregatedText.trim()
+      ? aggregatedText
+      : trimmed.length
+      ? trimmed.join(' ')
+      : previous.text;
+    const now = Date.now();
+    const startedAt = previous.startedAt || now;
+    const pausedMs = previous.totalPausedMs + (previous.pauseStartedAt ? now - previous.pauseStartedAt : 0);
+    const elapsedMs = Math.max(1000, now - startedAt - pausedMs);
+    const words = combinedText.trim() ? combinedText.trim().split(/\s+/).length : 0;
+    const computedWpm = Math.max(0, Math.round((words * 60000) / elapsedMs));
+    return {
+      ...prev,
+      live: {
+        ...previous,
+        segments: trimmed,
+        text: combinedText,
+        duration: payload?.duration ?? previous.duration,
+        runtimeSeconds: payload?.runtime_seconds ?? previous.runtimeSeconds,
+        language: payload?.language ?? previous.language,
+        model: payload?.model_size ?? previous.model,
+        beam: payload?.beam_size ?? previous.beam,
+        device: payload?.device_preference ?? previous.device,
+        lastChunkAt: now,
+        latencyMs: latencyMs ?? previous.latencyMs,
+        wpm: computedWpm,
+        error: null,
+      },
+    };
+  });
+}
+
+async function startLiveSession() {
+  const state = store.getState().live;
+  if (state.status === 'recording' || state.isFinalizing) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('Tu navegador no permite capturar audio. Usa Chrome, Edge o Firefox actualizados.');
+    return;
+  }
+  try {
+    const language = elements.live.language?.value || null;
+    const modelValue = elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
+    const modelConfig = getModelConfig(modelValue);
+    const beamRaw = elements.live.beam?.value || modelConfig.recommendedBeam;
+    const beamValue = Number(beamRaw);
+    const deviceValue = elements.live.device?.value || null;
+    const resolvedDevicePreference = resolveDevicePreference(modelValue, deviceValue);
+    await ensureModelReady(modelValue, resolvedDevicePreference, 'iniciar la sesión en vivo');
+    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const payload = {
+      language: language || undefined,
+      model_size: modelValue,
+      device_preference: resolvedDevicePreference || undefined,
+      beam_size: Number.isFinite(beamValue) ? beamValue : undefined,
+    };
+    const response = await fetch('/api/transcriptions/live/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      const message = data?.detail || 'No se pudo iniciar la sesión en vivo.';
+      throw new Error(message);
+    }
+    const sessionInfo = await response.json();
+    const mimeType = pickLiveMimeType();
+    const options = mimeType ? { mimeType } : undefined;
+    const recorder = new MediaRecorder(audioStream, options);
+    liveSession.sessionId = sessionInfo.session_id;
+    liveSession.mediaStream = audioStream;
+    liveSession.recorder = recorder;
+    liveSession.chunkQueue = [];
+    liveSession.chunkIndex = 0;
+    liveSession.sending = false;
+    liveSession.finishing = false;
+
+    recorder.addEventListener('dataavailable', (event) => {
+      if (event.data && event.data.size) {
+        enqueueLiveChunk(event.data);
+      }
+    });
+    recorder.addEventListener('error', (event) => {
+      console.error('MediaRecorder error', event.error);
+      alert('Error al capturar audio en vivo. Se detendrá la sesión.');
+      finishLiveSession(true);
+    });
+
+    recorder.start(LIVE_CHUNK_INTERVAL_MS);
+
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        status: 'recording',
+        sessionId: sessionInfo.session_id,
+        language: sessionInfo.language ?? language,
+        model: sessionInfo.model_size ?? modelValue,
+        beam: sessionInfo.beam_size ?? (Number.isFinite(beamValue) ? beamValue : null),
+        device: sessionInfo.device_preference ?? resolvedDevicePreference,
+        segments: [],
+        text: '',
+        duration: null,
+        runtimeSeconds: null,
+        startedAt: Date.now(),
+        pauseStartedAt: null,
+        totalPausedMs: 0,
+        lastChunkAt: null,
+        latencyMs: 0,
+        wpm: 0,
+        droppedChunks: 0,
+        error: null,
+        isFinalizing: false,
+      },
+    }));
+    renderLiveKpis(store.getState().live);
+  } catch (error) {
+    console.error('No se pudo iniciar la sesión en vivo', error);
+    alert(error?.message || 'No se pudo iniciar la sesión en vivo.');
+    if (liveSession.mediaStream) {
+      liveSession.mediaStream.getTracks().forEach((track) => track.stop());
+    }
+    resetLiveSessionLocalState();
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        status: 'idle',
+        sessionId: null,
+        error: error?.message || 'No se pudo iniciar la sesión en vivo.',
+      },
+    }));
+  }
+}
+
+function updatePausedMetrics() {
+  store.setState((prev) => {
+    const pauseStartedAt = prev.live.pauseStartedAt;
+    if (!pauseStartedAt) return prev;
+    const elapsed = Date.now() - pauseStartedAt;
+    if (elapsed <= 0) return prev;
+    return {
+      ...prev,
+      live: {
+        ...prev.live,
+        totalPausedMs: prev.live.totalPausedMs + elapsed,
+        pauseStartedAt: null,
+      },
+    };
+  });
 }
 
 function pauseLiveSession() {
-  if (store.getState().live.status !== 'recording') return;
-  stopLiveTimer();
-  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'paused' } }));
+  const state = store.getState().live;
+  if (state.status !== 'recording' || !liveSession.recorder) return;
+  if (typeof liveSession.recorder.pause === 'function' && liveSession.recorder.state === 'recording') {
+    liveSession.recorder.pause();
+  }
+  store.setState((prev) => ({
+    ...prev,
+    live: {
+      ...prev.live,
+      status: 'paused',
+      pauseStartedAt: Date.now(),
+    },
+  }));
 }
 
 function resumeLiveSession() {
-  if (store.getState().live.status !== 'paused') return;
-  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'recording' } }));
-  stopLiveTimer();
-  liveSession.timer = setInterval(() => {
-    const chunk = SAMPLE_LIVE_SEGMENTS[liveSession.cursor % SAMPLE_LIVE_SEGMENTS.length];
-    liveSession.cursor += 1;
-    appendLiveSegment(chunk);
-    updateLiveKpis();
-  }, 1500);
-}
-
-function finishLiveSession() {
-  if (store.getState().live.status === 'idle') return;
-  stopLiveTimer();
-  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'completed' } }));
-  const segments = store.getState().live.segments;
-  if (!segments.length) return;
-  const text = segments.join('');
-  const folderInput = elements.live.folder.value.trim() || elements.upload.folder.value.trim() || 'General';
-  const folderId = ensureFolderPath(folderInput);
-  const now = new Date();
-  const jobs = [...store.getState().jobs];
-  const id = createId('job');
-  const modelConfig = getModelConfig(elements.live.model?.value || DEFAULT_MODEL);
-  const beamValue = Number(elements.live.beam?.value || modelConfig.recommendedBeam);
-  jobs.unshift({
-    id,
-    name: `Sesión en vivo ${now.toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })}`,
-    folderId,
-    status: 'completed',
-    durationSec: segments.length * 30,
-    language: elements.live.language.value || 'es',
-    model: elements.live.model.value,
-    beam: beamValue,
-    createdAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-  });
+  const state = store.getState().live;
+  if (state.status !== 'paused' || !liveSession.recorder) return;
+  updatePausedMetrics();
+  if (typeof liveSession.recorder.resume === 'function' && liveSession.recorder.state === 'paused') {
+    try {
+      liveSession.recorder.resume();
+    } catch (error) {
+      console.warn('No se pudo reanudar el MediaRecorder', error);
+    }
+  }
   store.setState((prev) => ({
     ...prev,
-    jobs,
-    recentJobs: computeRecent(jobs),
-    stats: prev.stats
-      ? {
-          ...prev.stats,
-          todayCount: prev.stats.todayCount + 1,
-          totalCount: prev.stats.totalCount + 1,
-          todayMinutes: prev.stats.todayMinutes + Math.round((segments.length * 30) / 60),
-          totalMinutes: prev.stats.totalMinutes + Math.round((segments.length * 30) / 60),
-          queue: Math.max(0, prev.stats.queue - 1),
-        }
-      : prev.stats,
+    live: {
+      ...prev.live,
+      status: 'recording',
+      pauseStartedAt: null,
+    },
   }));
-  SAMPLE_DATA.texts[id] = { jobId: id, text, segments: [...segments] };
-  loadJobDetail(id);
+}
+
+async function finalizeLiveSessionOnServer(sessionId) {
+  const folderInput = elements.live.folder?.value.trim();
+  const uploadFolder = elements.upload.folder?.value.trim();
+  const destination = folderInput || uploadFolder || 'General';
+  const state = store.getState().live;
+  const payload = {
+    destination_folder: destination,
+    language: state.language || undefined,
+    model_size: state.model || undefined,
+    device_preference: state.device || undefined,
+    beam_size: state.beam || undefined,
+  };
+  const response = await fetch(`/api/transcriptions/live/sessions/${sessionId}/finalize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    const message = data?.detail || 'No se pudo guardar la sesión en vivo.';
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+async function finishLiveSession(forceDiscard = false) {
+  const current = store.getState().live;
+  if (current.status === 'idle' || current.isFinalizing) return;
+  liveSession.finishing = true;
+  if (current.status === 'paused') {
+    updatePausedMetrics();
+  }
+  store.setState((prev) => ({
+    ...prev,
+    live: {
+      ...prev.live,
+      status: forceDiscard ? 'idle' : 'finalizing',
+      isFinalizing: !forceDiscard,
+    },
+  }));
+  try {
+    await stopLiveRecorder();
+    await waitForLiveQueueToFlush();
+    if (forceDiscard) {
+      await discardRemoteLiveSession(liveSession.sessionId);
+      resetLiveSessionLocalState();
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          status: 'idle',
+          sessionId: null,
+          isFinalizing: false,
+          segments: [],
+          text: '',
+          latencyMs: 0,
+          wpm: 0,
+          droppedChunks: 0,
+          duration: null,
+          runtimeSeconds: null,
+          startedAt: null,
+          pauseStartedAt: null,
+          totalPausedMs: 0,
+        },
+      }));
+      return;
+    }
+    const sessionId = liveSession.sessionId;
+    const result = await finalizeLiveSessionOnServer(sessionId);
+    resetLiveSessionLocalState();
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        status: 'completed',
+        sessionId: null,
+        model: result.model_size ?? prev.live.model,
+        device: result.device_preference ?? prev.live.device,
+        language: result.language ?? prev.live.language,
+        beam: result.beam_size ?? prev.live.beam,
+        duration: result.duration ?? prev.live.duration,
+        runtimeSeconds: result.runtime_seconds ?? prev.live.runtimeSeconds,
+        isFinalizing: false,
+      },
+    }));
+    await loadJobs();
+    if (result?.transcription_id) {
+      loadJobDetail(String(result.transcription_id), { suppressErrors: true });
+    }
+  } catch (error) {
+    console.error('No se pudo finalizar la sesión en vivo', error);
+    alert(error?.message || 'No se pudo finalizar la sesión en vivo.');
+    await discardRemoteLiveSession(liveSession.sessionId);
+    resetLiveSessionLocalState();
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        status: 'idle',
+        sessionId: null,
+        isFinalizing: false,
+        error: error?.message || 'No se pudo finalizar la sesión en vivo.',
+        segments: [],
+        text: '',
+        latencyMs: 0,
+        wpm: 0,
+        droppedChunks: prev.live.droppedChunks + 1,
+        duration: null,
+        runtimeSeconds: null,
+        startedAt: null,
+        pauseStartedAt: null,
+        totalPausedMs: 0,
+      },
+    }));
+  }
 }
 let searchTimer = null;
 function updateLibraryFilter(key, value) {
@@ -2820,6 +3589,17 @@ function setupDiagnostics() {
     alert('Diagnóstico rápido:\n\n- WS en vivo conectado\n- Última sesión estable\n- Modelos cargados correctamente');
   });
 }
+
+function setupLiveProgressTicker() {
+  if (liveProgressTimer) return;
+  liveProgressTimer = window.setInterval(() => {
+    const liveState = store.getState().live;
+    if (!liveState) return;
+    if (['recording', 'paused', 'finalizing'].includes(liveState.status)) {
+      renderLiveProgress(liveState);
+    }
+  }, 1000);
+}
 async function init() {
   console.info('init start');
   setupTheme();
@@ -2840,6 +3620,7 @@ async function init() {
   setupFullscreenButtons();
   setupHomeShortcuts();
   setupDiagnostics();
+  setupLiveProgressTicker();
   renderHomePanel(store.getState());
   updateHomeStatus(store.getState());
   await loadInitialData();
