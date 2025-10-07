@@ -175,11 +175,8 @@
                     </select>
                   </label>
                   <label class="field">
-                    <span class="field__label">Modelo</span>
-                    <select id="upload-model" class="field__input">
-                      <option value="large-v3" selected>large-v3</option>
-                      <option value="small">small</option>
-                    </select>
+                    <span class="field__label">Modelo Whisper</span>
+                    <select id="upload-model" class="field__input" data-default-model="large-v3"></select>
                   </label>
                 </div>
                 <label class="toggle" for="upload-diarization">
@@ -190,6 +187,17 @@
                   <input id="upload-vad" type="checkbox" checked />
                   <span>Filtrado VAD</span>
                 </label>
+                <details class="advanced" id="upload-advanced">
+                  <summary>Opciones avanzadas</summary>
+                  <div class="advanced__grid">
+                    <label class="field">
+                      <span class="field__label">Beam search</span>
+                      <select id="upload-beam" class="field__input" data-default-beam="4"></select>
+                    </label>
+                    <p class="advanced__hint" id="upload-beam-hint"></p>
+                  </div>
+                  <p class="advanced__note">El beam es cuántas alternativas de frase prueba el modelo. Un número alto mejora la precisión pero tarda más.</p>
+                </details>
                 <button class="btn btn--primary" type="submit">Iniciar</button>
                 <progress
                   id="upload-progress"
@@ -289,11 +297,9 @@
                   </label>
                   <label class="field">
                     <span class="field__label">Modelo</span>
-                    <select id="filter-model" class="field__input">
-                      <option value="all">Todos</option>
-                      <option value="large-v3">large-v3</option>
-                      <option value="small">small</option>
-                    </select>
+                  <select id="filter-model" class="field__input">
+                    <option value="all" selected>Todos</option>
+                  </select>
                   </label>
                   <label class="field">
                     <span class="field__label">Buscar</span>
@@ -358,11 +364,8 @@
                   </select>
                 </label>
                 <label class="field">
-                  <span class="field__label">Modelo</span>
-                  <select id="live-model" class="field__input">
-                    <option value="large-v3" selected>large-v3</option>
-                    <option value="small">small</option>
-                  </select>
+                  <span class="field__label">Modelo Whisper</span>
+                  <select id="live-model" class="field__input" data-default-model="turbo"></select>
                 </label>
                 <label class="field">
                   <span class="field__label">GPU/CPU</span>
@@ -389,33 +392,24 @@
                   <span class="live-kpis__label">Chunks perdidos</span>
                   <span class="live-kpis__value" data-live-kpi="dropped">0</span>
                 </div>
-                <div>
-                  <span class="live-kpis__label">Chunks perdidos</span>
-                  <span class="live-kpis__value" data-live-kpi="dropped">0</span>
+              </div>
+              <div class="live-config__actions">
+                <button class="btn btn--secondary" id="live-start" type="button">Iniciar</button>
+                <button class="btn btn--ghost" id="live-pause" type="button" disabled>Pausar</button>
+                <button class="btn btn--ghost" id="live-resume" type="button" hidden>Reanudar</button>
+                <button class="btn btn--primary" id="live-finish" type="button" disabled>Finalizar &amp; guardar</button>
+              </div>
+              <details class="advanced advanced--inline">
+                <summary>Opciones avanzadas</summary>
+                <div class="advanced__grid">
+                  <label class="field">
+                    <span class="field__label">Beam search</span>
+                    <select id="live-beam" class="field__input" data-default-beam="2"></select>
+                  </label>
+                  <p class="advanced__hint" id="live-beam-hint"></p>
                 </div>
-                <div>
-                  <span class="live-kpis__label">Chunks perdidos</span>
-                  <span class="live-kpis__value" data-live-kpi="dropped">0</span>
-                </div>
-              </div>
-              <div class="live-config__actions">
-                <button class="btn btn--secondary" id="live-start" type="button">Iniciar</button>
-                <button class="btn btn--ghost" id="live-pause" type="button" disabled>Pausar</button>
-                <button class="btn btn--ghost" id="live-resume" type="button" hidden>Reanudar</button>
-                <button class="btn btn--primary" id="live-finish" type="button" disabled>Finalizar &amp; guardar</button>
-              </div>
-              <div class="live-config__actions">
-                <button class="btn btn--secondary" id="live-start" type="button">Iniciar</button>
-                <button class="btn btn--ghost" id="live-pause" type="button" disabled>Pausar</button>
-                <button class="btn btn--ghost" id="live-resume" type="button" hidden>Reanudar</button>
-                <button class="btn btn--primary" id="live-finish" type="button" disabled>Finalizar &amp; guardar</button>
-              </div>
-              <div class="live-config__actions">
-                <button class="btn btn--secondary" id="live-start" type="button">Iniciar</button>
-                <button class="btn btn--ghost" id="live-pause" type="button" disabled>Pausar</button>
-                <button class="btn btn--ghost" id="live-resume" type="button" hidden>Reanudar</button>
-                <button class="btn btn--primary" id="live-finish" type="button" disabled>Finalizar &amp; guardar</button>
-              </div>
+                <p class="advanced__note">Beam controla cuántas hipótesis de texto explora el modelo. Más beam = más calidad, pero también más retardo.</p>
+              </details>
             </section>
 
             <section class="panel live-view" id="live-view" aria-labelledby="live-view-heading">
@@ -540,6 +534,10 @@
                 <div>
                   <dt>Modelo</dt>
                   <dd id="job-model">—</dd>
+                </div>
+                <div>
+                  <dt>Beam</dt>
+                  <dd id="job-beam">—</dd>
                 </div>
                 <div>
                   <dt>WER estimada</dt>

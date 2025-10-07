@@ -136,6 +136,7 @@ class BaseTranscriber:
         self,
         audio_path: Path,
         language: Optional[str] = None,
+        beam_size: Optional[int] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         raise NotImplementedError
@@ -146,6 +147,7 @@ class DummyTranscriber(BaseTranscriber):
         self,
         audio_path: Path,
         language: Optional[str] = None,
+        beam_size: Optional[int] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:  # pragma: no cover - trivial
         logger.warning("Using DummyTranscriber, install whisperx to enable real transcription")
@@ -624,6 +626,7 @@ class WhisperXTranscriber(BaseTranscriber):
         self,
         audio_path: Path,
         language: Optional[str] = None,
+        beam_size: Optional[int] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         def emit(stage: str, message: str, extra: Optional[Dict[str, object]] = None, level: str = "info") -> None:
@@ -645,7 +648,12 @@ class WhisperXTranscriber(BaseTranscriber):
                 "warning",
             )
             fallback = self._get_fallback_transcriber()
-            return fallback.transcribe(audio_path, language=language, debug_callback=debug_callback)
+            return fallback.transcribe(
+                audio_path,
+                language=language,
+                beam_size=beam_size,
+                debug_callback=debug_callback,
+            )
 
         assert self._model is not None
 
@@ -694,7 +702,12 @@ class WhisperXTranscriber(BaseTranscriber):
                 {"error": str(exc)},
                 "warning",
             )
-            return fallback.transcribe(audio_path, language=language, debug_callback=debug_callback)
+            return fallback.transcribe(
+                audio_path,
+                language=language,
+                beam_size=beam_size,
+                debug_callback=debug_callback,
+            )
         runtime = time.perf_counter() - start
         emit(
             "transcribe.completed",
@@ -1041,6 +1054,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
         self,
         audio_path: Path,
         language: Optional[str] = None,
+        beam_size: Optional[int] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         def emit(stage: str, message: str, extra: Optional[Dict[str, object]] = None, level: str = "info") -> None:
@@ -1069,7 +1083,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 segments, info = self._model.transcribe(  # type: ignore[attr-defined]
                     str(audio_path),
                     language=language or settings.whisper_language,
-                    beam_size=5,
+                    beam_size=beam_size or 5,
                     vad_filter=use_vad,
                 )
                 runtime = time.perf_counter() - start
@@ -1100,7 +1114,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
         emit(
             "transcribe.completed",
             "Transcripción con faster-whisper completada",
-            {"runtime_seconds": runtime},
+            {"runtime_seconds": runtime, "beam_size": beam_size or 5},
         )
 
         segment_results: List[SegmentResult] = []

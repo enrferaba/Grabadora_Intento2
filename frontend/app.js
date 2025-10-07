@@ -48,6 +48,68 @@ const PREMIUM_PLANS = [
   },
 ];
 
+const WHISPER_MODELS = [
+  {
+    value: 'turbo',
+    label: 'turbo · latencia mínima',
+    recommendedBeam: 1,
+    preferredDevice: 'gpu',
+    note: 'Perfecto para streaming con la menor espera.',
+  },
+  {
+    value: 'tiny',
+    label: 'tiny · súper veloz',
+    recommendedBeam: 1,
+    preferredDevice: 'cpu',
+    note: 'Útil para pruebas rápidas en equipos modestos.',
+  },
+  {
+    value: 'base',
+    label: 'base · equilibrado',
+    recommendedBeam: 1,
+    preferredDevice: 'cpu',
+    note: 'Buen balance entre velocidad y claridad en notebooks.',
+  },
+  {
+    value: 'small',
+    label: 'small · reuniones',
+    recommendedBeam: 2,
+    preferredDevice: 'gpu',
+    note: 'Recomendado para clases y reuniones diarias.',
+  },
+  {
+    value: 'medium',
+    label: 'medium · más detalle',
+    recommendedBeam: 3,
+    preferredDevice: 'gpu',
+    note: 'Mayor precisión con un coste moderado de GPU.',
+  },
+  {
+    value: 'large',
+    label: 'large · máxima fidelidad',
+    recommendedBeam: 4,
+    preferredDevice: 'gpu',
+    note: 'Para audios críticos cuando importa cada palabra.',
+  },
+  {
+    value: 'large-v2',
+    label: 'large-v2 · multilenguaje',
+    recommendedBeam: 4,
+    preferredDevice: 'gpu',
+    note: 'Mejor rendimiento multilingüe estable.',
+  },
+  {
+    value: 'large-v3',
+    label: 'large-v3 · última generación',
+    recommendedBeam: 4,
+    preferredDevice: 'gpu',
+    note: 'Mayor precisión en español y entornos ruidosos.',
+  },
+];
+
+const BEAM_OPTIONS = [1, 2, 3, 4, 5, 8];
+const DEFAULT_MODEL = 'large-v3';
+
 const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
 const SAMPLE_DATA = {
@@ -76,6 +138,7 @@ const SAMPLE_DATA = {
       durationSec: 1980,
       language: 'es',
       model: 'large-v3',
+      beam: 4,
       createdAt: '2024-04-18T14:00:00Z',
       updatedAt: '2024-04-18T14:35:00Z',
     },
@@ -87,6 +150,7 @@ const SAMPLE_DATA = {
       durationSec: 1420,
       language: 'es',
       model: 'large-v3',
+      beam: 4,
       createdAt: '2024-06-12T09:10:00Z',
       updatedAt: '2024-06-12T09:40:00Z',
     },
@@ -98,6 +162,7 @@ const SAMPLE_DATA = {
       durationSec: 2600,
       language: 'es',
       model: 'small',
+      beam: 2,
       createdAt: '2024-05-28T11:00:00Z',
       updatedAt: '2024-05-28T11:55:00Z',
     },
@@ -109,6 +174,7 @@ const SAMPLE_DATA = {
       durationSec: 860,
       language: 'en',
       model: 'large-v3',
+      beam: 4,
       createdAt: '2024-06-19T08:00:00Z',
       updatedAt: '2024-06-19T08:25:00Z',
     },
@@ -120,6 +186,7 @@ const SAMPLE_DATA = {
       durationSec: 1200,
       language: 'es',
       model: 'large-v3',
+      beam: 4,
       createdAt: '2024-06-21T07:30:00Z',
       updatedAt: '2024-06-21T07:30:00Z',
     },
@@ -202,6 +269,8 @@ const elements = {
     vad: document.getElementById('upload-vad'),
     progress: document.getElementById('upload-progress'),
     fileList: document.getElementById('upload-file-list'),
+    beam: document.getElementById('upload-beam'),
+    beamHint: document.getElementById('upload-beam-hint'),
     submit: document.querySelector('#upload-form button[type="submit"]'),
   },
   benefits: {
@@ -240,6 +309,8 @@ const elements = {
     fontMinus: document.getElementById('live-font-minus'),
     fullscreen: document.getElementById('live-fullscreen'),
     kpis: document.querySelectorAll('[data-live-kpi]'),
+    beam: document.getElementById('live-beam'),
+    beamHint: document.getElementById('live-beam-hint'),
   },
   job: {
     breadcrumbs: document.getElementById('job-breadcrumbs'),
@@ -260,6 +331,7 @@ const elements = {
     duration: document.getElementById('job-duration'),
     language: document.getElementById('job-language'),
     model: document.getElementById('job-model'),
+    beam: document.getElementById('job-beam'),
     wer: document.getElementById('job-wer'),
     audio: document.getElementById('job-audio'),
     logs: document.getElementById('job-logs'),
@@ -292,6 +364,144 @@ const preferences = {
   },
 };
 
+function getModelConfig(value) {
+  const normalized = (value || '').toLowerCase();
+  return (
+    WHISPER_MODELS.find((model) => model.value === normalized) ||
+    WHISPER_MODELS.find((model) => model.value === DEFAULT_MODEL) ||
+    WHISPER_MODELS[0]
+  );
+}
+
+function populateModelSelect(select, defaultModel) {
+  if (!select) return;
+  const desired = (defaultModel || select.dataset.defaultModel || DEFAULT_MODEL).toLowerCase();
+  const currentValue = select.value;
+  select.innerHTML = '';
+  WHISPER_MODELS.forEach((model) => {
+    const option = document.createElement('option');
+    option.value = model.value;
+    option.textContent = model.label;
+    if (model.value === desired) option.selected = true;
+    select.appendChild(option);
+  });
+  if (currentValue && WHISPER_MODELS.some((model) => model.value === currentValue)) {
+    select.value = currentValue;
+  }
+}
+
+function populateBeamSelect(select, defaultBeam) {
+  if (!select) return;
+  const desired = Number(defaultBeam || select.dataset.defaultBeam || 1);
+  const currentValue = Number(select.value || desired);
+  select.innerHTML = '';
+  BEAM_OPTIONS.forEach((beam) => {
+    const option = document.createElement('option');
+    option.value = String(beam);
+    option.textContent = `${beam} beams`;
+    if (beam === desired) option.selected = true;
+    select.appendChild(option);
+  });
+  if (BEAM_OPTIONS.includes(currentValue)) {
+    select.value = String(currentValue);
+  }
+}
+
+function updateBeamRecommendation(context, { forceValue = false } = {}) {
+  if (!context?.model) return;
+  const config = getModelConfig(context.model.value);
+  if (context.beamHint) {
+    context.beamHint.textContent = `Recomendado: beam ${config.recommendedBeam} · ${config.note}`;
+  }
+  if (context.beam) {
+    const dirty = context.beam.dataset.dirty === 'true';
+    if (!dirty || forceValue) {
+      context.beam.value = String(config.recommendedBeam);
+    }
+  }
+  if (context.device && !context.device.dataset.deviceLocked) {
+    context.device.value = config.preferredDevice;
+  }
+}
+
+function setupModelSelectors() {
+  const contexts = [
+    {
+      model: elements.upload.model,
+      beam: elements.upload.beam,
+      beamHint: elements.upload.beamHint,
+      device: elements.upload.device ?? null,
+      defaultModel: elements.upload.model?.dataset.defaultModel,
+      defaultBeam: elements.upload.beam?.dataset.defaultBeam,
+    },
+    {
+      model: elements.live.model,
+      beam: elements.live.beam,
+      beamHint: elements.live.beamHint,
+      device: elements.live.device,
+      defaultModel: elements.live.model?.dataset.defaultModel,
+      defaultBeam: elements.live.beam?.dataset.defaultBeam,
+    },
+  ];
+
+  contexts.forEach((context) => {
+    if (!context.model) return;
+    populateModelSelect(context.model, context.defaultModel);
+    populateBeamSelect(context.beam, context.defaultBeam);
+    if (context.beam) {
+      context.beam.dataset.dirty = 'false';
+      context.beam.addEventListener('change', () => {
+        context.beam.dataset.dirty = 'true';
+        if (context.model === elements.live.model) {
+          const status = store.getState().live.status;
+          if (status === 'recording' || status === 'paused') {
+            renderLiveStatus(status);
+          }
+        }
+      });
+    }
+    context.model.addEventListener('change', () => {
+      if (context.beam) {
+        context.beam.dataset.dirty = 'false';
+      }
+      updateBeamRecommendation(context, { forceValue: true });
+      if (context.model === elements.live.model) {
+        const status = store.getState().live.status;
+        if (status === 'recording' || status === 'paused') {
+          renderLiveStatus(status);
+        }
+      }
+    });
+    updateBeamRecommendation(context, { forceValue: true });
+  });
+
+  if (elements.library.filterModel) {
+    const current = elements.library.filterModel.value;
+    elements.library.filterModel.innerHTML = '';
+    const all = document.createElement('option');
+    all.value = 'all';
+    all.textContent = 'Todos';
+    elements.library.filterModel.appendChild(all);
+    WHISPER_MODELS.forEach((model) => {
+      const option = document.createElement('option');
+      option.value = model.value;
+      option.textContent = model.label.split('·')[0].trim();
+      elements.library.filterModel.appendChild(option);
+    });
+    if (current && current !== 'all') {
+      elements.library.filterModel.value = current;
+    }
+  }
+
+  if (elements.live.device) {
+    elements.live.device.addEventListener('change', () => {
+      elements.live.device.dataset.deviceLocked = 'true';
+    });
+  }
+
+  renderLiveStatus(store.getState().live.status);
+}
+
 function currentTheme() {
   return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
 }
@@ -316,6 +526,14 @@ function applyTheme(theme, persist = true) {
       localStorage.setItem(THEME_KEY, normalized);
     } catch (error) {
       console.warn('No se pudo guardar el tema', error);
+    }
+  });
+  if (persist) preferences.set(LOCAL_KEYS.lastRoute, normalized);
+  if (updateHash) {
+    const targetHash = `#${normalized}`;
+    if (window.location.hash !== targetHash) {
+      suppressHashChange = true;
+      window.location.hash = targetHash;
     }
   }
   updateThemeToggle(normalized);
@@ -405,7 +623,18 @@ async function triggerDownload(url, fallbackContent, filename, mimeType = 'text/
       alert('No fue posible descargar el archivo solicitado.');
     }
   }
-  updateThemeToggle(normalized);
+  jobs.forEach((job) => {
+    const row = document.createElement('tr');
+    row.dataset.jobId = job.id;
+    row.innerHTML = `
+      <td>${job.name}</td>
+      <td>${formatStatus(job.status)}</td>
+      <td>${formatDuration(job.durationSec)}</td>
+      <td>${formatDate(job.updatedAt)}</td>
+    `;
+    row.addEventListener('click', () => openJob(job.id));
+    body.appendChild(row);
+  });
 }
 
 function setupTheme() {
@@ -784,14 +1013,17 @@ function renderFolderTree(state) {
   container.appendChild(fragment);
 }
 
-elements.library.tree.addEventListener('click', (event) => {
-  const button = event.target.closest('.folder-node__button');
-  if (!button) return;
-  store.setState((prev) => ({ ...prev, selectedFolderId: button.dataset.folderId }));
-});
+if (elements.library.tree) {
+  elements.library.tree.addEventListener('click', (event) => {
+    const button = event.target.closest('.folder-node__button');
+    if (!button) return;
+    store.setState((prev) => ({ ...prev, selectedFolderId: button.dataset.folderId }));
+  });
+}
 
 function renderLibraryBreadcrumb(state) {
-  const list = elements.library.breadcrumbs.querySelector('ol');
+  const list = elements.library.breadcrumbs;
+  if (!list) return;
   while (list.children.length > 2) {
     list.removeChild(list.lastChild);
   }
@@ -808,7 +1040,6 @@ function renderLibraryBreadcrumb(state) {
     item.textContent = folder.name;
     list.appendChild(item);
   });
-  preferences.set(LOCAL_KEYS.lastRoute, route);
 }
 
 function renderLibraryTable(state) {
@@ -880,13 +1111,16 @@ function renderLiveSegments(segments) {
 }
 
 function renderLiveStatus(status) {
+  const modelValue = elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
+  const modelConfig = getModelConfig(modelValue);
+  const beamValue = Number(elements.live.beam?.value || modelConfig.recommendedBeam);
   if (elements.home.status) {
     switch (status) {
       case 'recording':
-        elements.home.status.textContent = 'Grabando en vivo…';
+        elements.home.status.textContent = `Grabando en vivo con ${modelConfig.label.split('·')[0].trim()} · beam ${beamValue}`;
         break;
       case 'paused':
-        elements.home.status.textContent = 'Sesión en pausa.';
+        elements.home.status.textContent = 'Sesión en pausa. Reanuda cuando estés listo.';
         break;
       case 'completed':
         elements.home.status.textContent = 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
@@ -939,6 +1173,7 @@ function renderJobDetail(state) {
     elements.job.duration.textContent = '—';
     elements.job.language.textContent = '—';
     elements.job.model.textContent = '—';
+    if (elements.job.beam) elements.job.beam.textContent = '—';
     elements.job.wer.textContent = '—';
     const list = elements.job.breadcrumbs;
     while (list.children.length > 3) list.removeChild(list.lastChild);
@@ -954,6 +1189,7 @@ function renderJobDetail(state) {
   elements.job.duration.textContent = formatDuration(job.durationSec);
   elements.job.language.textContent = job.language?.toUpperCase() ?? '—';
   elements.job.model.textContent = job.model ?? '—';
+  if (elements.job.beam) elements.job.beam.textContent = job.beam ? `Beam ${job.beam}` : '—';
   elements.job.wer.textContent = job.status === 'completed' ? '3.4%' : '—';
   elements.job.move.disabled = false;
   elements.job.copy.disabled = false;
@@ -1046,7 +1282,10 @@ async function loadJobs() {
   try {
     const response = await fetch('/api/jobs');
     if (!response.ok) throw new Error('Respuesta no válida');
-    const jobs = await response.json();
+    const payload = await response.json();
+    const jobs = Array.isArray(payload)
+      ? payload.map((job) => ({ ...job, beam: job.beam ?? job.beam_size ?? null }))
+      : [];
     store.setState((prev) => ({ ...prev, jobs, recentJobs: computeRecent(jobs) }));
   } catch (error) {
     console.warn('Usando transcripciones de ejemplo', error);
@@ -1211,6 +1450,7 @@ async function uploadFileToApi(file, folderPath, options) {
     if (options?.language) form.append('language', options.language);
     if (options?.model) form.append('model_size', options.model);
     if (options?.devicePreference) form.append('device_preference', options.devicePreference);
+    if (options?.beamWidth != null) form.append('beam_size', String(options.beamWidth));
 
     xhr.send(form);
   });
@@ -1246,7 +1486,9 @@ async function handleUploadSubmit(event) {
   const now = new Date();
   const language = elements.upload.language.value || '';
   const model = elements.upload.model.value;
-  const devicePreference = model === 'large-v3' ? 'gpu' : 'cpu';
+  const modelConfig = getModelConfig(model);
+  const devicePreference = modelConfig.preferredDevice;
+  const beamValue = Number(elements.upload.beam?.value || modelConfig.recommendedBeam);
   const totalFiles = files.length;
   let completed = 0;
   let failed = 0;
@@ -1265,6 +1507,7 @@ async function handleUploadSubmit(event) {
         language,
         model,
         devicePreference,
+        beamWidth: beamValue,
         onProgress(percent) {
           const fractional = percent / 100;
           updateOverallProgress(completed, fractional);
@@ -1280,6 +1523,7 @@ async function handleUploadSubmit(event) {
         durationSec: Math.round((file.size / 1024 / 1024) * 60) || 300,
         language: language || 'auto',
         model,
+        beam: beamValue,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
       });
@@ -1314,6 +1558,7 @@ async function handleUploadSubmit(event) {
 
 function setupDropzone() {
   const { dropzone, trigger, input } = elements.upload;
+  if (!dropzone || !trigger || !input) return;
   resetUploadProgress();
   renderPendingFiles([]);
   trigger.addEventListener('click', () => input.click());
@@ -1539,6 +1784,8 @@ function finishLiveSession() {
   const now = new Date();
   const jobs = [...store.getState().jobs];
   const id = createId('job');
+  const modelConfig = getModelConfig(elements.live.model?.value || DEFAULT_MODEL);
+  const beamValue = Number(elements.live.beam?.value || modelConfig.recommendedBeam);
   jobs.unshift({
     id,
     name: `Sesión en vivo ${now.toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })}`,
@@ -1547,6 +1794,7 @@ function finishLiveSession() {
     durationSec: segments.length * 30,
     language: elements.live.language.value || 'es',
     model: elements.live.model.value,
+    beam: beamValue,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   });
@@ -1573,10 +1821,11 @@ function updateLibraryFilter(key, value) {
   store.setState((prev) => ({ ...prev, libraryFilters: { ...prev.libraryFilters, [key]: value } }));
 }
 function setupFilters() {
-  elements.library.filterStatus.addEventListener('change', (event) => updateLibraryFilter('status', event.target.value));
-  elements.library.filterLanguage.addEventListener('change', (event) => updateLibraryFilter('language', event.target.value));
-  elements.library.filterModel.addEventListener('change', (event) => updateLibraryFilter('model', event.target.value));
-  elements.library.filterSearch.addEventListener('input', (event) => {
+  const { filterStatus, filterLanguage, filterModel, filterSearch } = elements.library;
+  filterStatus?.addEventListener('change', (event) => updateLibraryFilter('status', event.target.value));
+  filterLanguage?.addEventListener('change', (event) => updateLibraryFilter('language', event.target.value));
+  filterModel?.addEventListener('change', (event) => updateLibraryFilter('model', event.target.value));
+  filterSearch?.addEventListener('input', (event) => {
     const value = event.target.value;
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => updateLibraryFilter('search', value), 200);
@@ -1584,11 +1833,13 @@ function setupFilters() {
 }
 
 function setupLibraryActions() {
-  elements.library.create.addEventListener('click', () => {
+  const { create, rename, move, remove } = elements.library;
+
+  create?.addEventListener('click', () => {
     const input = prompt('Ruta de la nueva carpeta (ej. Clases/2024)');
     if (input) ensureFolderPath(input);
   });
-  elements.library.rename.addEventListener('click', () => {
+  rename?.addEventListener('click', () => {
     const state = store.getState();
     if (!state.selectedFolderId) {
       alert('Selecciona una carpeta para renombrar.');
@@ -1598,7 +1849,7 @@ function setupLibraryActions() {
     const name = prompt('Nuevo nombre de la carpeta', folder?.name ?? '');
     if (name) renameFolder(state.selectedFolderId, name.trim());
   });
-  elements.library.move.addEventListener('click', () => {
+  move?.addEventListener('click', () => {
     const state = store.getState();
     if (!state.selectedFolderId) {
       alert('Selecciona una carpeta para mover.');
@@ -1608,7 +1859,7 @@ function setupLibraryActions() {
     if (destination === null) return;
     moveFolder(state.selectedFolderId, destination.trim());
   });
-  elements.library.remove.addEventListener('click', () => {
+  remove?.addEventListener('click', () => {
     const state = store.getState();
     if (!state.selectedFolderId) {
       alert('Selecciona una carpeta para eliminar.');
@@ -1620,7 +1871,7 @@ function setupLibraryActions() {
   });
 }
 function setupJobActions() {
-  elements.job.copy.addEventListener('click', async () => {
+  elements.job.copy?.addEventListener('click', async () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
     try {
@@ -1631,14 +1882,14 @@ function setupJobActions() {
     }
   });
 
-  elements.job.downloadTxt.addEventListener('click', async () => {
+  elements.job.downloadTxt?.addEventListener('click', async () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
     const url = `/api/transcriptions/${detail.job.id}.txt`;
     await triggerDownload(url, detail.text, `${detail.job.id}.txt`);
   });
 
-  elements.job.downloadSrt.addEventListener('click', async () => {
+  elements.job.downloadSrt?.addEventListener('click', async () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
     const lines = detail.segments?.length
@@ -1649,14 +1900,14 @@ function setupJobActions() {
     await triggerDownload(url, fallback, `${detail.job.id}.srt`);
   });
 
-  elements.job.exportMd.addEventListener('click', () => {
+  elements.job.exportMd?.addEventListener('click', () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
     const content = `# ${detail.job.name}\n\n${detail.text}`;
     downloadFileFallback(`${detail.job.id}.md`, content);
   });
 
-  elements.job.move.addEventListener('click', () => {
+  elements.job.move?.addEventListener('click', () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
     const destination = prompt('Mover a carpeta (ej. Clases/2024). Dejar vacío para raíz.', detail.folderPath ? detail.folderPath.slice(1) : '');
@@ -1751,33 +2002,33 @@ function setupFullscreenButtons() {
   });
 }
 function setupHomeShortcuts() {
-  elements.home.newTranscription.addEventListener('click', () => {
-    elements.upload.form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  elements.home.newTranscription?.addEventListener('click', () => {
+    elements.upload.form?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
-  elements.home.quickFolder.addEventListener('keydown', (event) => {
+  elements.home.quickFolder?.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     const value = event.target.value.trim();
     if (!value) return;
     const folderId = ensureFolderPath(value);
     if (folderId) {
-      elements.upload.folder.value = value;
-      elements.live.folder.value = value;
+      if (elements.upload.folder) elements.upload.folder.value = value;
+      if (elements.live.folder) elements.live.folder.value = value;
       store.setState((prev) => ({ ...prev, selectedFolderId: folderId }));
     }
   });
-  elements.home.quickFolder.addEventListener('change', (event) => {
+  elements.home.quickFolder?.addEventListener('change', (event) => {
     const value = event.target.value.trim();
     if (!value) return;
     const folderId = ensureFolderPath(value);
     if (folderId) {
-      elements.upload.folder.value = value;
-      elements.live.folder.value = value;
+      if (elements.upload.folder) elements.upload.folder.value = value;
+      if (elements.live.folder) elements.live.folder.value = value;
       store.setState((prev) => ({ ...prev, selectedFolderId: folderId }));
     }
   });
 }
 function setupDiagnostics() {
-  elements.diagnostics.addEventListener('click', () => {
+  elements.diagnostics?.addEventListener('click', () => {
     alert('Diagnóstico rápido:\n\n- WS en vivo conectado\n- Última sesión estable\n- Modelos cargados correctamente');
   });
 }
@@ -1786,6 +2037,7 @@ async function init() {
   setupTheme();
   setupAnchorGuards();
   setupRouter();
+  setupModelSelectors();
   renderPricingPlans();
   injectPrompt();
   setupPromptCopy();
