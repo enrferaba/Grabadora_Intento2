@@ -215,7 +215,7 @@ def _transcription_to_srt(transcription: Transcription) -> str:
     return "\n".join(entries).strip() + "\n"
 
 
-def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> None:
+def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> AudioSegment:
     try:
         segment = AudioSegment.from_file(chunk_path)
     except Exception as exc:  # pragma: no cover - depende del runtime
@@ -231,6 +231,7 @@ def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> None:
         combined = segment
 
     combined.export(state.audio_path, format="wav")
+    return segment
 
 
 def _cleanup_live_session(session_id: str) -> None:
@@ -355,7 +356,7 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
     chunk.file.close()
     with state.lock:
         try:
-            _merge_live_chunk(state, chunk_path)
+            segment = _merge_live_chunk(state, chunk_path)
         except RuntimeError as exc:
             chunk_path.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
