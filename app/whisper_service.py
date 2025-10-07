@@ -1018,6 +1018,16 @@ class WhisperXTranscriber(BaseTranscriber):
             )
 
         duration = self._estimate_duration(audio_path)
+        if duration is None:
+            candidates = [segment.end for segment in segment_results if segment.end]
+            if not candidates:
+                candidates = [
+                    float(segment.get("end", 0.0))
+                    for segment in diarized_segments
+                    if isinstance(segment, dict)
+                ]
+            if candidates:
+                duration = max(candidates)
 
         return TranscriptionResult(
             text=" ".join(collected_text).strip(),
@@ -1394,6 +1404,15 @@ class FasterWhisperTranscriber(BaseTranscriber):
 
         language_result = getattr(info, "language", language)
         duration = getattr(info, "duration", None) or self._estimate_duration(audio_path)
+        if duration is None:
+            candidates = [segment.end for segment in segment_results if segment.end]
+            if not candidates and segments is not None:
+                candidates = [
+                    float(getattr(segment, "end", 0.0))
+                    for segment in segments
+                ]
+            if candidates:
+                duration = max(candidates)
 
         return TranscriptionResult(
             text=" ".join(collected_text).strip(),

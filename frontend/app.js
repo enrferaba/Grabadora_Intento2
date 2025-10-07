@@ -3240,6 +3240,9 @@ function handleLiveChunkPayload(payload, uploadLatencyMs) {
         lastChunkAt: now,
         latencyMs: latencyMs ?? previous.latencyMs,
         wpm: computedWpm,
+        droppedChunks: Number.isFinite(payload?.dropped_chunks)
+          ? payload.dropped_chunks
+          : previous.droppedChunks,
         error: null,
       },
     };
