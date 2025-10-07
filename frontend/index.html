@@ -2,804 +2,532 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Grabadora Pro</title>
-    <link
-      rel="icon"
-      type="image/svg+xml"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' ry='14' fill='%235647f5'/%3E%3Cpath d='M18 32a14 14 0 1028 0 14 14 0 00-28 0zm14-10a10 10 0 11-10 10 10 10 0 0110-10zm-2 6v8l8-4-8-4z' fill='%23fff'/%3E%3C/svg%3E"
-    />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="app-bar">
-      <div class="app-bar__inner container">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">🎙️</span>
-          <span class="brand-name">Grabadora Pro</span>
-        </div>
-        <nav class="app-nav" aria-label="Navegación principal">
-          <button type="button" class="nav-link is-active" data-section-toggle="home" aria-current="page">Inicio</button>
-          <button type="button" class="nav-link" data-section-toggle="library">Biblioteca</button>
-          <button type="button" class="nav-link" data-section-toggle="live">En vivo</button>
-          <button type="button" class="nav-link" data-section-toggle="benefits">Beneficios</button>
+    <header class="topbar">
+      <div class="container topbar__inner">
+        <a class="brand" href="#" aria-label="Volver al inicio">
+          <span class="brand__mark" aria-hidden="true">🎙️</span>
+          <span class="brand__name">Grabadora Pro</span>
+        </a>
+        <nav class="topbar__nav" aria-label="Navegación principal">
+          <button class="nav-btn is-active" data-route-target="home">Inicio</button>
+          <button class="nav-btn" data-route-target="live">En vivo</button>
+          <button class="nav-btn" data-route-target="library">Biblioteca</button>
+          <button class="nav-btn" data-route-target="benefits">Beneficios</button>
         </nav>
-        <button id="google-login" type="button" class="google-btn">
-          <span class="icon">🔐</span>
-          Iniciar sesión con Google
-        </button>
+        <div class="topbar__extra">
+          <button class="btn btn--ghost" id="open-diagnostics" type="button">Diagnóstico</button>
+        </div>
       </div>
     </header>
 
-    <main class="app-main">
-      <section class="main-section is-active" data-section="home">
-        <div class="container home-container">
-          <header class="view-header home-header">
-            <div class="home-header__intro">
-              <h1 class="view-title">Panel principal</h1>
-              <p class="section-lead">
-                Controla tus métricas, inicia transcripciones al vuelo y visualiza los últimos resultados sin abandonar la portada.
+    <main class="main">
+      <section class="view view--active" data-route="home">
+        <div class="container stack-lg">
+          <header class="view-header">
+            <div>
+              <h1 class="view-title">Inicio</h1>
+              <p class="view-subtitle">
+                Controla tus métricas, lanza una transcripción en segundos y revisa el streaming en vivo sin cambiar de pantalla.
               </p>
             </div>
-            <div class="home-header__actions">
-              <label class="combo" for="home-folder-quick">
-                <span class="combo-label">Carpeta rápida</span>
+            <div class="view-header__actions">
+              <label class="field field--inline" for="quick-folder">
+                <span class="field__label">Carpeta rápida</span>
                 <input
-                  id="home-folder-quick"
+                  id="quick-folder"
+                  class="field__input"
                   type="text"
+                  list="folder-options"
                   placeholder="Crear o seleccionar"
-                  list="destination-folder-options"
                   autocomplete="off"
                 />
               </label>
-              <button type="button" class="primary" data-scroll-to="#upload-form">
-                <span class="icon">➕</span>
-                <span>Nueva transcripción</span>
-              </button>
+              <button class="btn btn--primary" id="home-new-transcription" type="button">Nueva transcripción</button>
             </div>
           </header>
 
-          <section class="card metrics-card home-stats-card" aria-label="Estadísticas generales">
-            <h2 class="visually-hidden">Resumen de uso</h2>
-            <div class="metrics-grid">
-              <article class="metric">
-                <p class="metric-label">Minutos procesados</p>
-                <p class="metric-value metric-stack">
-                  <span data-metric="minutes">0 min</span>
-                  <span class="metric-sub" data-metric="todayMinutes">Hoy: 0</span>
-                </p>
-                <p class="metric-sub">Total acumulado y minutos diarios</p>
-              </article>
-              <article class="metric">
-                <p class="metric-label">Transcripciones</p>
-                <p class="metric-value metric-stack">
-                  <span data-metric="total">0</span>
-                  <span class="metric-sub" data-metric="todayCount">Hoy: 0</span>
-                </p>
-                <p class="metric-sub">Conteo histórico y diario</p>
-              </article>
-              <article class="metric">
-                <p class="metric-label">En cola</p>
-                <p class="metric-value" data-metric="processing">0</p>
-                <p class="metric-sub">Transcripciones pendientes</p>
-              </article>
-              <article class="metric">
-                <p class="metric-label">Modo actual</p>
-                <p class="metric-value metric-stack">
-                  <span data-metric="mode">GPU</span>
-                  <span data-metric="model">WhisperX large-v3</span>
-                </p>
-                <p class="metric-sub">Carga aproximada y modelo activo</p>
-              </article>
-            </div>
+          <section class="stats" aria-label="Estadísticas generales">
+            <article class="stat-card">
+              <h2 class="stat-card__label">Minutos procesados</h2>
+              <p class="stat-card__value" data-stat="totalMinutes">—</p>
+              <p class="stat-card__meta">Hoy <span data-stat="todayMinutes">—</span></p>
+            </article>
+            <article class="stat-card">
+              <h2 class="stat-card__label">Transcripciones</h2>
+              <p class="stat-card__value" data-stat="totalCount">—</p>
+              <p class="stat-card__meta">Hoy <span data-stat="todayCount">—</span></p>
+            </article>
+            <article class="stat-card">
+              <h2 class="stat-card__label">En cola</h2>
+              <p class="stat-card__value" data-stat="queue">—</p>
+              <p class="stat-card__meta">Procesos pendientes</p>
+            </article>
+            <article class="stat-card">
+              <h2 class="stat-card__label">Modo actual</h2>
+              <p class="stat-card__value" data-stat="mode">—</p>
+              <p class="stat-card__meta">Modelo <span data-stat="model">—</span></p>
+            </article>
           </section>
 
-          <div class="home-layout">
-            <section
-              id="home-live-card"
-              class="card home-live-panel home-layout__live"
-              aria-labelledby="home-live-heading"
-            >
-              <div class="card-header">
-                <h2 id="home-live-heading">Transcripción en vivo</h2>
-                <p class="section-lead">
-                  Visualiza los últimos fragmentos de audio en tiempo real con auto-scroll y controles sincronizados con el
-                  Centro en vivo.
-                </p>
-              </div>
-              <div class="home-live-body">
-                <div class="tail-toolbar" aria-hidden="true">
-                  <button type="button" id="home-live-return" class="tail-return" hidden>Volver al final</button>
+          <div class="home-grid">
+            <article class="panel live-panel" id="home-live-panel" aria-labelledby="home-live-heading">
+              <header class="panel__header">
+                <div>
+                  <h2 class="panel__title" id="home-live-heading">Transcripción en vivo</h2>
+                  <p class="panel__subtitle">
+                    Tail siempre al final con seguimiento automático, controles rápidos y pantalla completa.
+                  </p>
                 </div>
-                <div class="home-live-output-wrapper">
-                  <div
-                    id="home-live-output"
-                    class="live-output live-output--expanded"
-                    data-live-output
-                    aria-live="polite"
-                    data-auto-scroll-threshold="64"
-                  >
-                    Selecciona una transcripción o inicia una nueva grabación para verla aquí.
-                  </div>
+                <div class="panel__actions">
+                  <button class="btn btn--ghost" type="button" id="home-live-font-increase" aria-label="Aumentar texto">A+</button>
+                  <button class="btn btn--ghost" type="button" id="home-live-font-decrease" aria-label="Reducir texto">A−</button>
+                  <button class="btn btn--ghost" type="button" id="home-live-fullscreen" data-fullscreen-target="home-live-panel">
+                    Pantalla completa
+                  </button>
                 </div>
+              </header>
+              <div class="live-panel__body">
+                <div class="live-tail" id="home-live-tail" data-tail>
+                  <pre class="live-tail__text" id="home-live-text">Inicia una sesión para ver la transcripción en directo.</pre>
+                </div>
+                <button class="btn btn--ghost live-return" id="home-live-return" type="button" hidden>Volver al final</button>
               </div>
-              <footer class="home-live-footer">
-                <div class="home-live-status">
-                  <span id="home-live-status" aria-live="polite">Listo para empezar una sesión.</span>
-                  <label class="toggle follow-toggle" for="home-live-follow">
+              <footer class="live-panel__footer">
+                <div class="live-panel__status" id="home-live-status">Listo para grabar.</div>
+                <div class="live-panel__controls">
+                  <label class="toggle" for="home-live-follow">
                     <input id="home-live-follow" type="checkbox" checked />
                     <span>Seguir al final</span>
                   </label>
-                </div>
-                <div class="home-live-actions">
-                  <button type="button" class="secondary" data-live-control="start">
-                    <span class="icon">▶️</span>
-                    <span>Iniciar</span>
-                  </button>
-                  <button type="button" class="ghost" data-live-control="pause">
-                    <span class="icon">⏸</span>
-                    <span>Pausar</span>
-                  </button>
-                  <button type="button" class="primary" data-live-control="finish">
-                    <span class="icon">💾</span>
-                    <span>Finalizar y guardar</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="ghost"
-                    id="home-live-fullscreen"
-                    data-fullscreen-target="home-live-card"
-                    data-fullscreen-label="Pantalla completa"
-                    data-exit-fullscreen-label="Salir pantalla completa"
-                  >
-                    <span class="icon">🖥️</span>
-                    <span class="button-label">Pantalla completa</span>
-                  </button>
+                  <button class="btn btn--secondary" data-live-control="start" type="button">Iniciar</button>
+                  <button class="btn btn--ghost" data-live-control="pause" type="button" disabled>Pausar</button>
+                  <button class="btn btn--ghost" data-live-control="resume" type="button" hidden>Reanudar</button>
+                  <button class="btn btn--primary" data-live-control="finish" type="button" disabled>Finalizar &amp; guardar</button>
                 </div>
               </footer>
-            </section>
+            </article>
 
-            <div class="home-layout__sidebar" aria-label="Panel secundario">
-              <section class="card upload-card" aria-labelledby="upload-heading">
-                <div class="card-header">
-                  <h2 id="upload-heading">Transcripción rápida</h2>
-                  <p class="section-lead">
-                    Arrastra audio o video, selecciona destino y obtén el texto listo para copiar o descargar.
-                  </p>
-                </div>
-                <form id="upload-form" class="upload-form">
-                  <div class="file-picker">
-                    <input
-                      id="audio-file"
-                      type="file"
-                      accept="audio/*,video/*"
-                      multiple
-                      hidden
-                    />
-                    <label for="audio-file" class="file-trigger" role="button" tabindex="0">
-                      <span class="file-trigger__pulse"></span>
-                      <span class="file-trigger__pulse"></span>
-                      <span class="icon">📁</span>
-                      <span class="text">Elegir archivos</span>
-                    </label>
-                    <p class="hint">Formatos compatibles: mp3, wav, m4a, mp4, webm y más.</p>
-                  </div>
-                  <div id="file-preview" class="file-preview" hidden></div>
-                  <div id="file-error" class="form-error" hidden></div>
-
-                  <div class="field">
-                    <label class="form-label" for="destination-folder">Carpeta destino</label>
-                    <input
-                      id="destination-folder"
-                      type="text"
-                      name="destination_folder"
-                      placeholder="Ej: clase-historia"
-                      list="destination-folder-options"
-                      required
-                    />
-                    <datalist id="destination-folder-options"></datalist>
-                  </div>
-
-                  <details class="advanced-options">
-                    <summary>Opciones avanzadas</summary>
-                    <div class="form-grid">
-                      <div class="field">
-                        <label class="form-label" for="language">Idioma preferido</label>
-                        <select id="language" name="language">
-                          <option value="">Detección automática</option>
-                          <option value="es" selected>Español</option>
-                          <option value="en">Inglés</option>
-                          <option value="fr">Francés</option>
-                        </select>
-                      </div>
-
-                      <div class="field">
-                        <label class="form-label" for="model-size">Modelo WhisperX</label>
-                        <select id="model-size" name="model_size" data-default="large-v3">
-                          <option value="large-v3" selected>large-v3 (máxima precisión)</option>
-                          <option value="large-v2">large-v2 (estable)</option>
-                          <option value="medium">medium (equilibrado)</option>
-                          <option value="small">small (más veloz)</option>
-                        </select>
-                      </div>
-
-                      <div class="field">
-                        <label class="form-label" for="device-preference">Dispositivo preferido</label>
-                        <select id="device-preference" name="device_preference" data-default="gpu">
-                          <option value="gpu" selected>GPU / CUDA (recomendado)</option>
-                          <option value="cpu">CPU</option>
-                        </select>
-                      </div>
-                    </div>
-                  </details>
-
-                  <div class="live-inline-hint" id="destination-saved-hint" hidden>
-                    <span class="icon">💾</span>
-                    <span>Guardando última carpeta usada…</span>
-                  </div>
-
-                  <button type="submit" class="primary upload-button">
-                    <span class="glow"></span>
-                    <span class="label">Subir y transcribir</span>
-                  </button>
-                </form>
-                <div class="upload-feedback">
-                  <div id="upload-progress" class="progress-track" hidden>
-                    <div class="progress-bar"></div>
-                  </div>
-                  <div id="upload-status" class="upload-status" aria-live="polite"></div>
-                </div>
-              </section>
-
-              <section class="card home-library-card" aria-labelledby="home-library-heading">
-                <div class="card-header">
-                  <h2 id="home-library-heading">Biblioteca rápida</h2>
-                  <p class="section-lead">Ubica carpetas activas y abre los últimos procesos en segundos.</p>
-                </div>
-                <div class="home-library-content">
-                  <div class="home-folder-summary" id="home-folder-summary" aria-live="polite"></div>
-                </div>
-              </section>
-
-              <section class="card home-pending-card" aria-labelledby="home-pending-heading">
-                <div class="card-header">
-                  <h2 id="home-pending-heading">Tareas pendientes</h2>
-                  <p class="section-lead">Controla las transcripciones en curso y salta a la biblioteca cuando necesites más detalle.</p>
-                </div>
-                <div class="home-pending-meta">
-                  <span id="home-pending-count" class="badge badge-soft" aria-live="polite">Sin tareas en curso</span>
-                  <button type="button" class="ghost" data-section-jump="library">Abrir cola completa</button>
-                </div>
-                <p id="home-pending-empty" class="home-pending-empty">No tienes transcripciones procesándose ahora mismo.</p>
-                <ul id="home-pending-list" class="home-pending-list" hidden aria-live="polite"></ul>
-              </section>
-
-              <section class="card home-shortcuts" aria-labelledby="home-shortcuts-heading">
-                <div class="card-header">
-                  <h2 id="home-shortcuts-heading">Accesos rápidos</h2>
-                  <p class="section-lead">Navega entre vistas clave con un solo clic.</p>
-                </div>
-                <div class="home-shortcuts__grid">
-                  <button type="button" class="pill" data-section-jump="library">📂 Ver biblioteca completa</button>
-                  <button type="button" class="pill" data-section-jump="live">🎙️ Abrir centro en vivo</button>
-                  <button type="button" class="pill" data-section-jump="benefits">✨ Explorar beneficios</button>
-                </div>
-              </section>
-            </div>
-
-            <section class="card home-recent-card home-layout__full" aria-labelledby="home-recent-heading">
-              <div class="card-header home-recent-header">
+            <aside class="panel upload-panel" aria-labelledby="upload-heading">
+              <header class="panel__header">
                 <div>
-                  <h2 id="home-recent-heading">Recientes</h2>
-                  <p class="section-lead">Últimas transcripciones y su estado actual.</p>
+                  <h2 class="panel__title" id="upload-heading">Transcripción rápida</h2>
+                  <p class="panel__subtitle">Sube audio o video, elige carpeta y comienza de inmediato.</p>
                 </div>
-                <button type="button" class="ghost" data-section-jump="library">Ir a biblioteca</button>
-              </div>
-              <div class="home-recent-table" id="home-recent-list" role="region" aria-label="Transcripciones recientes"></div>
-            </section>
+              </header>
+              <form class="upload-form" id="upload-form">
+                <div class="dropzone" id="upload-dropzone">
+                  <input id="upload-input" type="file" accept="audio/*,video/*" hidden multiple />
+                  <button class="btn btn--outline" id="upload-trigger" type="button">Subir audio</button>
+                  <p class="dropzone__hint">Arrastra archivos o haz clic para elegirlos</p>
+                </div>
+                <div class="field">
+                  <label class="field__label" for="upload-folder">Carpeta destino</label>
+                  <input id="upload-folder" class="field__input" type="text" list="folder-options" required />
+                </div>
+                <div class="field-grid">
+                  <label class="field">
+                    <span class="field__label">Idioma</span>
+                    <select id="upload-language" class="field__input">
+                      <option value="">Automático</option>
+                      <option value="es" selected>Español</option>
+                      <option value="en">Inglés</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span class="field__label">Modelo</span>
+                    <select id="upload-model" class="field__input">
+                      <option value="large-v3" selected>large-v3</option>
+                      <option value="small">small</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="toggle" for="upload-diarization">
+                  <input id="upload-diarization" type="checkbox" checked />
+                  <span>Diarización automática</span>
+                </label>
+                <label class="toggle" for="upload-vad">
+                  <input id="upload-vad" type="checkbox" checked />
+                  <span>Filtrado VAD</span>
+                </label>
+                <button class="btn btn--primary" type="submit">Iniciar</button>
+                <div class="form-feedback" id="upload-feedback" role="status"></div>
+              </form>
+            </aside>
           </div>
+
+          <section class="panel recent-panel" aria-labelledby="recent-heading">
+            <header class="panel__header">
+              <div>
+                <h2 class="panel__title" id="recent-heading">Recientes</h2>
+                <p class="panel__subtitle">Últimas transcripciones en la plataforma.</p>
+              </div>
+              <button class="btn btn--ghost" type="button" data-route-target="library">Ver biblioteca</button>
+            </header>
+            <div class="table-wrapper">
+              <table class="table" aria-describedby="recent-heading">
+                <thead>
+                  <tr>
+                    <th scope="col">Nombre</th>
+                    <th scope="col">Estado</th>
+                    <th scope="col">Duración</th>
+                    <th scope="col">Fecha</th>
+                  </tr>
+                </thead>
+                <tbody id="recent-table-body">
+                  <tr>
+                    <td colspan="4">No hay transcripciones recientes.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
       </section>
 
-      <section class="main-section" data-section="library" hidden>
-        <div class="container library-container">
-          <header class="view-header library-header">
-            <div class="library-header__intro">
+      <section class="view" data-route="library" hidden>
+        <div class="container library-grid">
+          <header class="view-header">
+            <div>
               <nav class="breadcrumbs" aria-label="Rastro de navegación">
-                <ol>
-                  <li><button type="button" data-section-jump="home">Inicio</button></li>
+                <ol id="library-breadcrumbs">
+                  <li><button class="link" type="button" data-route-target="home">Inicio</button></li>
                   <li aria-current="page">Biblioteca</li>
                 </ol>
               </nav>
               <h1 class="view-title">Biblioteca</h1>
-              <p class="section-lead">Gestiona carpetas, filtra por estado y revisa el avance de cada transcripción.</p>
+              <p class="view-subtitle">Explora carpetas, filtra procesos y organiza tus transcripciones.</p>
             </div>
-            <div class="library-header__actions">
-              <button type="button" class="primary" id="folder-create">Crear carpeta</button>
-              <button type="button" class="ghost" id="folder-manage">Gestionar selección</button>
+            <div class="view-header__actions">
+              <button class="btn btn--primary" id="library-create-folder" type="button">Crear carpeta</button>
+              <button class="btn btn--ghost" id="library-rename-folder" type="button">Renombrar</button>
+              <button class="btn btn--ghost" id="library-move-folder" type="button">Mover</button>
+              <button class="btn btn--destructive" id="library-delete-folder" type="button">Eliminar</button>
             </div>
           </header>
 
-          <div class="library-layout">
-            <aside class="library-sidebar" aria-label="Carpetas">
-              <section class="card folder-tree-card" aria-labelledby="folder-tree-heading">
-                <div class="card-header">
-                  <h2 id="folder-tree-heading">Carpetas</h2>
-                  <p class="section-lead">Crea, renombra o mueve elementos directamente desde la barra lateral.</p>
-                </div>
-                <div class="folder-tree-actions">
-                  <button type="button" class="ghost" id="folder-add-root">Nueva carpeta</button>
-                  <button type="button" class="ghost" id="folder-add-child">Nueva subcarpeta</button>
-                </div>
-                <div id="folder-groups" class="folder-groups" aria-live="polite"></div>
-              </section>
+          <div class="library-columns">
+            <aside class="panel" aria-label="Árbol de carpetas">
+              <header class="panel__header">
+                <h2 class="panel__title">Carpetas</h2>
+                <p class="panel__subtitle">Selecciona o crea una nueva carpeta.</p>
+              </header>
+              <div class="folder-tree" id="folder-tree">No hay carpetas disponibles.</div>
             </aside>
 
-            <div class="library-main">
-              <section class="card library-filters" aria-labelledby="library-filters-heading">
-                <div class="card-header">
-                  <h2 id="library-filters-heading">Filtros y organización</h2>
-                  <p class="section-lead">Refina resultados por tipo, estado, idioma o búsqueda libre.</p>
-                </div>
-                <div class="folders-controls" role="group" aria-labelledby="library-filters-heading">
-                  <label class="control" for="folder-category">
-                    <span>Tipo de carpeta</span>
-                    <select id="folder-category">
-                      <option value="all">Todas</option>
-                      <option value="temario">Temario</option>
-                      <option value="tema">Tema</option>
-                      <option value="practicas">Prácticas</option>
-                      <option value="ejercicios">Ejercicios</option>
-                      <option value="teoria">Teoría</option>
-                    </select>
-                  </label>
-                  <label class="control" for="folder-status">
-                    <span>Estado</span>
-                    <select id="folder-status">
+            <div class="library-content">
+              <section class="panel" aria-labelledby="library-filters-heading">
+                <header class="panel__header">
+                  <h2 class="panel__title" id="library-filters-heading">Filtros</h2>
+                </header>
+                <div class="filter-grid">
+                  <label class="field">
+                    <span class="field__label">Estado</span>
+                    <select id="filter-status" class="field__input">
                       <option value="all">Todos</option>
-                      <option value="in-progress">En proceso</option>
-                      <option value="completed">Completadas</option>
-                      <option value="failed">Con errores</option>
-                      <option value="premium">Premium activado</option>
+                      <option value="queued">En cola</option>
+                      <option value="processing">Procesando</option>
+                      <option value="completed">Completa</option>
+                      <option value="error">Error</option>
                     </select>
                   </label>
-                  <label class="control" for="folder-topic">
-                    <span>Número de tema</span>
-                    <select id="folder-topic">
+                  <label class="field">
+                    <span class="field__label">Idioma</span>
+                    <select id="filter-language" class="field__input">
                       <option value="all">Todos</option>
+                      <option value="es">Español</option>
+                      <option value="en">Inglés</option>
                     </select>
                   </label>
-                  <label class="control" for="folder-search">
-                    <span>Buscar carpeta, asignatura o etiqueta</span>
-                    <input id="folder-search" type="search" placeholder="Ej: historia, tema 3, teoría" />
+                  <label class="field">
+                    <span class="field__label">Modelo</span>
+                    <select id="filter-model" class="field__input">
+                      <option value="all">Todos</option>
+                      <option value="large-v3">large-v3</option>
+                      <option value="small">small</option>
+                    </select>
                   </label>
-                  <div class="folders-controls__actions">
-                    <button id="folder-reset" type="button" class="ghost">Limpiar filtros</button>
-                  </div>
+                  <label class="field">
+                    <span class="field__label">Buscar</span>
+                    <input id="filter-search" class="field__input" type="search" placeholder="Nombre o carpeta" />
+                  </label>
                 </div>
               </section>
 
-              <div id="system-alerts" class="system-alerts" hidden aria-live="polite"></div>
-
-              <section class="card library-table-card" aria-labelledby="library-table-heading">
-                <div class="card-header">
-                  <div class="library-table-header">
-                    <div>
-                      <h2 id="library-table-heading">Transcripciones</h2>
-                      <p class="section-lead">Lista detallada con estado, duración y acciones rápidas.</p>
-                    </div>
-                    <div class="library-table-search">
-                      <label for="search" class="visually-hidden">Buscar transcripciones</label>
-                      <input id="search" type="search" placeholder="Buscar por texto, asignatura o estado" />
-                    </div>
+              <section class="panel" aria-labelledby="library-table-heading">
+                <header class="panel__header">
+                  <div>
+                    <h2 class="panel__title" id="library-table-heading">Transcripciones</h2>
+                    <p class="panel__subtitle">Listado maestro-detalle con acciones rápidas.</p>
                   </div>
-                  <div class="library-table-filters">
-                    <label class="checkbox">
-                      <input type="checkbox" id="filter-premium" /> Solo premium
-                    </label>
-                  </div>
+                </header>
+                <div class="table-wrapper">
+                  <table class="table" aria-describedby="library-table-heading">
+                    <thead>
+                      <tr>
+                        <th scope="col">Nombre</th>
+                        <th scope="col">Estado</th>
+                        <th scope="col">Duración</th>
+                        <th scope="col">Fecha</th>
+                        <th scope="col">Carpeta</th>
+                        <th scope="col">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody id="library-table-body">
+                      <tr>
+                        <td colspan="6">No hay transcripciones para mostrar.</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
-                <div id="transcription-list" class="transcription-list" role="region" aria-live="polite"></div>
               </section>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="main-section" data-section="live" hidden>
-        <div class="container">
+      <section class="view" data-route="live" hidden>
+        <div class="container stack-lg">
           <header class="view-header">
-            <h1 class="view-title">Centro en vivo</h1>
-            <p class="section-lead">Monitorea tu sesión de streaming mientras gestionas la configuración y diagnósticos.</p>
-          </header>
-          <div class="live-layout">
-            <section class="card live-stream-card" aria-labelledby="live-stream-heading">
-              <div class="card-header">
-                <h2 id="live-stream-heading">Transcripción en línea</h2>
-                <p class="section-lead">Graba con tu micrófono, conserva el audio y obtén subtítulos mientras hablas.</p>
-              </div>
-
-              <div class="live-stream-wrapper">
-                <div class="live-stream-config">
-                  <div class="live-stream-controls">
-                    <div class="field">
-                      <label class="form-label" for="live-language">Idioma</label>
-                      <select id="live-language" name="live_language">
-                        <option value="">Detección automática</option>
-                        <option value="es" selected>Español</option>
-                        <option value="en">Inglés</option>
-                        <option value="fr">Francés</option>
-                      </select>
-                    </div>
-
-                    <div class="field">
-                      <label class="form-label" for="live-model">Modelo</label>
-                      <select id="live-model" name="live_model" data-default="large-v3">
-                        <option value="large-v3" selected>large-v3</option>
-                        <option value="large-v2">large-v2</option>
-                        <option value="medium">medium</option>
-                        <option value="small">small</option>
-                      </select>
-                    </div>
-
-                    <div class="field">
-                      <label class="form-label" for="live-device">Dispositivo</label>
-                      <select id="live-device" name="live_device" data-default="gpu">
-                        <option value="gpu" selected>GPU / CUDA</option>
-                        <option value="cpu">CPU</option>
-                      </select>
-                    </div>
-
-                    <div class="field">
-                      <label class="form-label" for="live-folder">Carpeta destino</label>
-                      <input
-                        id="live-folder"
-                        type="text"
-                        name="live_folder"
-                        placeholder="Ej: clases-en-vivo"
-                        list="destination-folder-options"
-                      />
-                    </div>
-
-                    <div class="field">
-                      <label class="form-label" for="live-subject">Temario / notas</label>
-                      <input
-                        id="live-subject"
-                        type="text"
-                        name="live_subject"
-                        placeholder="Tema, práctica, teoría…"
-                      />
-                    </div>
-                  </div>
-
-                  <div class="live-stream-actions">
-                    <button type="button" id="live-start" class="primary">
-                      <span class="icon">🎙️</span>
-                      <span>Iniciar transmisión</span>
-                    </button>
-                    <button type="button" id="live-pause" class="ghost" disabled>
-                      <span class="icon">⏸</span>
-                      <span>Pausar</span>
-                    </button>
-                    <button type="button" id="live-stop" class="secondary" disabled>
-                      <span class="icon">💾</span>
-                      <span>Finalizar y guardar</span>
-                    </button>
-                    <button type="button" id="live-reset" class="ghost" disabled>
-                      <span class="icon">🧹</span>
-                      <span>Descartar sesión</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="live-stream-session" id="live-stream-card">
-                  <header class="live-session-header">
-                    <h3 class="live-panel-title">Sesión en curso</h3>
-                    <div class="live-stream-status" id="live-stream-status" role="status" aria-live="polite">
-                      Tu texto aparecerá aquí cuando empieces a hablar.
-                    </div>
-                  </header>
-                  <dl class="live-kpi-grid">
-                    <div>
-                      <dt>Palabras / min</dt>
-                      <dd data-live-kpi="wpm">0</dd>
-                    </div>
-                    <div>
-                      <dt>Latencia</dt>
-                      <dd data-live-kpi="latency">— ms</dd>
-                    </div>
-                    <div>
-                      <dt>Chunks perdidos</dt>
-                      <dd data-live-kpi="dropped">0</dd>
-                    </div>
-                  </dl>
-                  <div class="live-stream-output-area">
-                    <button type="button" id="live-return" class="tail-return" hidden>Volver al final</button>
-                    <div
-                      id="live-stream-output"
-                      class="live-stream-output live-output--expanded"
-                      data-live-output
-                      aria-live="polite"
-                    ></div>
-                  </div>
-                  <div class="live-session-controls">
-                    <div class="live-tail-options">
-                      <label class="toggle follow-toggle" for="live-follow">
-                        <input id="live-follow" type="checkbox" checked />
-                        <span>Seguir al final</span>
-                      </label>
-                      <label class="combo" for="live-tail-size">
-                        <span class="combo-label">Segmentos visibles</span>
-                        <select id="live-tail-size">
-                          <option value="50">50</option>
-                          <option value="200" selected>200</option>
-                          <option value="500">500</option>
-                          <option value="1000">1000</option>
-                        </select>
-                      </label>
-                    </div>
-                    <div class="live-session-buttons">
-                      <button type="button" id="live-font-decrease" class="ghost" aria-label="Reducir tamaño de texto">A-</button>
-                      <button type="button" id="live-font-increase" class="ghost" aria-label="Aumentar tamaño de texto">A+</button>
-                      <button
-                        type="button"
-                        class="secondary"
-                        id="live-fullscreen"
-                        data-fullscreen-target="live-stream-card"
-                        data-fullscreen-label="Pantalla completa"
-                        data-exit-fullscreen-label="Salir pantalla completa"
-                      >
-                        <span class="icon">🖥️</span>
-                        <span class="button-label">Pantalla completa</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section class="card live-preview-card" aria-labelledby="live-preview-heading">
-              <div class="live-preview-header">
-                <h2 id="live-preview-heading" class="live-panel-title">Vista en vivo instantánea</h2>
-                <p class="live-panel-lead">Selecciona una transcripción para seguir el texto conforme llega cada segmento con auto-scroll.</p>
-              </div>
-              <div id="live-output" class="live-output" data-live-output aria-live="polite">
-                Selecciona cualquier transcripción para previsualizarla aquí.
-              </div>
-            </section>
-          </div>
-
-          <section class="card span-2 live-info-card" aria-labelledby="live-info-heading">
-            <div class="card-header">
-              <h2 id="live-info-heading">Guía y diagnósticos</h2>
-              <p class="section-lead">Consejos para mantener tus sesiones en vivo funcionando al máximo.</p>
-            </div>
-            <ul class="live-info-list">
-              <li>Comprueba el micrófono y otorga permisos antes de iniciar la transmisión.</li>
-              <li>Usa <strong>GPU / CUDA</strong> para sesiones largas y alterna a CPU si necesitas compatibilidad universal.</li>
-              <li>Las carpetas se sincronizan automáticamente: selecciona un destino para ordenar el material en segundos.</li>
-            </ul>
-          </section>
-
-          <section class="card span-2 student-card" id="student-web" aria-labelledby="student-heading">
-            <div class="card-header">
-              <h2 id="student-heading">Modo estudiante en web</h2>
-              <p class="section-lead">Observa cómo se ejecuta la edición ligera con anuncios y computación local pensada para campus.</p>
-            </div>
-            <div class="student-controls">
-              <button id="open-student-web" type="button" class="primary-alt">Abrir simulador independiente</button>
-              <label class="toggle" for="student-follow">
-                <input id="student-follow" type="checkbox" checked />
-                <span>Sincronizar con la transcripción activa</span>
-              </label>
-            </div>
-            <div id="student-web-preview" class="student-preview">
-              <div class="student-preview__header">
-                <span>Vista previa incrustada</span>
-                <span class="badge">Plan estudiante</span>
-              </div>
-              <div id="student-preview-body" class="student-preview__body" aria-live="polite">
-                <p class="placeholder">Se vinculará automáticamente a la transcripción que esté en proceso.</p>
-              </div>
-            </div>
-          </section>
-        </div>
-      </section>
-
-      <section class="main-section" data-section="job-detail" hidden>
-        <div class="container job-detail-container">
-          <header class="view-header job-header">
-            <div class="job-header__intro">
-              <nav class="breadcrumbs" aria-label="Rastro de navegación">
-                <ol id="job-breadcrumbs">
-                  <li><button type="button" data-section-jump="home">Inicio</button></li>
-                  <li><button type="button" data-section-jump="library">Biblioteca</button></li>
-                  <li aria-current="page">Detalle del proceso</li>
-                </ol>
-              </nav>
-              <h1 id="job-title" class="view-title">Transcripción seleccionada</h1>
-              <p id="job-subtitle" class="section-lead">Consulta texto consolidado, descárgalo o muévelo de carpeta.</p>
-            </div>
-            <div class="job-header__actions">
-              <button type="button" class="ghost" id="job-move">Mover de carpeta</button>
-              <button type="button" class="primary" id="job-copy">Copiar texto</button>
-              <a class="secondary" id="job-download" href="#" download>Descargar .txt</a>
+            <div>
+              <h1 class="view-title">Centro en vivo</h1>
+              <p class="view-subtitle">Configura idioma, modelo y carpeta destino mientras visualizas el tail en tiempo real.</p>
             </div>
           </header>
 
-          <div class="job-layout">
-            <article class="card job-text-card" aria-labelledby="job-text-heading">
-              <div class="card-header">
-                <h2 id="job-text-heading">Texto completo</h2>
-                <p class="section-lead">El visor sigue el streaming mientras se procesa y se consolida al finalizar.</p>
-              </div>
-              <div class="job-text-toolbar">
-                <button type="button" id="job-return" class="ghost tail-return-inline" hidden>Volver al final</button>
-                <label class="toggle follow-toggle" for="job-follow">
-                  <input id="job-follow" type="checkbox" checked />
-                  <span>Seguir al final automáticamente</span>
-                </label>
-                <label class="combo" for="job-tail-size">
-                  <span class="combo-label">Segmentos visibles</span>
-                  <select id="job-tail-size">
-                    <option value="50">50</option>
-                    <option value="200" selected>200</option>
-                    <option value="500">500</option>
-                    <option value="1000">1000</option>
+          <div class="live-screen">
+            <section class="panel live-config" aria-labelledby="live-config-heading">
+              <header class="panel__header">
+                <h2 class="panel__title" id="live-config-heading">Configuración</h2>
+              </header>
+              <div class="field-grid">
+                <label class="field">
+                  <span class="field__label">Idioma</span>
+                  <select id="live-language" class="field__input">
+                    <option value="">Automático</option>
+                    <option value="es" selected>Español</option>
+                    <option value="en">Inglés</option>
                   </select>
                 </label>
+                <label class="field">
+                  <span class="field__label">Modelo</span>
+                  <select id="live-model" class="field__input">
+                    <option value="large-v3" selected>large-v3</option>
+                    <option value="small">small</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field__label">GPU/CPU</span>
+                  <select id="live-device" class="field__input">
+                    <option value="gpu" selected>GPU</option>
+                    <option value="cpu">CPU</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field__label">Carpeta destino</span>
+                  <input id="live-folder" class="field__input" type="text" list="folder-options" />
+                </label>
               </div>
-              <div id="job-text" class="job-text" aria-live="polite">
-                <p class="placeholder">Selecciona una transcripción reciente para ver su contenido aquí.</p>
-              </div>
-              <div class="job-text-actions">
-                <button type="button" class="ghost" id="job-export-srt">Descargar .srt</button>
-                <button type="button" class="ghost" id="job-export-md">Exportar Markdown</button>
-              </div>
-            </article>
-
-            <aside class="job-meta" aria-label="Información adicional">
-              <section class="card job-meta-card" aria-labelledby="job-meta-heading">
-                <div class="card-header">
-                  <h2 id="job-meta-heading">Metadatos</h2>
-                  <p class="section-lead">Idioma detectado, modelo, duración y enlaces a recursos asociados.</p>
+              <div class="live-kpis">
+                <div>
+                  <span class="live-kpis__label">Palabras/min</span>
+                  <span class="live-kpis__value" data-live-kpi="wpm">0</span>
                 </div>
-                <dl class="job-meta-list" id="job-meta-list">
-                  <div>
-                    <dt>Estado</dt>
-                    <dd id="job-status">—</dd>
-                  </div>
-                  <div>
-                    <dt>Carpeta</dt>
-                    <dd id="job-folder">—</dd>
-                  </div>
-                  <div>
-                    <dt>Duración</dt>
-                    <dd id="job-duration">—</dd>
-                  </div>
-                  <div>
-                    <dt>Idioma</dt>
-                    <dd id="job-language">—</dd>
-                  </div>
-                  <div>
-                    <dt>Modelo</dt>
-                    <dd id="job-model">—</dd>
-                  </div>
-                  <div>
-                    <dt>WER estimada</dt>
-                    <dd id="job-wer">—</dd>
-                  </div>
-                </dl>
-              </section>
-
-              <section class="card job-links" aria-labelledby="job-links-heading">
-                <div class="card-header">
-                  <h2 id="job-links-heading">Recursos</h2>
+                <div>
+                  <span class="live-kpis__label">Latencia</span>
+                  <span class="live-kpis__value" data-live-kpi="latency">0 ms</span>
                 </div>
-                <ul class="job-links-list">
-                  <li><a id="job-audio" href="#" target="_blank" rel="noopener">Audio original</a></li>
-                  <li><a id="job-logs" href="#" target="_blank" rel="noopener">Ver logs</a></li>
-                </ul>
-              </section>
+                <div>
+                  <span class="live-kpis__label">Chunks perdidos</span>
+                  <span class="live-kpis__value" data-live-kpi="dropped">0</span>
+                </div>
+              </div>
+              <div class="live-config__actions">
+                <button class="btn btn--secondary" id="live-start" type="button">Iniciar</button>
+                <button class="btn btn--ghost" id="live-pause" type="button" disabled>Pausar</button>
+                <button class="btn btn--ghost" id="live-resume" type="button" hidden>Reanudar</button>
+                <button class="btn btn--primary" id="live-finish" type="button" disabled>Finalizar &amp; guardar</button>
+              </div>
+            </section>
+
+            <section class="panel live-view" aria-labelledby="live-view-heading">
+              <header class="panel__header">
+                <div>
+                  <h2 class="panel__title" id="live-view-heading">Visor en vivo</h2>
+                  <p class="panel__subtitle">Seguimiento automático con control de segmentos visibles.</p>
+                </div>
+                <div class="panel__actions">
+                  <label class="field field--inline" for="live-tail-size">
+                    <span class="field__label">Segmentos</span>
+                    <select id="live-tail-size" class="field__input field__input--sm">
+                      <option value="50">50</option>
+                      <option value="200" selected>200</option>
+                      <option value="500">500</option>
+                      <option value="1000">1000</option>
+                    </select>
+                  </label>
+                  <button class="btn btn--ghost" type="button" id="live-font-plus" aria-label="Aumentar texto">A+</button>
+                  <button class="btn btn--ghost" type="button" id="live-font-minus" aria-label="Reducir texto">A−</button>
+                  <button class="btn btn--ghost" type="button" id="live-fullscreen" data-fullscreen-target="live-view">
+                    Pantalla completa
+                  </button>
+                </div>
+              </header>
+              <div class="live-view__body">
+                <div class="live-tail" id="live-stream" data-tail>
+                  <pre class="live-tail__text" id="live-stream-text">Conecta el micro para comenzar.</pre>
+                </div>
+                <button class="btn btn--ghost live-return" id="live-return" type="button" hidden>Volver al final</button>
+              </div>
+              <footer class="live-view__footer">
+                <label class="toggle" for="live-follow">
+                  <input id="live-follow" type="checkbox" checked />
+                  <span>Seguir al final</span>
+                </label>
+              </footer>
+            </section>
+          </div>
+
+      <section class="view" data-route="job" hidden>
+        <div class="container stack-lg">
+          <header class="view-header">
+            <div>
+              <nav class="breadcrumbs" aria-label="Rastro de navegación">
+                <ol id="job-breadcrumbs">
+                  <li><button class="link" type="button" data-route-target="home">Inicio</button></li>
+                  <li><button class="link" type="button" data-route-target="library">Biblioteca</button></li>
+                  <li aria-current="page">Detalle</li>
+                </ol>
+              </nav>
+              <h1 class="view-title" id="job-title">Selecciona un proceso</h1>
+              <p class="view-subtitle" id="job-subtitle">Verás aquí el texto consolidado y sus acciones.</p>
+            </div>
+            <div class="view-header__actions">
+              <button class="btn btn--ghost" id="job-move" type="button" disabled>Mover carpeta</button>
+            </div>
+          </header>
+
+          <div class="job-grid">
+            <section class="panel job-text" aria-labelledby="job-text-heading">
+              <header class="panel__header">
+                <div>
+                  <h2 class="panel__title" id="job-text-heading">Texto completo</h2>
+                  <p class="panel__subtitle">Streaming incremental con seguimiento automático.</p>
+                </div>
+                <div class="panel__actions">
+                  <label class="field field--inline" for="job-tail-size">
+                    <span class="field__label">Segmentos</span>
+                    <select id="job-tail-size" class="field__input field__input--sm">
+                      <option value="50">50</option>
+                      <option value="200" selected>200</option>
+                      <option value="500">500</option>
+                      <option value="1000">1000</option>
+                    </select>
+                  </label>
+                </div>
+              </header>
+              <div class="job-text__body">
+                <div class="live-tail job-tail" id="job-tail" data-tail>
+                  <pre class="live-tail__text" id="job-text-content">Elige una transcripción para verla aquí.</pre>
+                </div>
+                <button class="btn btn--ghost live-return" id="job-return" type="button" hidden>Volver al final</button>
+              </div>
+              <footer class="job-text__footer">
+                <label class="toggle" for="job-follow">
+                  <input id="job-follow" type="checkbox" checked />
+                  <span>Seguir al final</span>
+                </label>
+                <div class="job-actions">
+                  <button class="btn btn--secondary" id="job-copy" type="button" disabled>Copiar texto</button>
+                  <button class="btn btn--ghost" id="job-download-txt" type="button" disabled>Descargar .txt</button>
+                  <button class="btn btn--ghost" id="job-download-srt" type="button" disabled>Descargar .srt</button>
+                  <button class="btn btn--ghost" id="job-export-md" type="button" disabled>Exportar Markdown</button>
+                </div>
+              </footer>
+            </section>
+
+            <aside class="panel job-meta" aria-labelledby="job-meta-heading">
+              <header class="panel__header">
+                <h2 class="panel__title" id="job-meta-heading">Metadatos</h2>
+              </header>
+              <dl class="meta-grid" id="job-meta">
+                <div>
+                  <dt>Estado</dt>
+                  <dd id="job-status">—</dd>
+                </div>
+                <div>
+                  <dt>Carpeta</dt>
+                  <dd id="job-folder">—</dd>
+                </div>
+                <div>
+                  <dt>Duración</dt>
+                  <dd id="job-duration">—</dd>
+                </div>
+                <div>
+                  <dt>Idioma</dt>
+                  <dd id="job-language">—</dd>
+                </div>
+                <div>
+                  <dt>Modelo</dt>
+                  <dd id="job-model">—</dd>
+                </div>
+                <div>
+                  <dt>WER estimada</dt>
+                  <dd id="job-wer">—</dd>
+                </div>
+              </dl>
+              <div class="job-links">
+                <a class="link" id="job-audio" href="#" target="_blank" rel="noopener" hidden>Audio original</a>
+                <a class="link" id="job-logs" href="#" target="_blank" rel="noopener" hidden>Ver logs</a>
+              </div>
             </aside>
           </div>
         </div>
       </section>
 
-      <section class="main-section" data-section="benefits" hidden>
-        <div class="container">
-          <div class="view-grid">
-            <section class="card" id="planes">
-              <div class="list-header">
-                <h2>Beneficios premium</h2>
-                <button id="refresh-plans" type="button" class="ghost">Actualizar</button>
-              </div>
-              <p class="section-lead">Desbloquea notas IA, resúmenes estructurados y recordatorios inteligentes en cada transcripción.</p>
-              <div id="plans" class="plans"></div>
-              <div id="checkout-status" class="checkout-status" aria-live="polite"></div>
-            </section>
-
-            <section class="card span-2 about-card" id="about">
-              <div class="card-header">
-                <h2>Sobre mí</h2>
-                <p class="section-lead">Hola, soy FERIA. Construyo herramientas que convierten tus grabaciones en apuntes claros y accionables.</p>
-              </div>
-              <div class="about-grid">
-                <article>
-                  <h3>Visión</h3>
-                  <p>Facilitar que estudiantes y profesionales capturen ideas sin preocuparse por el teclado. La aplicación detecta ponentes, resume y prepara notas premium listas para compartir.</p>
-                </article>
-                <article>
-                  <h3>Funcionalidades destacadas</h3>
-                  <ul>
-                    <li>Diarización por voz con WhisperX optimizado para GPU.</li>
-                    <li>Notas premium generadas automáticamente en segundos.</li>
-                    <li>Panel visual con métricas animadas y vista estilo ChatGPT.</li>
-                  </ul>
-                </article>
-                <article>
-                  <h3>Próximos pasos</h3>
-                  <p>Integrar recordatorios inteligentes, exportación a Notion y compatibilidad con más idiomas. Tus sugerencias son bienvenidas.</p>
-                </article>
-              </div>
-            </section>
-          </div>
+      <section class="view" data-route="benefits" hidden>
+        <div class="container stack-lg">
+          <header class="view-header">
+            <div>
+              <h1 class="view-title">Beneficios</h1>
+              <p class="view-subtitle">Conoce el valor de los planes premium y extras de productividad.</p>
+            </div>
+          </header>
+          <section class="panel" aria-labelledby="benefits-heading">
+            <header class="panel__header">
+              <h2 class="panel__title" id="benefits-heading">Planes y ventajas</h2>
+            </header>
+            <ul class="benefits-list" id="benefits-list">
+              <li>Resúmenes IA listos para compartir.</li>
+              <li>Exportaciones en Markdown, TXT y SRT con un clic.</li>
+              <li>Colaboración con carpetas compartidas y enlaces seguros.</li>
+            </ul>
+          </section>
         </div>
       </section>
     </main>
 
-    <template id="transcription-template">
-      <article class="transcription">
-        <header>
-          <h3 class="transcription-title"></h3>
-          <span class="status"></span>
-        </header>
-        <p class="meta"></p>
-        <p class="excerpt"></p>
-        <div class="progress-track card-progress" hidden>
-          <div class="progress-bar"></div>
-        </div>
-        <div class="premium" hidden>
-          <strong>Notas premium:</strong>
-          <p class="premium-notes"></p>
-        </div>
-        <div class="actions">
-          <a class="download" href="#" target="_blank" rel="noopener">Descargar TXT</a>
-          <button class="view">Ver detalles</button>
-          <details class="more-actions">
-            <summary>Más opciones</summary>
-            <div class="more-actions__content">
-              <button class="delete" data-id="">Eliminar</button>
-              <button class="checkout ghost" data-id="">Activar premium</button>
-            </div>
-          </details>
-        </div>
-        <details class="speakers">
-          <summary>Hablantes detectados</summary>
-          <ul></ul>
-        </details>
-        <details class="debug-events" hidden>
-          <summary>Eventos técnicos</summary>
-          <ul></ul>
-        </details>
-      </article>
-    </template>
-
-    <div id="modal" class="modal" hidden>
-      <div class="modal-content">
-        <button id="modal-close" aria-label="Cerrar">×</button>
-        <pre id="modal-text"></pre>
-        <div class="modal-actions">
-          <button id="copy-transcript" type="button" class="ghost">Copiar al portapapeles</button>
-        </div>
-      </div>
-    </div>
-
-    <script src="app.js" type="module"></script>
-    <footer class="app-footer">
+    <footer class="footer">
       <div class="container">
-        <p>© 2024 FERIA · Creado con cariño para acelerar tus apuntes</p>
+        <p>© 2024 Grabadora Pro · Construido para flujos de transcripción en tiempo real.</p>
       </div>
     </footer>
+
+    <datalist id="folder-options"></datalist>
+
+    <template id="folder-node-template">
+      <details class="folder-node">
+        <summary>
+          <button type="button" class="folder-node__button"></button>
+        </summary>
+        <div class="folder-node__children"></div>
+      </details>
+    </template>
+
+    <script type="module" src="app.js"></script>
   </body>
 </html>
