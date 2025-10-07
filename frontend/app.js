@@ -7,6 +7,48 @@ const LOCAL_KEYS = {
   jobTailSize: 'grabadora:job-tail-size',
   lastRoute: 'grabadora:last-route',
 };
+const THEME_KEY = 'grabadora:theme';
+
+const PREMIUM_PLANS = [
+  {
+    slug: 'student-local',
+    name: 'Estudiante Local',
+    price: '0 €',
+    cadence: '/mes',
+    description: 'Procesa en tu propio equipo con notas y capítulos automáticos.',
+    perks: [
+      'Hasta 60 minutos por sesión en vivo',
+      'Notas rápidas y marcadores en pantalla',
+      'Exportación TXT y Markdown básica',
+    ],
+  },
+  {
+    slug: 'starter-15',
+    name: 'Starter 15',
+    price: '12 €',
+    cadence: '/mes',
+    description: 'Horas en la nube con cola prioritaria y exportaciones enriquecidas.',
+    perks: [
+      '15 horas/mes en servidores gestionados',
+      'Exportación DOCX y PDF',
+      'Soporte por correo en 24 h',
+    ],
+  },
+  {
+    slug: 'pro-60',
+    name: 'Pro 60',
+    price: '29 €',
+    cadence: '/mes',
+    description: 'Pensado para equipos: integraciones, diarización avanzada y enlaces compartidos.',
+    perks: [
+      '60 horas/mes con reprocesado large-v3',
+      'Integraciones con Drive, Notion y webhooks',
+      'Enlaces seguros y control de versiones',
+    ],
+  },
+];
+
+const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
 const SAMPLE_DATA = {
   stats: {
@@ -118,6 +160,7 @@ const SAMPLE_LIVE_SEGMENTS = [
   'Al finalizar, descarga el .txt o exporta a Markdown para compartirlo con tu equipo.\n',
 ];
 const elements = {
+  themeToggle: document.getElementById('theme-toggle'),
   navButtons: document.querySelectorAll('[data-route-target]'),
   views: document.querySelectorAll('.view'),
   stats: {
@@ -157,6 +200,10 @@ const elements = {
     feedback: document.getElementById('upload-feedback'),
     diarization: document.getElementById('upload-diarization'),
     vad: document.getElementById('upload-vad'),
+  },
+  benefits: {
+    pricing: document.getElementById('pricing-grid'),
+    prompt: document.getElementById('codex-prompt'),
   },
   library: {
     tree: document.getElementById('folder-tree'),
@@ -238,6 +285,131 @@ const preferences = {
     }
   },
 };
+
+function currentTheme() {
+  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+}
+
+function updateThemeToggle(theme = currentTheme()) {
+  if (!elements.themeToggle) return;
+  const isDark = theme === 'dark';
+  elements.themeToggle.setAttribute('aria-pressed', String(isDark));
+  elements.themeToggle.setAttribute('aria-label', isDark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro');
+  const label = elements.themeToggle.querySelector('[data-theme-label]');
+  const icon = elements.themeToggle.querySelector('[data-theme-icon]');
+  if (label) label.textContent = isDark ? 'Modo claro' : 'Modo oscuro';
+  if (icon) icon.textContent = isDark ? '☀️' : '🌙';
+}
+
+function applyTheme(theme, persist = true) {
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.classList.toggle('dark', normalized === 'dark');
+  document.documentElement.dataset.theme = normalized;
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_KEY, normalized);
+    } catch (error) {
+      console.warn('No se pudo guardar el tema', error);
+    }
+  }
+  updateThemeToggle(normalized);
+}
+
+function renderPricingPlans() {
+  if (!elements.benefits.pricing) return;
+  elements.benefits.pricing.innerHTML = '';
+  PREMIUM_PLANS.forEach((plan) => {
+    const card = document.createElement('article');
+    card.className = 'pricing-card';
+    card.setAttribute('role', 'listitem');
+
+    const header = document.createElement('div');
+    header.className = 'pricing-card__header';
+
+    const title = document.createElement('h3');
+    title.className = 'pricing-card__title';
+    title.textContent = plan.name;
+
+    const price = document.createElement('div');
+    price.className = 'pricing-card__price';
+    price.innerHTML = `${plan.price}<span>${plan.cadence}</span>`;
+
+    const description = document.createElement('p');
+    description.className = 'panel__subtitle';
+    description.textContent = plan.description;
+
+    header.appendChild(title);
+    header.appendChild(price);
+    card.appendChild(header);
+    card.appendChild(description);
+
+    const list = document.createElement('ul');
+    list.className = 'pricing-card__list';
+    plan.perks.forEach((perk) => {
+      const item = document.createElement('li');
+      item.textContent = perk;
+      list.appendChild(item);
+    });
+    card.appendChild(list);
+
+    const cta = document.createElement('a');
+    cta.className = 'pricing-card__cta';
+    cta.href = `/checkout?plan=${encodeURIComponent(plan.slug)}`;
+    cta.textContent = 'Elegir plan';
+    card.appendChild(cta);
+
+    elements.benefits.pricing.appendChild(card);
+  });
+}
+
+function injectPrompt() {
+  if (!elements.benefits.prompt) return;
+  elements.benefits.prompt.value = PROMPT_TEXT;
+}
+
+function downloadFileFallback(filename, content, mimeType = 'text/plain;charset=utf-8') {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
+async function triggerDownload(url, fallbackContent, filename, mimeType = 'text/plain;charset=utf-8') {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(response.statusText);
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(objectUrl);
+  } catch (error) {
+    if (fallbackContent != null) {
+      downloadFileFallback(filename, fallbackContent, mimeType);
+    } else {
+      alert('No fue posible descargar el archivo solicitado.');
+    }
+  }
+}
+
+function setupTheme() {
+  const datasetTheme = document.documentElement.dataset.theme || 'light';
+  applyTheme(datasetTheme, false);
+  if (!elements.themeToggle) return;
+  elements.themeToggle.addEventListener('click', () => {
+    const next = currentTheme() === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+  });
+}
 
 function createStore(initialState) {
   let state = initialState;
@@ -846,12 +1018,80 @@ function ensureFolderPath(pathInput) {
   store.setState((prev) => ({ ...prev, folders }));
   return finalId;
 }
+function setupLiveControls() {
+  elements.home.start.addEventListener('click', startLiveSession);
+  elements.live.start.addEventListener('click', startLiveSession);
+  elements.home.pause.addEventListener('click', pauseLiveSession);
+  elements.live.pause.addEventListener('click', pauseLiveSession);
+  elements.home.resume.addEventListener('click', resumeLiveSession);
+  elements.live.resume.addEventListener('click', resumeLiveSession);
+  elements.home.finish.addEventListener('click', finishLiveSession);
+  elements.live.finish.addEventListener('click', finishLiveSession);
+
+  elements.live.tailSize.value = String(store.getState().live.maxSegments);
+  elements.live.tailSize.addEventListener('change', (event) => {
+    const value = Number(event.target.value);
+    preferences.set(LOCAL_KEYS.liveTailSize, value);
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        maxSegments: value,
+        segments: prev.live.segments.slice(-value),
+      },
+    }));
+  });
 
 let pendingFiles = [];
 
-function handleUploadSubmit(event) {
+function isMediaFile(file) {
+  if (!file) return false;
+  const type = (file.type || '').toLowerCase();
+  if (type.startsWith('audio/') || type.startsWith('video/')) return true;
+  const name = (file.name || '').toLowerCase();
+  return ['.aac', '.flac', '.m4a', '.m4v', '.mkv', '.mov', '.mp3', '.mp4', '.ogg', '.wav', '.webm', '.wma'].some((ext) =>
+    name.endsWith(ext),
+  );
+}
+
+async function uploadFileToApi(file, folderPath, options) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/transcriptions');
+    xhr.responseType = 'json';
+
+    xhr.upload.onprogress = (event) => {
+      if (!options?.onProgress || !event.lengthComputable) return;
+      const percent = Math.round((event.loaded / event.total) * 100);
+      options.onProgress(percent);
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response);
+        return;
+      }
+      const detail = xhr.response?.detail || xhr.statusText || 'Error desconocido al subir.';
+      reject(new Error(xhr.status === 413 ? 'El archivo supera el límite permitido.' : detail));
+    };
+
+    xhr.onerror = () => reject(new Error('No se pudo conectar con el servidor.'));
+
+    const form = new FormData();
+    const destination = folderPath.replace(/^[\/\\]+/, '');
+    form.append('upload', file);
+    form.append('destination_folder', destination || 'General');
+    if (options?.language) form.append('language', options.language);
+    if (options?.model) form.append('model_size', options.model);
+    if (options?.devicePreference) form.append('device_preference', options.devicePreference);
+
+    xhr.send(form);
+  });
+}
+
+async function handleUploadSubmit(event) {
   event.preventDefault();
-  const files = pendingFiles.length ? pendingFiles : Array.from(elements.upload.input.files);
+  const files = pendingFiles.length ? pendingFiles : Array.from(elements.upload.input.files).filter(isMediaFile);
   if (!files.length) {
     elements.upload.feedback.textContent = 'Selecciona o arrastra al menos un archivo de audio.';
     return;
@@ -861,27 +1101,64 @@ function handleUploadSubmit(event) {
     elements.upload.feedback.textContent = 'Indica una carpeta destino.';
     return;
   }
+  const normalizedFolderPath = normalizePath(folderPath);
   const folderId = ensureFolderPath(folderPath);
+  if (!folderId) {
+    elements.upload.feedback.textContent = 'No se pudo preparar la carpeta indicada.';
+    return;
+  }
   const jobs = [...store.getState().jobs];
   const now = new Date();
-  files.forEach((file) => {
-    const id = createId('job');
-    jobs.push({
-      id,
-      name: file.name,
-      folderId,
-      status: 'queued',
-      durationSec: Math.round((file.size / 1024 / 1024) * 60) || 300,
-      language: elements.upload.language.value || 'es',
-      model: elements.upload.model.value,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    });
-  });
+  const language = elements.upload.language.value || '';
+  const model = elements.upload.model.value;
+  const devicePreference = model === 'large-v3' ? 'gpu' : 'cpu';
+  let completed = 0;
+  let failed = 0;
+
+  for (const file of files) {
+    try {
+      const response = await uploadFileToApi(file, normalizedFolderPath || folderPath, {
+        language,
+        model,
+        devicePreference,
+        onProgress(percent) {
+          elements.upload.feedback.textContent = `Subiendo ${file.name} (${percent}%)…`;
+        },
+      });
+      const apiId = response?.id != null ? String(response.id) : createId('job-api');
+      jobs.push({
+        id: apiId,
+        name: file.name,
+        folderId,
+        status: 'queued',
+        durationSec: Math.round((file.size / 1024 / 1024) * 60) || 300,
+        language: language || 'auto',
+        model,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+      completed += 1;
+      elements.upload.feedback.textContent = `Archivo ${file.name} en cola (${completed}/${files.length}).`;
+    } catch (error) {
+      console.error('Falló la subida', error);
+      failed += 1;
+      elements.upload.feedback.textContent = `Error con ${file.name}: ${error.message}`;
+    }
+  }
+
   store.setState((prev) => ({ ...prev, jobs, recentJobs: computeRecent(jobs) }));
-  elements.upload.feedback.textContent = 'Archivos encolados. Actualizando biblioteca…';
+  if (completed && failed) {
+    elements.upload.feedback.textContent = `Subida parcial: ${completed} archivo(s) listo(s), ${failed} con error.`;
+  } else if (completed) {
+    elements.upload.feedback.textContent = 'Archivos encolados correctamente.';
+    await loadStats().catch((error) => console.warn('No se pudieron refrescar las métricas', error));
+  } else if (failed) {
+    elements.upload.feedback.textContent = 'No se pudo subir ningún archivo. Revisa el tamaño y el formato.';
+  }
+
   elements.upload.form.reset();
   pendingFiles = [];
+  elements.upload.dropzone.classList.remove('dropzone--active');
 }
 
 function setupDropzone() {
@@ -897,8 +1174,16 @@ function setupDropzone() {
   dropzone.addEventListener('drop', (event) => {
     event.preventDefault();
     dropzone.classList.remove('dropzone--active');
-    pendingFiles = Array.from(event.dataTransfer.files).filter((file) => file.type.startsWith('audio/') || file.type.startsWith('video/'));
-    elements.upload.feedback.textContent = `${pendingFiles.length} archivo(s) listo(s) para subir.`;
+    pendingFiles = Array.from(event.dataTransfer.files).filter(isMediaFile);
+    elements.upload.feedback.textContent = pendingFiles.length
+      ? `${pendingFiles.length} archivo(s) listo(s) para subir.`
+      : 'Los archivos arrastrados no son audio o video compatibles.';
+  });
+  input.addEventListener('change', () => {
+    pendingFiles = Array.from(input.files || []).filter(isMediaFile);
+    elements.upload.feedback.textContent = pendingFiles.length
+      ? `${pendingFiles.length} archivo(s) listo(s) para subir.`
+      : '';
   });
 }
 function normalizePath(path) {
@@ -1153,38 +1438,29 @@ function setupJobActions() {
     }
   });
 
-  const downloadFile = (filename, content) => {
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
-  };
-
-  elements.job.downloadTxt.addEventListener('click', () => {
+  elements.job.downloadTxt.addEventListener('click', async () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
-    downloadFile(`${detail.job.id}.txt`, detail.text);
+    const url = `/api/transcriptions/${detail.job.id}.txt`;
+    await triggerDownload(url, detail.text, `${detail.job.id}.txt`);
   });
 
-  elements.job.downloadSrt.addEventListener('click', () => {
+  elements.job.downloadSrt.addEventListener('click', async () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
     const lines = detail.segments?.length
       ? detail.segments.map((segment, index) => `${index + 1}\n00:00:${String(index).padStart(2, '0')} --> 00:00:${String(index + 1).padStart(2, '0')}\n${segment}\n`)
       : [`1\n00:00:00 --> 00:10:00\n${detail.text}\n`];
-    downloadFile(`${detail.job.id}.srt`, lines.join('\n'));
+    const fallback = lines.join('\n');
+    const url = `/api/transcriptions/${detail.job.id}.srt`;
+    await triggerDownload(url, fallback, `${detail.job.id}.srt`);
   });
 
   elements.job.exportMd.addEventListener('click', () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
     const content = `# ${detail.job.name}\n\n${detail.text}`;
-    downloadFile(`${detail.job.id}.md`, content);
+    downloadFileFallback(`${detail.job.id}.md`, content);
   });
 
   elements.job.move.addEventListener('click', () => {
@@ -1305,6 +1581,9 @@ function setupDiagnostics() {
   });
 }
 async function init() {
+  setupTheme();
+  renderPricingPlans();
+  injectPrompt();
   setupDropzone();
   elements.upload.form.addEventListener('submit', handleUploadSubmit);
   setupFilters();

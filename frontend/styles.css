@@ -17,6 +17,36 @@
   --radius-sm: 8px;
   --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --font: "Inter", "SF Pro Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --live-bg: #0f172a;
+  --live-text: #e3ecff;
+  --job-bg: #111827;
+  --dropzone-bg: rgba(84, 79, 248, 0.06);
+  --dropzone-bg-active: rgba(84, 79, 248, 0.12);
+  --prompt-bg: #eef0ff;
+  --prompt-border: rgba(84, 87, 120, 0.3);
+}
+
+html.dark {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --surface: #11172a;
+  --surface-alt: #17203a;
+  --border: rgba(197, 206, 255, 0.16);
+  --border-strong: rgba(197, 206, 255, 0.28);
+  --text: #e6ebff;
+  --text-soft: rgba(230, 235, 255, 0.72);
+  --primary: #8f88ff;
+  --primary-strong: #7068ff;
+  --primary-soft: rgba(143, 136, 255, 0.22);
+  --danger: #f06272;
+  --shadow: 0 18px 44px -24px rgba(3, 6, 20, 0.75);
+  --live-bg: #151f38;
+  --live-text: #f2f4ff;
+  --job-bg: #1b2540;
+  --dropzone-bg: rgba(143, 136, 255, 0.12);
+  --dropzone-bg-active: rgba(143, 136, 255, 0.24);
+  --prompt-bg: #1a233d;
+  --prompt-border: rgba(197, 206, 255, 0.24);
 }
 
 *,
@@ -35,6 +65,10 @@ body {
   font-family: var(--font);
   background: linear-gradient(180deg, rgba(84, 79, 248, 0.05), transparent 120px), var(--bg);
   color: var(--text);
+}
+
+html.dark body {
+  background: linear-gradient(180deg, rgba(111, 118, 241, 0.12), transparent 140px), var(--bg);
 }
 
 a {
@@ -80,6 +114,10 @@ button {
   background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
+}
+
+html.dark .topbar {
+  background: rgba(17, 23, 42, 0.92);
 }
 
 .topbar__inner {
@@ -134,6 +172,23 @@ button {
 
 .topbar__extra {
   display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.topbar__theme {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.theme-toggle__icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.theme-toggle__label {
+  font-size: 0.95rem;
 }
 
 .main {
@@ -275,8 +330,8 @@ button {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 1.25rem;
-  background: #0f172a;
-  color: #e3ecff;
+  background: var(--live-bg);
+  color: var(--live-text);
   font-family: var(--mono);
   font-size: 1rem;
   line-height: 1.6;
@@ -294,7 +349,7 @@ button {
 
 .job-tail {
   min-height: clamp(320px, 60vh, 760px);
-  background: #111827;
+  background: var(--job-bg);
 }
 
 .live-tail__text {
@@ -446,12 +501,12 @@ button {
   border-radius: var(--radius-md);
   justify-items: center;
   text-align: center;
-  background: rgba(84, 79, 248, 0.06);
+  background: var(--dropzone-bg);
 }
 
 .dropzone--active {
   border-color: var(--primary);
-  background: rgba(84, 79, 248, 0.12);
+  background: var(--dropzone-bg-active);
 }
 
 .dropzone__hint {
@@ -468,6 +523,92 @@ button {
 .form-feedback {
   font-size: 0.9rem;
   min-height: 1.2rem;
+}
+
+.pricing-grid {
+  display: grid;
+  gap: 1.25rem;
+}
+
+@media (min-width: 960px) {
+  .pricing-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.pricing-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-alt);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.pricing-card__header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.pricing-card__title {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.pricing-card__price {
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.pricing-card__price span {
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: var(--text-soft);
+}
+
+.pricing-card__list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.35rem;
+  color: var(--text-soft);
+}
+
+.pricing-card__cta {
+  margin-top: auto;
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 1rem;
+  text-decoration: none;
+  color: inherit;
+  transition: border 0.2s ease, background 0.2s ease;
+}
+
+.pricing-card__cta:hover,
+.pricing-card__cta:focus-visible {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.prompt-text {
+  width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--prompt-border);
+  background: var(--prompt-bg);
+  color: inherit;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  padding: 1rem;
+  resize: vertical;
+}
+
+.prompt-text:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .table-wrapper {
@@ -637,7 +778,9 @@ button {
   display: grid;
   gap: 0.75rem;
   margin: 0;
-  padding-left: 1.2rem;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
 }
 
 .breadcrumbs {
@@ -715,194 +858,4 @@ button {
   .table {
     min-width: 100%;
   }
-}
-
-.job-text-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.job-text {
-  min-height: clamp(320px, 60vh, 720px);
-  max-height: clamp(420px, 70vh, 860px);
-  overflow-y: auto;
-  background: rgba(15, 23, 42, 0.55);
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  border-radius: 16px;
-  padding: 1.1rem;
-  display: grid;
-  gap: 1rem;
-  font-family: "IBM Plex Mono", "Fira Code", monospace;
-  font-size: 1rem;
-  line-height: 1.7;
-}
-
-.job-text .placeholder {
-  margin: 0;
-  color: rgba(148, 163, 184, 0.8);
-}
-
-.job-text-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  justify-content: flex-end;
-}
-
-.job-meta {
-  display: grid;
-  gap: 1.2rem;
-}
-
-.job-meta-list {
-  display: grid;
-  gap: 0.6rem;
-}
-
-.job-meta-list div {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  font-size: 0.88rem;
-  color: rgba(203, 213, 225, 0.85);
-}
-
-.job-meta-list dt {
-  margin: 0;
-  font-weight: 600;
-  color: rgba(226, 232, 255, 0.8);
-}
-
-.job-meta-list dd {
-  margin: 0;
-  text-align: right;
-}
-
-.job-links-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.6rem;
-}
-
-.job-links-list a {
-  color: #c7d2fe;
-  text-decoration: underline;
-  text-decoration-color: rgba(129, 140, 248, 0.6);
-}
-
-.job-links-list a:hover {
-  color: #f9fafb;
-}
-
-@media (min-width: 960px) {
-  .home-header {
-    flex-direction: row;
-    justify-content: space-between;
-    align-items: flex-end;
-  }
-}
-.tail-toolbar {
-  position: absolute;
-  top: 0.75rem;
-  right: 0.75rem;
-  z-index: 3;
-  pointer-events: none;
-}
-
-.tail-toolbar .tail-return {
-  pointer-events: auto;
-}
-
-.tail-return {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-  z-index: 3;
-  border-radius: 999px;
-  padding: 0.45rem 0.95rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  background: rgba(30, 41, 59, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.5);
-  color: rgba(226, 232, 240, 0.95);
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.35);
-}
-
-.tail-return:hover,
-.tail-return:focus-visible {
-  border-color: rgba(165, 180, 252, 0.8);
-  color: #e0e7ff;
-}
-
-.tail-return-inline {
-  position: static;
-  border-radius: 999px;
-  padding: 0.35rem 0.9rem;
-  font-size: 0.82rem;
-  background: rgba(59, 130, 246, 0.15);
-  border-color: rgba(96, 165, 250, 0.4);
-  color: rgba(191, 219, 254, 0.95);
-  margin-right: auto;
-}
-
-.tail-return-inline:hover,
-.tail-return-inline:focus-visible {
-  background: rgba(96, 165, 250, 0.25);
-  color: #bfdbfe;
-}
-
-.follow-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-weight: 500;
-}
-.tail-fullscreen-open {
-  overflow: hidden;
-}
-
-.home-live-panel.is-fullscreen,
-.live-stream-session.is-fullscreen {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  background: rgba(15, 23, 42, 0.96);
-  padding: clamp(1.5rem, 2vw + 1.5rem, 3rem);
-  margin: 0;
-  max-width: none;
-  width: 100vw;
-  height: 100vh;
-  border-radius: 0;
-  overflow: hidden;
-  box-shadow: none;
-}
-
-.home-live-panel.is-fullscreen .home-live-body,
-.live-stream-session.is-fullscreen .live-stream-output-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-
-.home-live-panel.is-fullscreen .home-live-output-wrapper,
-.live-stream-session.is-fullscreen .live-stream-output-area {
-  height: 100%;
-}
-
-.home-live-panel.is-fullscreen .live-output--expanded,
-.live-stream-session.is-fullscreen .live-output--expanded {
-  min-height: calc(100vh - 260px);
-  max-height: none;
-}
-
-.home-live-panel.is-fullscreen .home-live-footer,
-.live-stream-session.is-fullscreen .live-session-controls {
-  margin-top: auto;
-  padding-top: 1.5rem;
-  background: linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.85));
 }

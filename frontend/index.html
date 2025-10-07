@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Grabadora Pro</title>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('grabadora:theme');
+          var prefers = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var theme = stored || (prefers ? 'dark' : 'light');
+          if (theme === 'dark') {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+          document.documentElement.dataset.theme = theme;
+        } catch (error) {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -20,6 +37,16 @@
           <button class="nav-btn" data-route-target="benefits">Beneficios</button>
         </nav>
         <div class="topbar__extra">
+          <button
+            class="btn btn--ghost topbar__theme"
+            id="theme-toggle"
+            type="button"
+            aria-pressed="false"
+            aria-label="Cambiar tema"
+          >
+            <span class="theme-toggle__icon" data-theme-icon aria-hidden="true">🌙</span>
+            <span class="theme-toggle__label" data-theme-label>Modo oscuro</span>
+          </button>
           <button class="btn btn--ghost" id="open-diagnostics" type="button">Diagnóstico</button>
         </div>
       </div>
@@ -391,6 +418,8 @@
               </footer>
             </section>
           </div>
+        </div>
+      </section>
 
       <section class="view" data-route="job" hidden>
         <div class="container stack-lg">
@@ -506,6 +535,30 @@
               <li>Exportaciones en Markdown, TXT y SRT con un clic.</li>
               <li>Colaboración con carpetas compartidas y enlaces seguros.</li>
             </ul>
+          </section>
+          <section class="panel" aria-labelledby="pricing-heading">
+            <header class="panel__header">
+              <h2 class="panel__title" id="pricing-heading">Servicios premium disponibles</h2>
+              <p class="panel__subtitle">
+                Recupera los planes Estudiante, Starter y Pro con todas sus ventajas y compártelos con tu equipo.
+              </p>
+            </header>
+            <div class="pricing-grid" id="pricing-grid" role="list"></div>
+          </section>
+          <section class="panel" aria-labelledby="prompt-heading">
+            <header class="panel__header">
+              <h2 class="panel__title" id="prompt-heading">Prompt recomendado para mejoras</h2>
+              <p class="panel__subtitle">
+                Copia este prompt cuando necesites que Codex mantenga la app al día con los requerimientos críticos.
+              </p>
+            </header>
+            <textarea
+              id="codex-prompt"
+              class="prompt-text"
+              rows="12"
+              readonly
+              aria-label="Prompt listo para copiar"
+            ></textarea>
           </section>
         </div>
       </section>

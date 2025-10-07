@@ -147,6 +147,72 @@ def _require_live_session(session_id: str) -> LiveSessionState:
     return state
 
 
+def _get_transcription_or_404(session: Session, transcription_id: int) -> Transcription:
+    transcription = session.get(Transcription, transcription_id)
+    if not transcription:
+        raise HTTPException(status_code=404, detail="Transcripción no encontrada")
+    return transcription
+
+
+def _format_srt_timestamp(seconds: float) -> str:
+    total_ms = max(0, int(round(seconds * 1000)))
+    hours, remainder = divmod(total_ms, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+
+
+def _transcription_to_srt(transcription: Transcription) -> str:
+    entries: List[str] = []
+    segments = transcription.speakers or []
+    if segments:
+        for index, segment in enumerate(segments, start=1):
+            start = float(segment.get("start") or 0.0)
+            end = float(segment.get("end") or (start + 4.0))
+            text = (segment.get("text") or "").strip()
+            if not text:
+                continue
+            entry = "\n".join(
+                [
+                    str(index),
+                    f"{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}",
+                    text,
+                    "",
+                ]
+            )
+            entries.append(entry)
+    else:
+        body = transcription.text or ""
+        paragraphs = [paragraph.strip() for paragraph in body.split("\n") if paragraph.strip()]
+        if not paragraphs:
+            paragraphs = [body.strip() or "Transcripción en proceso"]
+        for index, paragraph in enumerate(paragraphs, start=1):
+            start = float((index - 1) * 5)
+            approx_duration = max(4.0, min(12.0, len(paragraph.split()) / 2.5 + 2))
+            end = start + approx_duration
+            entry = "\n".join(
+                [
+                    str(index),
+                    f"{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}",
+                    paragraph,
+                    "",
+                ]
+            )
+            entries.append(entry)
+    if not entries:
+        entries.append(
+            "\n".join(
+                [
+                    "1",
+                    "00:00:00,000 --> 00:00:05,000",
+                    transcription.text or "Transcripción en progreso",
+                    "",
+                ]
+            )
+        )
+    return "\n".join(entries).strip() + "\n"
+
+
 def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> None:
     try:
         segment = AudioSegment.from_file(chunk_path)
@@ -615,17 +681,13 @@ def list_transcriptions(
 
 @router.get("/{transcription_id}", response_model=TranscriptionDetail)
 def get_transcription(transcription_id: int, session: Session = Depends(_get_session)) -> TranscriptionDetail:
-    transcription = session.get(Transcription, transcription_id)
-    if not transcription:
-        raise HTTPException(status_code=404, detail="Transcripción no encontrada")
+    transcription = _get_transcription_or_404(session, transcription_id)
     return TranscriptionDetail.from_orm(transcription)
 
 
 @router.get("/{transcription_id}/download")
 def download_transcription(transcription_id: int, session: Session = Depends(_get_session)) -> FileResponse:
-    transcription = session.get(Transcription, transcription_id)
-    if not transcription:
-        raise HTTPException(status_code=404, detail="Transcripción no encontrada")
+    transcription = _get_transcription_or_404(session, transcription_id)
     txt_path = (
         Path(transcription.transcript_path)
         if transcription.transcript_path
@@ -638,6 +700,36 @@ def download_transcription(transcription_id: int, session: Session = Depends(_ge
     if not txt_path.exists():
         raise HTTPException(status_code=404, detail="Archivo TXT no disponible aún")
     return FileResponse(txt_path, media_type="text/plain", filename=txt_path.name)
+
+
+@router.get("/{transcription_id}.txt")
+def download_transcription_txt(
+    transcription_id: int,
+    session: Session = Depends(_get_session),
+) -> Response:
+    transcription = _get_transcription_or_404(session, transcription_id)
+    content = transcription.to_txt()
+    filename = f"{transcription.id}.txt"
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{transcription_id}.srt")
+def download_transcription_srt(
+    transcription_id: int,
+    session: Session = Depends(_get_session),
+) -> Response:
+    transcription = _get_transcription_or_404(session, transcription_id)
+    content = _transcription_to_srt(transcription)
+    filename = f"{transcription.id}.srt"
+    return Response(
+        content=content,
+        media_type="application/x-subrip; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.delete("/{transcription_id}", status_code=204, response_class=Response)
