@@ -122,19 +122,25 @@ def prepare_transcriber(
     return transcriber
 
 
+def _is_vad_auth_error(exc: Exception) -> bool:
+    message = (str(exc) or "").lower()
+    if not message:
+        return False
+    if "vad" not in message:
+        return False
+    auth_tokens = ("auth", "autentic", "token")
+    if not any(token in message for token in auth_tokens):
+        return False
+    if "huggingface" in message:
+        return True
+    return "whisperx" in message and "requires" in message
+
+
 def _prepare_model_task(model_size: str, device: str) -> None:
     key = _model_progress_key(model_size, device)
     callback = _progress_callback_factory(key)
-    try:
-        callback(5, f"Comprobando caché de {model_size} ({device}).")
-        prepare_transcriber(model_size, device, progress_callback=callback)
-        _update_model_progress(
-            key,
-            "ready",
-            100,
-            f"Modelo {model_size} listo en {device}.",
-        )
-    except WhisperXVADUnavailableError as exc:
+
+    def _prepare_fallback(exc: Exception) -> None:
         logger.info(
             "WhisperX no disponible para %s en %s; preparando fallback faster-whisper",
             model_size,
@@ -161,7 +167,23 @@ def _prepare_model_task(model_size: str, device: str) -> None:
                 "No se pudo preparar el modelo de respaldo tras desactivar WhisperX.",
                 error=str(fallback_exc),
             )
+
+    try:
+        callback(5, f"Comprobando caché de {model_size} ({device}).")
+        prepare_transcriber(model_size, device, progress_callback=callback)
+        _update_model_progress(
+            key,
+            "ready",
+            100,
+            f"Modelo {model_size} listo en {device}.",
+        )
+    except WhisperXVADUnavailableError as exc:
+        _prepare_fallback(exc)
+        return
     except Exception as exc:  # pragma: no cover - dependerá del runtime
+        if _is_vad_auth_error(exc):
+            _prepare_fallback(exc)
+            return
         logger.exception("No se pudo preparar el modelo %s (%s)", model_size, device)
         _update_model_progress(
             key,
