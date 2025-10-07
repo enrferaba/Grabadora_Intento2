@@ -209,6 +209,25 @@ def test_reject_non_media_upload(test_env):
     assert "audio" in excinfo.value.detail.lower() or "video" in excinfo.value.detail.lower()
 
 
+def test_prepare_model_status_endpoint(test_env):
+    _prepare_database()
+    from app.routers import transcriptions
+    from app.schemas import ModelPreparationRequest
+
+    response = fastapi.Response()
+    payload = ModelPreparationRequest(model_size="tiny", device_preference="cpu")
+    status_payload = transcriptions.prepare_model(payload=payload, response=response)
+    assert response.status_code == 200
+    assert status_payload.model_size == "tiny"
+    assert status_payload.device_preference in {"cpu", "cuda"}
+    assert status_payload.status == "ready"
+    assert status_payload.progress == 100
+
+    snapshot = transcriptions.get_model_status(model_size="tiny", device_preference="cpu")
+    assert snapshot.status == "ready"
+    assert snapshot.progress == 100
+
+
 def test_batch_upload_and_payment_flow(test_env):
     _prepare_database()
     from app.database import get_session
