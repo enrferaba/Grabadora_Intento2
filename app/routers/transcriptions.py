@@ -100,8 +100,9 @@ class LiveSessionState:
     created_at: float = field(default_factory=time.time)
     chunk_count: int = 0
     last_text: str = ""
-    last_duration: float = 0.0
-    last_runtime: float = 0.0
+    last_duration: Optional[float] = None
+    last_runtime: Optional[float] = None
+    segments: List[dict] = field(default_factory=list)
     lock: Lock = field(default_factory=Lock)
 
 
@@ -362,11 +363,9 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
         finally:
             chunk_path.unlink(missing_ok=True)
         transcriber = get_transcriber(state.model_size, state.device)
-        chunk_wav_path = state.directory / f"chunk-{index:05d}-transcribe.wav"
-        segment.export(chunk_wav_path, format="wav")
         try:
             result = transcriber.transcribe(
-                chunk_wav_path,
+                state.audio_path,
                 state.language,
                 beam_size=state.beam_size,
             )
@@ -377,22 +376,36 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
                 status_code=500,
                 detail=f"Error al transcribir el fragmento: {exc}",
             ) from exc
-        finally:
-            chunk_wav_path.unlink(missing_ok=True)
         state.chunk_count = index + 1
-        new_text = (result.text or "").strip()
-        if new_text:
-            if state.last_text:
-                separator = "" if state.last_text.endswith((" ", "\n")) else " "
-                state.last_text = f"{state.last_text}{separator}{new_text}".strip()
+        serialized_segments = serialize_segments(result.segments)
+        previous_segments = state.segments
+        new_segments = serialized_segments[len(previous_segments) :]
+        state.segments = serialized_segments
+        aggregated_text = (result.text or "").strip()
+        if not aggregated_text and serialized_segments:
+            aggregated_text = " ".join(
+                segment.get("text", "").strip()
+                for segment in serialized_segments
+                if segment.get("text")
+            ).strip()
+        previous_text = state.last_text or ""
+        state.last_text = aggregated_text or previous_text
+        appended_text: Optional[str] = None
+        if new_segments:
+            appended_text = " ".join(
+                segment.get("text", "").strip()
+                for segment in new_segments
+                if segment.get("text")
+            ).strip() or None
+        elif state.last_text and state.last_text != previous_text:
+            if previous_text and state.last_text.startswith(previous_text):
+                appended_text = state.last_text[len(previous_text) :].strip() or None
             else:
-                state.last_text = new_text
-        chunk_duration = (
-            result.duration if result.duration is not None else len(segment) / 1000.0
-        )
-        state.last_duration += float(chunk_duration)
-        runtime_seconds = result.runtime_seconds or 0.0
-        state.last_runtime += float(runtime_seconds)
+                appended_text = state.last_text
+        elif not previous_text:
+            appended_text = state.last_text or None
+        state.last_duration = result.duration
+        state.last_runtime = result.runtime_seconds
         state.language = result.language or state.language
     return LiveChunkResponse(
         session_id=session_id,
@@ -404,6 +417,9 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
         device_preference=state.device,
         language=state.language,
         beam_size=state.beam_size,
+        segments=list(state.segments),
+        new_segments=list(new_segments),
+        new_text=appended_text,
     )
 
 

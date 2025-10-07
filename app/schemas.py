@@ -136,6 +136,9 @@ class LiveChunkResponse(BaseModel):
     device_preference: str
     language: Optional[str]
     beam_size: Optional[int] = None
+    segments: List[dict] = Field(default_factory=list)
+    new_segments: List[dict] = Field(default_factory=list)
+    new_text: Optional[str] = None
 
 
 class LiveFinalizeRequest(BaseModel):
