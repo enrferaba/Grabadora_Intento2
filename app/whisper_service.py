@@ -134,6 +134,33 @@ def _prepare_model_task(model_size: str, device: str) -> None:
             100,
             f"Modelo {model_size} listo en {device}.",
         )
+    except WhisperXVADUnavailableError as exc:
+        logger.info(
+            "WhisperX no disponible para %s en %s; preparando fallback faster-whisper",
+            model_size,
+            device,
+        )
+        try:
+            fallback = FasterWhisperTranscriber(model_size, device)
+            fallback.prepare(progress_callback=callback)
+            _update_model_progress(
+                key,
+                "ready",
+                100,
+                f"Modelo {model_size} listo con faster-whisper (sin VAD).",
+            )
+        except Exception as fallback_exc:  # pragma: no cover - depende del runtime
+            logger.exception(
+                "No se pudo preparar el fallback faster-whisper tras fallo de WhisperX: %s",
+                fallback_exc,
+            )
+            _update_model_progress(
+                key,
+                "error",
+                0,
+                "No se pudo preparar el modelo de respaldo tras desactivar WhisperX.",
+                error=str(fallback_exc),
+            )
     except Exception as exc:  # pragma: no cover - dependerá del runtime
         logger.exception("No se pudo preparar el modelo %s (%s)", model_size, device)
         _update_model_progress(
