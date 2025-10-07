@@ -22,6 +22,13 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
 - **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado y comprueban la compatibilidad con las versiones recientes de faster-whisper.
 
+## Arquitectura y optimización de modelos
+
+- **Orquestación de modelos (`app/whisper_service.py`)**: concentra la inicialización de WhisperX, la detección de idioma y el fallback hacia `faster-whisper` o el transcriptor simulado. Aquí puedes ajustar cachés, tipos de cómputo por dispositivo, beam search y opciones avanzadas (`_build_asr_options`).
+- **Selección de modelos en API (`app/routers/transcriptions.py`)**: normaliza aliases y resuelve el dispositivo antes de invocar `get_transcriber`. Si deseas añadir nuevos tamaños o estrategias de balanceo, amplía los diccionarios `SUPPORTED_MODEL_SIZES` y `MODEL_ALIASES`.
+- **Parámetros dinámicos**: la configuración en `app/config.py` se inyecta en el servicio Whisper para fijar hilos, directorios de caché, modo multilingüe o uso forzado de GPU. Puedes sobreescribirla vía variables de entorno sin tocar el código.
+- **Scripts de benchmark (`scripts/benchmark_models.py`)**: útiles para medir los efectos de tus cambios de optimización directamente sobre tus datos históricos.
+
 ## Requisitos
 
 - Python 3.10 o superior.
@@ -61,6 +68,15 @@ python -m scripts.doctor
 ```
 
 El comando revisa las dependencias clave (FastAPI, SQLAlchemy, WhisperX, etc.) y muestra cómo resolver cualquier ausencia.
+
+## Transcripción en vivo desde el navegador
+
+1. **Permisos de micrófono**: el navegador solicitará acceso la primera vez. Usa Chrome, Edge o Firefox actualizados para aprovechar la API `MediaRecorder`.
+2. **Inicio**: desde el panel “En vivo” elige idioma, modelo y dispositivo. Al pulsar “Iniciar” se crea una sesión (`POST /api/transcriptions/live/sessions`) y comienza a enviarse audio en fragmentos `webm/opus`.
+3. **Streaming incremental**: cada chunk se sube a `POST /api/transcriptions/live/sessions/{id}/chunk`. El backend consolida el audio en disco y re-transcribe todo el buffer para ofrecer texto acumulado, segmentos y métricas actualizadas sin perder el historial.
+4. **Pausa y reanudación**: aprovecha los controles del visor para detener la captura sin cerrar la sesión. El TTL de la sesión se renueva con cada actividad, por lo que no expirará mientras sigas hablando.
+5. **Finalización**: al pulsar “Finalizar & guardar” se detiene la grabación, se espera a que se procesen los últimos fragmentos y se invoca `POST /api/transcriptions/live/sessions/{id}/finalize` para crear una transcripción completa con su `.txt`. El historial del visor permanece visible hasta que inicies una nueva sesión.
+6. **Cancelación segura**: si cierras el navegador o hay un error, la interfaz solicita `DELETE /api/transcriptions/live/sessions/{id}` para limpiar memoria y archivos temporales.
 
 ### Copiar y pegar todo el flujo
 
