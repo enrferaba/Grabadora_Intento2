@@ -125,7 +125,26 @@
                 <button class="btn btn--ghost live-return" id="home-live-return" type="button" hidden>Volver al final</button>
               </div>
               <footer class="live-panel__footer">
-                <div class="live-panel__status" id="home-live-status">Listo para grabar.</div>
+                <div class="live-panel__status-area">
+                  <div class="live-panel__status" id="home-live-status">Listo para grabar.</div>
+                  <div class="live-progress" id="home-live-progress" hidden>
+                    <div class="live-progress__meta">
+                      <span id="home-live-progress-label">00:00 procesados</span>
+                      <span id="home-live-progress-rate">Esperando audio…</span>
+                    </div>
+                    <div
+                      class="live-progress__bar"
+                      id="home-live-progress-bar"
+                      role="progressbar"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow="0"
+                      aria-labelledby="home-live-progress-label"
+                    >
+                      <span class="live-progress__fill" id="home-live-progress-fill"></span>
+                    </div>
+                  </div>
+                </div>
                 <div class="live-panel__controls">
                   <label class="toggle" for="home-live-follow">
                     <input id="home-live-follow" type="checkbox" checked />
@@ -442,6 +461,23 @@
                 <button class="btn btn--ghost live-return" id="live-return" type="button" hidden>Volver al final</button>
               </div>
               <footer class="live-view__footer">
+                <div class="live-progress" id="live-progress" hidden>
+                  <div class="live-progress__meta">
+                    <span id="live-progress-label">00:00 procesados</span>
+                    <span id="live-progress-rate">Esperando audio…</span>
+                  </div>
+                  <div
+                    class="live-progress__bar"
+                    id="live-progress-bar"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="0"
+                    aria-labelledby="live-progress-label"
+                  >
+                    <span class="live-progress__fill" id="live-progress-fill"></span>
+                  </div>
+                </div>
                 <label class="toggle" for="live-follow">
                   <input id="live-follow" type="checkbox" checked />
                   <span>Seguir al final</span>
@@ -587,9 +623,9 @@
               <h2 class="panel__title" id="benefits-heading">Planes y ventajas</h2>
             </header>
             <ul class="benefits-list" id="benefits-list">
-              <li>Resúmenes IA listos para compartir.</li>
-              <li>Exportaciones en Markdown, TXT y SRT con un clic.</li>
-              <li>Colaboración con carpetas compartidas y enlaces seguros.</li>
+              <li>Checkout seguro con tarjeta, PayPal y transferencias SEPA con confirmación inmediata.</li>
+              <li>Facturas automáticas mensuales con desglose de consumo, IVA y descarga en PDF.</li>
+              <li>Panel financiero para actualizar métodos de pago, límites de gasto y recibos compartidos.</li>
             </ul>
           </section>
           <section class="panel" aria-labelledby="pricing-heading">
@@ -641,6 +677,29 @@
         <div class="folder-node__children"></div>
       </details>
     </template>
+
+    <div class="model-prep" id="model-prep" hidden>
+      <div class="model-prep__dialog" role="alertdialog" aria-modal="true" aria-labelledby="model-prep-title">
+        <h2 class="model-prep__title" id="model-prep-title">Preparando modelo…</h2>
+        <p class="model-prep__message" id="model-prep-message">Comprobando caché local…</p>
+        <div
+          class="model-prep__bar"
+          id="model-prep-bar"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <span class="model-prep__fill" id="model-prep-fill"></span>
+        </div>
+        <p class="model-prep__percent"><span id="model-prep-percent">0%</span></p>
+        <div class="model-prep__actions">
+          <button class="btn btn--ghost model-prep__cancel" id="model-prep-cancel" type="button">
+            Cancelar descarga
+          </button>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="app.js"></script>
   </body>

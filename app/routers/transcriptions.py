@@ -21,6 +21,7 @@ from fastapi import (
     Query,
     Response,
     UploadFile,
+    status,
 )
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_
@@ -37,6 +38,8 @@ from ..schemas import (
     LiveFinalizeResponse,
     LiveSessionCreateRequest,
     LiveSessionCreateResponse,
+    ModelPreparationRequest,
+    ModelPreparationStatus,
     SearchResponse,
     TranscriptionCreateResponse,
     TranscriptionDetail,
@@ -48,7 +51,12 @@ from ..utils.storage import (
     sanitize_folder_name,
     save_upload_file,
 )
-from ..whisper_service import get_transcriber, serialize_segments
+from ..whisper_service import (
+    get_model_preparation_status,
+    get_transcriber,
+    request_model_preparation,
+    serialize_segments,
+)
 from pydub import AudioSegment
 
 ALLOWED_MEDIA_EXTENSIONS = {
@@ -177,6 +185,21 @@ def _resolve_device_choice(value: Optional[str]) -> str:
     return resolved or settings.whisper_device or "cuda"
 
 
+def _model_status_to_schema(
+    model_size: str,
+    device: str,
+    info,
+) -> ModelPreparationStatus:
+    return ModelPreparationStatus(
+        model_size=model_size,
+        device_preference=device,
+        status=info.status,
+        progress=info.progress,
+        message=info.message,
+        error=info.error,
+    )
+
+
 def _require_live_session(session_id: str) -> LiveSessionState:
     purge_expired_live_sessions()
     state = LIVE_SESSIONS.get(session_id)
@@ -192,12 +215,51 @@ def _get_transcription_or_404(session: Session, transcription_id: int) -> Transc
     return transcription
 
 
+@router.post("/models/prepare", response_model=ModelPreparationStatus, status_code=202)
+def prepare_model(
+    payload: ModelPreparationRequest,
+    response: Response,
+) -> ModelPreparationStatus:
+    resolved_model = _resolve_model_choice(payload.model_size)
+    resolved_device = _resolve_device_choice(payload.device_preference)
+    info = request_model_preparation(resolved_model, resolved_device)
+    if info.status == "ready":
+        response.status_code = status.HTTP_200_OK
+    return _model_status_to_schema(resolved_model, resolved_device, info)
+
+
+@router.get("/models/status", response_model=ModelPreparationStatus)
+def get_model_status(
+    model_size: Optional[str] = Query(default=None),
+    device_preference: Optional[str] = Query(default=None),
+) -> ModelPreparationStatus:
+    resolved_model = _resolve_model_choice(model_size)
+    resolved_device = _resolve_device_choice(device_preference)
+    info = get_model_preparation_status(resolved_model, resolved_device)
+    return _model_status_to_schema(resolved_model, resolved_device, info)
+
+
 def _format_srt_timestamp(seconds: float) -> str:
     total_ms = max(0, int(round(seconds * 1000)))
     hours, remainder = divmod(total_ms, 3_600_000)
     minutes, remainder = divmod(remainder, 60_000)
     secs, millis = divmod(remainder, 1000)
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+
+
+def _guess_audio_format(path: Path) -> Optional[str]:
+    suffix = path.suffix.lower()
+    if suffix in {".webm"}:
+        return "webm"
+    if suffix in {".ogg", ".oga"}:
+        return "ogg"
+    if suffix in {".wav"}:
+        return "wav"
+    if suffix in {".mp3"}:
+        return "mp3"
+    if suffix in {".m4a", ".mp4", ".m4v", ".mov"}:
+        return "mp4"
+    return None
 
 
 def _transcription_to_srt(transcription: Transcription) -> str:
@@ -253,13 +315,14 @@ def _transcription_to_srt(transcription: Transcription) -> str:
 
 def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> AudioSegment:
     try:
-        segment = AudioSegment.from_file(chunk_path)
+        fmt = _guess_audio_format(chunk_path)
+        segment = AudioSegment.from_file(chunk_path, format=fmt) if fmt else AudioSegment.from_file(chunk_path)
     except Exception as exc:  # pragma: no cover - depende del runtime
         raise RuntimeError(f"No se pudo procesar el fragmento de audio: {exc}") from exc
 
     if state.audio_path.exists():
         try:
-            base = AudioSegment.from_file(state.audio_path)
+            base = AudioSegment.from_file(state.audio_path, format="wav")
             combined = base + segment
         except Exception as exc:  # pragma: no cover - depende del runtime
             raise RuntimeError(f"No se pudo unir el audio acumulado: {exc}") from exc

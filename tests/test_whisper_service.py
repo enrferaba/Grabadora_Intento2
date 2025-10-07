@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import time
 from typing import List, Optional
 from urllib.error import HTTPError, URLError
 
@@ -375,3 +376,17 @@ def test_faster_whisper_retries_without_vad(monkeypatch, tmp_path):
     assert result.text == "Hola"
     assert call_history == [True, False]
     assert any("reintentando sin VAD" in message for _, message, *_ in events)
+
+
+def test_request_model_preparation_tracks_progress(monkeypatch):
+    monkeypatch.setattr(whisper_service.settings, "enable_dummy_transcriber", True, raising=False)
+    whisper_service._transcriber_cache.clear()
+    whisper_service._model_progress.clear()
+    whisper_service._model_futures.clear()
+    info = whisper_service.request_model_preparation("tiny", "cpu")
+    deadline = time.time() + 5
+    while info.status != "ready" and time.time() < deadline:
+        time.sleep(0.05)
+        info = whisper_service.get_model_preparation_status("tiny", "cpu")
+    assert info.status == "ready"
+    assert info.progress == 100

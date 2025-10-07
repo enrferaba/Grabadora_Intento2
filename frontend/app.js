@@ -13,38 +13,41 @@ const PREMIUM_PLANS = [
   {
     slug: 'student-local',
     name: 'Estudiante Local',
-    price: '0 €',
+    price: '10 €',
     cadence: '/mes',
-    description: 'Procesa en tu propio equipo con notas y capítulos automáticos.',
+    description: 'Procesa en tu propio ordenador para pagar solo la licencia básica y conservar la privacidad.',
     perks: [
-      'Hasta 60 minutos por sesión en vivo',
-      'Notas rápidas y marcadores en pantalla',
-      'Exportación TXT y Markdown básica',
+      'Ejecución local ilimitada sin coste por minuto en la nube.',
+      'Renovación automática con tarjeta, débito o PayPal (puedes pausar cuando quieras).',
+      'Recordatorios de pago y validación de dispositivo para mantener el descuento educativo.',
     ],
+    paymentNote: 'Pagas 10 € al mes de forma recurrente. El cobro se gestiona desde tu panel con cancelación inmediata y recibos en PDF.',
   },
   {
     slug: 'starter-15',
-    name: 'Starter 15',
-    price: '12 €',
+    name: 'Starter Cloud',
+    price: '25 €',
     cadence: '/mes',
-    description: 'Horas en la nube con cola prioritaria y exportaciones enriquecidas.',
+    description: 'Minutos en la nube optimizados con colas prioritarias, exportaciones enriquecidas y soporte rápido.',
     perks: [
-      '15 horas/mes en servidores gestionados',
-      'Exportación DOCX y PDF',
-      'Soporte por correo en 24 h',
+      '30 horas/mes en servidores GPU gestionados con prioridad en colas.',
+      'Facturación con IVA y recibos automáticos para tarjetas corporativas o PayPal.',
+      'Notas automáticas, exportaciones DOCX/PDF y soporte en menos de 12 horas.',
     ],
+    paymentNote: 'Acepta tarjetas, PayPal y transferencias SEPA. Emitimos factura automática cada mes y puedes cambiar el método de pago al instante.',
   },
   {
     slug: 'pro-60',
-    name: 'Pro 60',
-    price: '29 €',
+    name: 'Pro Teams',
+    price: '59 €',
     cadence: '/mes',
-    description: 'Pensado para equipos: integraciones, diarización avanzada y enlaces compartidos.',
+    description: 'Pensado para equipos y productoras con integraciones, controles avanzados y asistencia dedicada.',
     perks: [
-      '60 horas/mes con reprocesado large-v3',
-      'Integraciones con Drive, Notion y webhooks',
-      'Enlaces seguros y control de versiones',
+      '120 horas/mes con reprocesado large-v3, diarización avanzada y backup redundante.',
+      'Pagos agrupados, órdenes de compra y facturación consolidada por departamento.',
+      'Integraciones con Drive, Notion, webhooks y soporte directo con gestor técnico.',
     ],
+    paymentNote: 'Disponible pago mensual o anual (2 meses de cortesía). Soportamos facturación multiempresa y límites de gasto por miembro.',
   },
 ];
 
@@ -249,6 +252,11 @@ const elements = {
     recentBody: document.getElementById('recent-table-body'),
     quickFolder: document.getElementById('quick-folder'),
     newTranscription: document.getElementById('home-new-transcription'),
+    progress: document.getElementById('home-live-progress'),
+    progressLabel: document.getElementById('home-live-progress-label'),
+    progressRate: document.getElementById('home-live-progress-rate'),
+    progressFill: document.getElementById('home-live-progress-fill'),
+    progressBar: document.getElementById('home-live-progress-bar'),
   },
   upload: {
     form: document.getElementById('upload-form'),
@@ -305,6 +313,11 @@ const elements = {
     kpis: document.querySelectorAll('[data-live-kpi]'),
     beam: document.getElementById('live-beam'),
     beamHint: document.getElementById('live-beam-hint'),
+    progress: document.getElementById('live-progress'),
+    progressLabel: document.getElementById('live-progress-label'),
+    progressRate: document.getElementById('live-progress-rate'),
+    progressFill: document.getElementById('live-progress-fill'),
+    progressBar: document.getElementById('live-progress-bar'),
   },
   job: {
     breadcrumbs: document.getElementById('job-breadcrumbs'),
@@ -338,6 +351,15 @@ const elements = {
   },
   datalist: document.getElementById('folder-options'),
   diagnostics: document.getElementById('open-diagnostics'),
+  modelPrep: {
+    container: document.getElementById('model-prep'),
+    title: document.getElementById('model-prep-title'),
+    message: document.getElementById('model-prep-message'),
+    percent: document.getElementById('model-prep-percent'),
+    bar: document.getElementById('model-prep-bar'),
+    fill: document.getElementById('model-prep-fill'),
+    cancel: document.getElementById('model-prep-cancel'),
+  },
 };
 
 let suppressHashChange = false;
@@ -653,6 +675,7 @@ function setupModelSelectors() {
   const initialLiveState = store.getState().live;
   renderLiveStatus(initialLiveState);
   renderLiveKpis(initialLiveState);
+  renderLiveProgress(initialLiveState);
 }
 
 function currentTheme() {
@@ -721,14 +744,42 @@ function renderPricingPlans() {
     });
     card.appendChild(list);
 
+    if (plan.paymentNote) {
+      const payment = document.createElement('p');
+      payment.className = 'pricing-card__payment';
+      payment.textContent = plan.paymentNote;
+      card.appendChild(payment);
+    }
+
     const cta = document.createElement('a');
     cta.className = 'pricing-card__cta';
     cta.href = `/checkout?plan=${encodeURIComponent(plan.slug)}`;
     cta.textContent = 'Elegir plan';
+    cta.addEventListener('click', (event) => {
+      event.preventDefault();
+      handlePlanSelection(plan);
+    });
     card.appendChild(cta);
 
     elements.benefits.pricing.appendChild(card);
   });
+}
+
+function handlePlanSelection(plan) {
+  const deviceMessage =
+    plan.slug === 'student-local'
+      ? 'El procesamiento se realiza en tu ordenador y el modelo se descargará la primera vez para minimizar costes.'
+      : 'El audio se enviará cifrado a nuestros servidores GPU y podrás seguir el consumo y las facturas en el panel.';
+  const summary = [
+    plan.name,
+    `Precio: ${plan.price}${plan.cadence}`,
+    plan.paymentNote || null,
+    deviceMessage,
+    'Serás redirigido al checkout para completar el pago seguro.',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  alert(summary);
 }
 
 function injectPrompt() {
@@ -946,6 +997,8 @@ const liveSession = {
   finishing: false,
 };
 
+let liveProgressTimer = null;
+
 const LIVE_CHUNK_INTERVAL_MS = 2000;
 const LIVE_CHUNK_MIME_TYPES = [
   'audio/webm;codecs=opus',
@@ -953,10 +1006,177 @@ const LIVE_CHUNK_MIME_TYPES = [
   'audio/webm',
   'audio/ogg',
 ];
+const MODEL_PREP_POLL_INTERVAL_MS = 900;
+const MODEL_PREP_TIMEOUT_MS = 10 * 60 * 1000;
+
+let modelPrepOverlaySession = null;
 
 function pickLiveMimeType() {
   if (!window.MediaRecorder || !window.MediaRecorder.isTypeSupported) return null;
   return LIVE_CHUNK_MIME_TYPES.find((type) => window.MediaRecorder.isTypeSupported(type)) || null;
+}
+
+function formatDeviceLabel(device) {
+  const normalized = (device || '').toLowerCase();
+  if (normalized === 'cuda' || normalized === 'gpu') return 'GPU';
+  return 'CPU';
+}
+
+function normalizeDevicePreference(deviceValue, fallbackDevice = 'gpu') {
+  if (!deviceValue) return fallbackDevice;
+  const normalized = deviceValue.toLowerCase();
+  if (normalized === 'cuda' || normalized === 'gpu') return 'gpu';
+  if (normalized === 'cpu') return 'cpu';
+  return fallbackDevice;
+}
+
+function resolveDevicePreference(modelValue, requestedDevice) {
+  const config = getModelConfig(modelValue);
+  const fallback = config?.preferredDevice || 'gpu';
+  return normalizeDevicePreference(requestedDevice, fallback);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function showModelPrepOverlay(model, device, contextMessage) {
+  const overlay = elements.modelPrep;
+  if (!overlay?.container) return null;
+  if (modelPrepOverlaySession?.cleanup) {
+    modelPrepOverlaySession.cleanup();
+  }
+  overlay.title.textContent = `Preparando ${model} (${formatDeviceLabel(device)})`;
+  overlay.message.textContent = contextMessage || 'Preparando el modelo…';
+  overlay.percent.textContent = '0%';
+  if (overlay.fill) overlay.fill.style.width = '0%';
+  overlay.bar?.setAttribute('aria-valuenow', '0');
+  const session = {
+    cancelled: false,
+    handleCancel: null,
+    cleanup: null,
+  };
+  session.cleanup = () => {
+    if (overlay.cancel && session.handleCancel) {
+      overlay.cancel.removeEventListener('click', session.handleCancel);
+      overlay.cancel.disabled = false;
+      overlay.cancel.textContent = 'Cancelar descarga';
+    }
+    session.handleCancel = null;
+  };
+  if (overlay.cancel) {
+    overlay.cancel.hidden = false;
+    overlay.cancel.disabled = false;
+    overlay.cancel.textContent = 'Cancelar descarga';
+    session.handleCancel = () => {
+      session.cancelled = true;
+      overlay.cancel.disabled = true;
+      overlay.cancel.textContent = 'Cancelando…';
+      overlay.message.textContent = 'Cancelando descarga. Puedes seguir usando la aplicación.';
+    };
+    overlay.cancel.addEventListener('click', session.handleCancel);
+  }
+  overlay.container.hidden = false;
+  modelPrepOverlaySession = session;
+  return session;
+}
+
+function updateModelPrepOverlay(status) {
+  const overlay = elements.modelPrep;
+  if (!overlay?.container) return;
+  if (modelPrepOverlaySession?.cancelled) return;
+  const progress = Number.isFinite(status?.progress) ? Math.max(0, Math.min(100, Math.round(status.progress))) : 0;
+  overlay.percent.textContent = `${progress}%`;
+  if (overlay.fill) overlay.fill.style.width = `${progress}%`;
+  overlay.bar?.setAttribute('aria-valuenow', String(progress));
+  if (status?.message) overlay.message.textContent = status.message;
+}
+
+function hideModelPrepOverlay(session = null) {
+  const overlay = elements.modelPrep;
+  if (!overlay?.container) return;
+  const active = session || modelPrepOverlaySession;
+  if (active?.cleanup) {
+    active.cleanup();
+  }
+  if (overlay.fill) overlay.fill.style.width = '0%';
+  overlay.bar?.setAttribute('aria-valuenow', '0');
+  overlay.percent.textContent = '0%';
+  if (overlay.message) overlay.message.textContent = 'Comprobando caché local…';
+  overlay.container.hidden = true;
+  if (modelPrepOverlaySession === active) {
+    modelPrepOverlaySession = null;
+  }
+}
+
+async function requestModelPreparation(model, device) {
+  const response = await fetch('/api/transcriptions/models/prepare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_size: model, device_preference: device }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || 'No se pudo preparar el modelo solicitado.');
+  }
+  return response.json();
+}
+
+async function fetchModelPreparationStatus(model, device) {
+  const params = new URLSearchParams();
+  if (model) params.set('model_size', model);
+  if (device) params.set('device_preference', device);
+  const response = await fetch(`/api/transcriptions/models/status?${params.toString()}`);
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || 'No se pudo consultar el estado del modelo.');
+  }
+  return response.json();
+}
+
+async function ensureModelReady(modelValue, devicePreference, contextMessage) {
+  const model = modelValue || DEFAULT_MODEL;
+  const normalizedDevice = resolveDevicePreference(model, devicePreference);
+  const context = contextMessage || 'iniciar la transcripción';
+  let overlaySession = null;
+  try {
+    const initial = await requestModelPreparation(model, normalizedDevice);
+    if (initial.status === 'error') {
+      throw new Error(initial.message || 'No se pudo preparar el modelo.');
+    }
+    if (initial.status === 'ready') {
+      hideModelPrepOverlay();
+      return true;
+    }
+    overlaySession = showModelPrepOverlay(model, normalizedDevice, `Preparando el modelo para ${context}.`);
+    updateModelPrepOverlay(initial);
+    let status = initial;
+    const deadline = Date.now() + MODEL_PREP_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (overlaySession?.cancelled) {
+        throw new Error('Descarga cancelada por el usuario.');
+      }
+      await delay(MODEL_PREP_POLL_INTERVAL_MS);
+      if (overlaySession?.cancelled) {
+        throw new Error('Descarga cancelada por el usuario.');
+      }
+      status = await fetchModelPreparationStatus(model, normalizedDevice);
+      updateModelPrepOverlay(status);
+      if (status.status === 'ready') {
+        hideModelPrepOverlay(overlaySession);
+        overlaySession = null;
+        return true;
+      }
+      if (status.status === 'error') {
+        throw new Error(status.message || 'No se pudo preparar el modelo.');
+      }
+    }
+    throw new Error('Tiempo de espera agotado preparando el modelo.');
+  } finally {
+    if (overlaySession) {
+      hideModelPrepOverlay(overlaySession);
+    }
+  }
 }
 
 function resetLiveSessionLocalState() {
@@ -1565,6 +1785,78 @@ function renderLiveStatus(liveState) {
   if (elements.live.finish) elements.live.finish.disabled = isIdle || isFinalizing;
 }
 
+function renderLiveProgress(liveState) {
+  const widgets = [
+    {
+      container: elements.home.progress,
+      label: elements.home.progressLabel,
+      rate: elements.home.progressRate,
+      fill: elements.home.progressFill,
+      bar: elements.home.progressBar,
+    },
+    {
+      container: elements.live.progress,
+      label: elements.live.progressLabel,
+      rate: elements.live.progressRate,
+      fill: elements.live.progressFill,
+      bar: elements.live.progressBar,
+    },
+  ];
+  const status = liveState?.status || 'idle';
+  const processedSeconds = Number.isFinite(liveState?.duration)
+    ? Math.max(0, liveState.duration)
+    : Number.isFinite(liveState?.runtimeSeconds)
+    ? Math.max(0, liveState.runtimeSeconds)
+    : 0;
+  const now = Date.now();
+  let elapsedMs = 0;
+  if (liveState?.startedAt) {
+    elapsedMs = now - liveState.startedAt;
+    if (liveState.pauseStartedAt) {
+      elapsedMs -= now - liveState.pauseStartedAt;
+    }
+    if (liveState.totalPausedMs) {
+      elapsedMs -= liveState.totalPausedMs;
+    }
+  }
+  if (elapsedMs < 0) elapsedMs = 0;
+  const elapsedSeconds = elapsedMs / 1000;
+  const shouldShow = ['recording', 'paused', 'finalizing'].includes(status) || processedSeconds > 0;
+  widgets.forEach((widget) => {
+    if (!widget?.container) return;
+    if (!shouldShow) {
+      widget.container.hidden = true;
+      if (widget.fill) widget.fill.style.width = '0%';
+      widget.bar?.setAttribute('aria-valuenow', '0');
+      if (widget.label) widget.label.textContent = '00:00 procesados';
+      if (widget.rate) widget.rate.textContent = 'Esperando audio…';
+      return;
+    }
+    widget.container.hidden = false;
+    const processed = processedSeconds > 0 ? processedSeconds : elapsedSeconds;
+    if (widget.label) widget.label.textContent = `${formatClock(processed)} procesados`;
+    const ratio = elapsedSeconds > 0 ? Math.min(1, processed / elapsedSeconds) : processed > 0 ? 1 : 0;
+    if (widget.fill) widget.fill.style.width = `${Math.round(ratio * 100)}%`;
+    widget.bar?.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+    let rateText = '';
+    if (status === 'paused') {
+      rateText = 'Grabación en pausa';
+    } else if (status === 'finalizing') {
+      rateText = 'Guardando sesión…';
+    } else if (status === 'completed') {
+      rateText = 'Sesión finalizada';
+    } else if (elapsedSeconds <= 0 && processedSeconds <= 0) {
+      rateText = 'Esperando audio…';
+    } else if (ratio >= 1) {
+      rateText = 'Al día en tiempo real';
+    } else {
+      const lag = Math.max(0, elapsedSeconds - processed);
+      rateText = lag > 1 ? `Retraso ${formatClock(lag)}` : 'Procesando…';
+    }
+    if (widget.rate) widget.rate.textContent = rateText;
+  });
+}
+
 function buildSegmentsFromEvents(events) {
   if (!Array.isArray(events)) return [];
   const collected = new Map();
@@ -1897,6 +2189,17 @@ store.subscribe((state, prev) => {
     state.live.isFinalizing !== prev.live.isFinalizing
   ) {
     renderLiveStatus(state.live);
+  }
+  if (
+    state.live.duration !== prev.live.duration ||
+    state.live.runtimeSeconds !== prev.live.runtimeSeconds ||
+    state.live.startedAt !== prev.live.startedAt ||
+    state.live.pauseStartedAt !== prev.live.pauseStartedAt ||
+    state.live.totalPausedMs !== prev.live.totalPausedMs ||
+    state.live.status !== prev.live.status ||
+    state.live.text !== prev.live.text
+  ) {
+    renderLiveProgress(state.live);
   }
   if (
     state.stream !== prev.stream ||
@@ -2407,13 +2710,22 @@ async function handleUploadSubmit(event) {
   const language = elements.upload.language.value || '';
   const model = elements.upload.model.value;
   const modelConfig = getModelConfig(model);
-  const devicePreference = modelConfig.preferredDevice;
+  const devicePreference = resolveDevicePreference(model, modelConfig.preferredDevice);
   const beamValue = Number(elements.upload.beam?.value || modelConfig.recommendedBeam);
   const totalFiles = files.length;
   let completed = 0;
   let failed = 0;
   elements.upload.feedback.textContent = 'Preparando subida…';
   setUploadProgress(0);
+
+  try {
+    await ensureModelReady(model, devicePreference, 'procesar tus archivos');
+  } catch (error) {
+    elements.upload.feedback.textContent = error?.message || 'No se pudo preparar el modelo.';
+    if (submit) submit.disabled = false;
+    resetUploadProgress();
+    return;
+  }
 
   const updateOverallProgress = (currentCompleted, partial) => {
     if (!totalFiles) return;
@@ -2784,17 +3096,19 @@ async function startLiveSession() {
     return;
   }
   try {
-    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const language = elements.live.language?.value || null;
     const modelValue = elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
     const modelConfig = getModelConfig(modelValue);
     const beamRaw = elements.live.beam?.value || modelConfig.recommendedBeam;
     const beamValue = Number(beamRaw);
     const deviceValue = elements.live.device?.value || null;
+    const resolvedDevicePreference = resolveDevicePreference(modelValue, deviceValue);
+    await ensureModelReady(modelValue, resolvedDevicePreference, 'iniciar la sesión en vivo');
+    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const payload = {
       language: language || undefined,
       model_size: modelValue,
-      device_preference: deviceValue || undefined,
+      device_preference: resolvedDevicePreference || undefined,
       beam_size: Number.isFinite(beamValue) ? beamValue : undefined,
     };
     const response = await fetch('/api/transcriptions/live/sessions', {
@@ -2841,7 +3155,7 @@ async function startLiveSession() {
         language: sessionInfo.language ?? language,
         model: sessionInfo.model_size ?? modelValue,
         beam: sessionInfo.beam_size ?? (Number.isFinite(beamValue) ? beamValue : null),
-        device: sessionInfo.device_preference ?? deviceValue,
+        device: sessionInfo.device_preference ?? resolvedDevicePreference,
         segments: [],
         text: '',
         duration: null,
@@ -3275,6 +3589,17 @@ function setupDiagnostics() {
     alert('Diagnóstico rápido:\n\n- WS en vivo conectado\n- Última sesión estable\n- Modelos cargados correctamente');
   });
 }
+
+function setupLiveProgressTicker() {
+  if (liveProgressTimer) return;
+  liveProgressTimer = window.setInterval(() => {
+    const liveState = store.getState().live;
+    if (!liveState) return;
+    if (['recording', 'paused', 'finalizing'].includes(liveState.status)) {
+      renderLiveProgress(liveState);
+    }
+  }, 1000);
+}
 async function init() {
   console.info('init start');
   setupTheme();
@@ -3295,6 +3620,7 @@ async function init() {
   setupFullscreenButtons();
   setupHomeShortcuts();
   setupDiagnostics();
+  setupLiveProgressTicker();
   renderHomePanel(store.getState());
   updateHomeStatus(store.getState());
   await loadInitialData();
