@@ -11,6 +11,7 @@ from pathlib import Path
 from tempfile import SpooledTemporaryFile
 
 import pytest
+from pydub import AudioSegment
 
 
 def _ensure_forward_ref_default() -> None:
@@ -207,6 +208,53 @@ def test_reject_non_media_upload(test_env):
 
     assert excinfo.value.status_code == 400
     assert "audio" in excinfo.value.detail.lower() or "video" in excinfo.value.detail.lower()
+
+
+def test_live_chunk_merge_normalizes_audio(tmp_path):
+    from app.routers import transcriptions
+
+    state = transcriptions.LiveSessionState(
+        session_id="test-live",
+        model_size="base",
+        device="cpu",
+        language=None,
+        beam_size=None,
+        directory=tmp_path,
+        audio_path=tmp_path / "stream.wav",
+    )
+
+    first_chunk = tmp_path / "chunk-1.wav"
+    AudioSegment.silent(duration=400, frame_rate=44_100).set_channels(1).export(first_chunk, format="wav")
+    transcriptions._merge_live_chunk(state, first_chunk)
+
+    second_chunk = tmp_path / "chunk-2.wav"
+    AudioSegment.silent(duration=600, frame_rate=48_000).set_channels(2).export(second_chunk, format="wav")
+    transcriptions._merge_live_chunk(state, second_chunk)
+
+    combined = AudioSegment.from_file(state.audio_path, format="wav")
+    assert combined.frame_rate == transcriptions.LIVE_AUDIO_SAMPLE_RATE
+    assert combined.channels == transcriptions.LIVE_AUDIO_CHANNELS
+    assert combined.sample_width == transcriptions.LIVE_AUDIO_SAMPLE_WIDTH
+    assert len(combined) >= 900
+
+
+def test_prepare_model_status_endpoint(test_env):
+    _prepare_database()
+    from app.routers import transcriptions
+    from app.schemas import ModelPreparationRequest
+
+    response = fastapi.Response()
+    payload = ModelPreparationRequest(model_size="tiny", device_preference="cpu")
+    status_payload = transcriptions.prepare_model(payload=payload, response=response)
+    assert response.status_code == 200
+    assert status_payload.model_size == "tiny"
+    assert status_payload.device_preference in {"cpu", "cuda"}
+    assert status_payload.status == "ready"
+    assert status_payload.progress == 100
+
+    snapshot = transcriptions.get_model_status(model_size="tiny", device_preference="cpu")
+    assert snapshot.status == "ready"
+    assert snapshot.progress == 100
 
 
 def test_batch_upload_and_payment_flow(test_env):

@@ -125,7 +125,30 @@
                 <button class="btn btn--ghost live-return" id="home-live-return" type="button" hidden>Volver al final</button>
               </div>
               <footer class="live-panel__footer">
-                <div class="live-panel__status" id="home-live-status">Listo para grabar.</div>
+                <div class="live-panel__status-area">
+                  <div class="live-panel__status" id="home-live-status">Listo para grabar.</div>
+                  <div class="live-progress" id="home-live-progress" hidden>
+                    <div class="live-progress__meta">
+                      <span class="live-progress__label" id="home-live-progress-label">00:00 procesados</span>
+                      <span class="live-progress__percent" id="home-live-progress-percent">0%</span>
+                    </div>
+                    <div
+                      class="live-progress__bar"
+                      id="home-live-progress-bar"
+                      role="progressbar"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow="0"
+                      aria-labelledby="home-live-progress-label"
+                    >
+                      <span class="live-progress__fill" id="home-live-progress-fill"></span>
+                    </div>
+                    <div class="live-progress__status">
+                      <span id="home-live-progress-remaining">Restante —</span>
+                      <span id="home-live-progress-rate">Esperando audio…</span>
+                    </div>
+                  </div>
+                </div>
                 <div class="live-panel__controls">
                   <label class="toggle" for="home-live-follow">
                     <input id="home-live-follow" type="checkbox" checked />
@@ -442,6 +465,27 @@
                 <button class="btn btn--ghost live-return" id="live-return" type="button" hidden>Volver al final</button>
               </div>
               <footer class="live-view__footer">
+                <div class="live-progress" id="live-progress" hidden>
+                  <div class="live-progress__meta">
+                    <span class="live-progress__label" id="live-progress-label">00:00 procesados</span>
+                    <span class="live-progress__percent" id="live-progress-percent">0%</span>
+                  </div>
+                  <div
+                    class="live-progress__bar"
+                    id="live-progress-bar"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="0"
+                    aria-labelledby="live-progress-label"
+                  >
+                    <span class="live-progress__fill" id="live-progress-fill"></span>
+                  </div>
+                  <div class="live-progress__status">
+                    <span id="live-progress-remaining">Restante —</span>
+                    <span id="live-progress-rate">Esperando audio…</span>
+                  </div>
+                </div>
                 <label class="toggle" for="live-follow">
                   <input id="live-follow" type="checkbox" checked />
                   <span>Seguir al final</span>
@@ -587,9 +631,18 @@
               <h2 class="panel__title" id="benefits-heading">Planes y ventajas</h2>
             </header>
             <ul class="benefits-list" id="benefits-list">
-              <li>Resúmenes IA listos para compartir.</li>
-              <li>Exportaciones en Markdown, TXT y SRT con un clic.</li>
-              <li>Colaboración con carpetas compartidas y enlaces seguros.</li>
+              <li>
+                <strong>Checkout seguro y adaptable:</strong> cada plan abre un flujo cifrado con 3‑D Secure opcional, opciones de
+                PayPal y transferencias SEPA con verificación en menos de un minuto.
+              </li>
+              <li>
+                <strong>Facturación automática:</strong> emitimos facturas con IVA desglosado, conversión de divisa y recordatorios
+                de renovación para cumplir con auditorías y obligaciones fiscales.
+              </li>
+              <li>
+                <strong>Centro de pagos avanzado:</strong> gestiona límites de gasto por miembro, invita a finanzas como
+                observadores y descarga recibos en PDF o CSV siempre que lo necesites.
+              </li>
             </ul>
           </section>
           <section class="panel" aria-labelledby="pricing-heading">
@@ -641,6 +694,56 @@
         <div class="folder-node__children"></div>
       </details>
     </template>
+
+    <div class="model-prep" id="model-prep" hidden>
+      <div class="model-prep__dialog" role="alertdialog" aria-modal="true" aria-labelledby="model-prep-title">
+        <h2 class="model-prep__title" id="model-prep-title">Preparando modelo…</h2>
+        <p class="model-prep__message" id="model-prep-message">Comprobando caché local…</p>
+        <div
+          class="model-prep__bar"
+          id="model-prep-bar"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <span class="model-prep__fill" id="model-prep-fill"></span>
+        </div>
+        <p class="model-prep__percent"><span id="model-prep-percent">0%</span></p>
+        <div class="model-prep__actions">
+          <button class="btn btn--ghost model-prep__cancel" id="model-prep-cancel" type="button">
+            Cancelar descarga
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="plan-dialog" id="plan-dialog" hidden>
+      <div class="plan-dialog__backdrop" data-plan-dismiss></div>
+      <div class="plan-dialog__panel" role="dialog" aria-modal="true" aria-labelledby="plan-dialog-title" tabindex="-1">
+        <button class="plan-dialog__close" type="button" data-plan-dismiss aria-label="Cerrar resumen de plan">×</button>
+        <header class="plan-dialog__header">
+          <p class="plan-dialog__badge" id="plan-dialog-badge">Plan premium</p>
+          <h2 class="plan-dialog__title" id="plan-dialog-title">Selecciona tu plan</h2>
+          <p class="plan-dialog__subtitle" id="plan-dialog-subtitle"></p>
+        </header>
+        <div class="plan-dialog__price" id="plan-dialog-price">
+          <span class="plan-dialog__amount" id="plan-dialog-amount">—</span>
+          <span class="plan-dialog__cadence" id="plan-dialog-cadence"></span>
+        </div>
+        <div class="plan-dialog__body">
+          <h3 class="plan-dialog__section-title">Qué incluye</h3>
+          <ul class="plan-dialog__features" id="plan-dialog-features"></ul>
+          <h3 class="plan-dialog__section-title">Cómo se realiza el pago</h3>
+          <ol class="plan-dialog__steps" id="plan-dialog-steps"></ol>
+          <p class="plan-dialog__note" id="plan-dialog-payment"></p>
+        </div>
+        <footer class="plan-dialog__footer">
+          <a class="btn btn--primary" id="plan-dialog-checkout" href="#" target="_blank" rel="noopener">Ir al checkout seguro</a>
+          <button class="btn btn--ghost" type="button" data-plan-dismiss>Seguir explorando</button>
+        </footer>
+      </div>
+    </div>
 
     <script type="module" src="app.js"></script>
   </body>
