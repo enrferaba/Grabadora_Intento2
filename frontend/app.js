@@ -571,6 +571,15 @@ function handleRouteKey(event) {
   goToRoute(target.dataset.routeTarget);
 }
 
+function setupAnchorGuards() {
+  document.addEventListener('click', (event) => {
+    const neutral = event.target.closest('a[href="#"]');
+    if (neutral) {
+      event.preventDefault();
+    }
+  });
+}
+
 function getRouteFromHash() {
   const hash = window.location.hash.replace('#', '').trim();
   return ROUTES.includes(hash) ? hash : null;
@@ -586,9 +595,6 @@ function setupRouter() {
     }
     const hashRoute = getRouteFromHash();
     goToRoute(hashRoute ?? 'home', { updateHash: false });
-  });
-  elements.navButtons.forEach((button) => {
-    button.classList.toggle('is-active', button.dataset.routeTarget === route);
   });
   preferences.set(LOCAL_KEYS.lastRoute, route);
 }
@@ -618,8 +624,10 @@ function renderRecent(jobs) {
   body.innerHTML = '';
   if (!jobs.length) {
     const row = document.createElement('tr');
+    row.className = 'table-empty-row';
     const cell = document.createElement('td');
     cell.colSpan = 4;
+    cell.className = 'table-empty';
     cell.textContent = 'No hay transcripciones recientes.';
     row.appendChild(cell);
     body.appendChild(row);
@@ -807,8 +815,10 @@ function renderLibraryTable(state) {
   body.innerHTML = '';
   if (!state.jobs.length) {
     const row = document.createElement('tr');
+    row.className = 'table-empty-row';
     const cell = document.createElement('td');
     cell.colSpan = 6;
+    cell.className = 'table-empty';
     cell.textContent = 'No hay transcripciones para mostrar.';
     row.appendChild(cell);
     body.appendChild(row);
@@ -831,8 +841,10 @@ function renderLibraryTable(state) {
   });
   if (!filtered.length) {
     const row = document.createElement('tr');
+    row.className = 'table-empty-row';
     const cell = document.createElement('td');
     cell.colSpan = 6;
+    cell.className = 'table-empty';
     cell.textContent = 'Sin resultados con los filtros actuales.';
     row.appendChild(cell);
     body.appendChild(row);
@@ -1532,29 +1544,6 @@ function moveJob(jobId, destinationPath) {
   });
   loadJobDetail(jobId);
 }
-function setupLiveControls() {
-  elements.home.start.addEventListener('click', startLiveSession);
-  elements.live.start.addEventListener('click', startLiveSession);
-  elements.home.pause.addEventListener('click', pauseLiveSession);
-  elements.live.pause.addEventListener('click', pauseLiveSession);
-  elements.home.resume.addEventListener('click', resumeLiveSession);
-  elements.live.resume.addEventListener('click', resumeLiveSession);
-  elements.home.finish.addEventListener('click', finishLiveSession);
-  elements.live.finish.addEventListener('click', finishLiveSession);
-
-  elements.live.tailSize.value = String(store.getState().live.maxSegments);
-  elements.live.tailSize.addEventListener('change', (event) => {
-    const value = Number(event.target.value);
-    preferences.set(LOCAL_KEYS.liveTailSize, value);
-    store.setState((prev) => ({
-      ...prev,
-      live: {
-        ...prev.live,
-        maxSegments: value,
-        segments: prev.live.segments.slice(-value),
-      },
-    }));
-  });
 
 function openJob(jobId) {
   goToRoute('job');
@@ -1867,6 +1856,7 @@ function setupDiagnostics() {
 }
 async function init() {
   setupTheme();
+  setupAnchorGuards();
   setupRouter();
   renderPricingPlans();
   injectPrompt();
@@ -1885,5 +1875,13 @@ async function init() {
   await loadInitialData();
   initRouteFromStorage();
 }
+function boot() {
+  console.info('Grabadora Pro frontend listo');
+  init().catch((error) => console.error('Error inicializando la aplicación', error));
+}
 
-init().catch((error) => console.error('Error inicializando la aplicación', error));
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', boot, { once: true });
+} else {
+  boot();
+}

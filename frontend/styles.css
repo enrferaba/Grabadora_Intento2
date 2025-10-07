@@ -132,9 +132,21 @@ html.dark .topbar {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  text-decoration: none;
   font-weight: 600;
   color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.brand:hover,
+.brand:focus-visible {
+  color: var(--primary);
+}
+
+.brand:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
 }
 
 .brand__mark {
@@ -685,9 +697,21 @@ html.dark .topbar {
   text-align: left;
 }
 
+.table-empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--text-soft);
+  font-size: 0.95rem;
+}
+
 .table tbody tr:hover {
   background: rgba(84, 79, 248, 0.05);
   cursor: pointer;
+}
+
+.table-empty-row:hover {
+  background: transparent;
+  cursor: default;
 }
 
 .table th {

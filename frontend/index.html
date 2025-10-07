@@ -26,15 +26,15 @@
   <body>
     <header class="topbar">
       <div class="container topbar__inner">
-        <a class="brand" href="#home" data-route-target="home" aria-label="Volver al inicio">
+        <button class="brand" data-route-target="home" type="button" aria-label="Volver al inicio">
           <span class="brand__mark" aria-hidden="true">🎙️</span>
           <span class="brand__name">Grabadora Pro</span>
-        </a>
+        </button>
         <nav class="topbar__nav" aria-label="Navegación principal">
-          <a class="nav-btn is-active" data-route-target="home" href="#home">Inicio</a>
-          <a class="nav-btn" data-route-target="live" href="#live">En vivo</a>
-          <a class="nav-btn" data-route-target="library" href="#library">Biblioteca</a>
-          <a class="nav-btn" data-route-target="benefits" href="#benefits">Beneficios</a>
+          <button class="nav-btn is-active" data-route-target="home" type="button">Inicio</button>
+          <button class="nav-btn" data-route-target="live" type="button">En vivo</button>
+          <button class="nav-btn" data-route-target="library" type="button">Biblioteca</button>
+          <button class="nav-btn" data-route-target="benefits" type="button">Beneficios</button>
         </nav>
         <div class="topbar__extra">
           <button
@@ -385,6 +385,16 @@
                   <span class="live-kpis__label">Chunks perdidos</span>
                   <span class="live-kpis__value" data-live-kpi="dropped">0</span>
                 </div>
+                <div>
+                  <span class="live-kpis__label">Chunks perdidos</span>
+                  <span class="live-kpis__value" data-live-kpi="dropped">0</span>
+                </div>
+              </div>
+              <div class="live-config__actions">
+                <button class="btn btn--secondary" id="live-start" type="button">Iniciar</button>
+                <button class="btn btn--ghost" id="live-pause" type="button" disabled>Pausar</button>
+                <button class="btn btn--ghost" id="live-resume" type="button" hidden>Reanudar</button>
+                <button class="btn btn--primary" id="live-finish" type="button" disabled>Finalizar &amp; guardar</button>
               </div>
               <div class="live-config__actions">
                 <button class="btn btn--secondary" id="live-start" type="button">Iniciar</button>
