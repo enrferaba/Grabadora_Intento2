@@ -20,6 +20,7 @@ class TranscriptionBase(BaseModel):
     original_filename: str
     language: Optional[str]
     model_size: Optional[str]
+    beam_size: Optional[int]
     device_preference: Optional[str]
     duration: Optional[float]
     runtime_seconds: Optional[float]
@@ -114,6 +115,7 @@ class LiveSessionCreateRequest(BaseModel):
     language: Optional[str] = None
     model_size: Optional[str] = None
     device_preference: Optional[str] = None
+    beam_size: Optional[int] = None
 
 
 class LiveSessionCreateResponse(BaseModel):
@@ -121,6 +123,7 @@ class LiveSessionCreateResponse(BaseModel):
     model_size: str
     device_preference: str
     language: Optional[str] = None
+    beam_size: Optional[int] = None
 
 
 class LiveChunkResponse(BaseModel):
@@ -132,6 +135,7 @@ class LiveChunkResponse(BaseModel):
     model_size: str
     device_preference: str
     language: Optional[str]
+    beam_size: Optional[int] = None
 
 
 class LiveFinalizeRequest(BaseModel):
@@ -141,6 +145,7 @@ class LiveFinalizeRequest(BaseModel):
     model_size: Optional[str] = None
     device_preference: Optional[str] = None
     filename: Optional[str] = None
+    beam_size: Optional[int] = None
 
 
 class LiveFinalizeResponse(BaseModel):
@@ -154,3 +159,4 @@ class LiveFinalizeResponse(BaseModel):
     model_size: Optional[str]
     device_preference: Optional[str]
     language: Optional[str]
+    beam_size: Optional[int] = None

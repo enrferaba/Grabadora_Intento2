@@ -36,6 +36,7 @@ class Transcription(Base):
     stored_path = Column(String(500), nullable=False)
     language = Column(String(32), nullable=True)
     model_size = Column(String(64), nullable=True)
+    beam_size = Column(Integer, nullable=True)
     device_preference = Column(String(32), nullable=True)
     duration = Column(Float, nullable=True)
     runtime_seconds = Column(Float, nullable=True)
@@ -76,6 +77,7 @@ class Transcription(Base):
             f"Duración (s): {self.duration if self.duration is not None else 'N/A'}",
             f"Tiempo de ejecución (s): {self.runtime_seconds if self.runtime_seconds is not None else 'N/A'}",
             f"Modelo: {self.model_size or 'predeterminado'}",
+            f"Beam: {self.beam_size if self.beam_size is not None else 'predeterminado'}",
             f"Dispositivo: {self.device_preference or 'automático'}",
             f"Carpeta destino: {self.output_folder}",
             ""
