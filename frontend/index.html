@@ -131,10 +131,18 @@
                     <input id="home-live-follow" type="checkbox" checked />
                     <span>Seguir al final</span>
                   </label>
-                  <button class="btn btn--secondary" data-live-control="start" type="button">Iniciar</button>
-                  <button class="btn btn--ghost" data-live-control="pause" type="button" disabled>Pausar</button>
-                  <button class="btn btn--ghost" data-live-control="resume" type="button" hidden>Reanudar</button>
-                  <button class="btn btn--primary" data-live-control="finish" type="button" disabled>Finalizar &amp; guardar</button>
+                  <button class="btn btn--secondary" id="home-live-start" data-live-control="start" type="button">
+                    Iniciar
+                  </button>
+                  <button class="btn btn--ghost" id="home-live-pause" data-live-control="pause" type="button" disabled>
+                    Pausar
+                  </button>
+                  <button class="btn btn--ghost" id="home-live-resume" data-live-control="resume" type="button" hidden>
+                    Reanudar
+                  </button>
+                  <button class="btn btn--primary" id="home-live-finish" data-live-control="finish" type="button" disabled>
+                    Finalizar &amp; guardar
+                  </button>
                 </div>
               </footer>
             </article>

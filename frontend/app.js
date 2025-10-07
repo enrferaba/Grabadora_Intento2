@@ -178,10 +178,10 @@ const elements = {
     follow: document.getElementById('home-live-follow'),
     status: document.getElementById('home-live-status'),
     returnBtn: document.getElementById('home-live-return'),
-    start: document.querySelector('[data-live-control="start"]'),
-    pause: document.querySelector('[data-live-control="pause"]'),
-    resume: document.querySelector('[data-live-control="resume"]'),
-    finish: document.querySelector('[data-live-control="finish"]'),
+    start: document.getElementById('home-live-start'),
+    pause: document.getElementById('home-live-pause'),
+    resume: document.getElementById('home-live-resume'),
+    finish: document.getElementById('home-live-finish'),
     fontIncrease: document.getElementById('home-live-font-increase'),
     fontDecrease: document.getElementById('home-live-font-decrease'),
     fullscreen: document.getElementById('home-live-fullscreen'),
@@ -405,6 +405,7 @@ async function triggerDownload(url, fallbackContent, filename, mimeType = 'text/
       alert('No fue posible descargar el archivo solicitado.');
     }
   }
+  updateThemeToggle(normalized);
 }
 
 function setupTheme() {
@@ -596,7 +597,6 @@ function setupRouter() {
     const hashRoute = getRouteFromHash();
     goToRoute(hashRoute ?? 'home', { updateHash: false });
   });
-  preferences.set(LOCAL_KEYS.lastRoute, route);
 }
 
 function initRouteFromStorage() {
@@ -808,6 +808,7 @@ function renderLibraryBreadcrumb(state) {
     item.textContent = folder.name;
     list.appendChild(item);
   });
+  preferences.set(LOCAL_KEYS.lastRoute, route);
 }
 
 function renderLibraryTable(state) {
@@ -879,34 +880,45 @@ function renderLiveSegments(segments) {
 }
 
 function renderLiveStatus(status) {
-  switch (status) {
-    case 'recording':
-      elements.home.status.textContent = 'Grabando en vivo…';
-      break;
-    case 'paused':
-      elements.home.status.textContent = 'Sesión en pausa.';
-      break;
-    case 'completed':
-      elements.home.status.textContent = 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
-      break;
-    default:
-      elements.home.status.textContent = 'Listo para grabar.';
+  if (elements.home.status) {
+    switch (status) {
+      case 'recording':
+        elements.home.status.textContent = 'Grabando en vivo…';
+        break;
+      case 'paused':
+        elements.home.status.textContent = 'Sesión en pausa.';
+        break;
+      case 'completed':
+        elements.home.status.textContent = 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
+        break;
+      default:
+        elements.home.status.textContent = 'Listo para grabar.';
+    }
   }
   const isRecording = status === 'recording';
   const isPaused = status === 'paused';
-  elements.home.start.disabled = isRecording || isPaused;
-  elements.home.pause.disabled = !isRecording;
-  elements.home.resume.hidden = !isPaused;
-  elements.home.resume.disabled = !isPaused;
-  elements.home.pause.hidden = isPaused;
-  elements.home.finish.disabled = status === 'idle';
 
-  elements.live.start.disabled = isRecording || isPaused;
-  elements.live.pause.disabled = !isRecording;
-  elements.live.resume.hidden = !isPaused;
-  elements.live.resume.disabled = !isPaused;
-  elements.live.pause.hidden = isPaused;
-  elements.live.finish.disabled = status === 'idle';
+  if (elements.home.start) elements.home.start.disabled = isRecording || isPaused;
+  if (elements.home.pause) {
+    elements.home.pause.disabled = !isRecording;
+    elements.home.pause.hidden = isPaused;
+  }
+  if (elements.home.resume) {
+    elements.home.resume.hidden = !isPaused;
+    elements.home.resume.disabled = !isPaused;
+  }
+  if (elements.home.finish) elements.home.finish.disabled = status === 'idle';
+
+  if (elements.live.start) elements.live.start.disabled = isRecording || isPaused;
+  if (elements.live.pause) {
+    elements.live.pause.disabled = !isRecording;
+    elements.live.pause.hidden = isPaused;
+  }
+  if (elements.live.resume) {
+    elements.live.resume.hidden = !isPaused;
+    elements.live.resume.disabled = !isPaused;
+  }
+  if (elements.live.finish) elements.live.finish.disabled = status === 'idle';
 }
 
 function renderJobDetail(state) {
@@ -1041,99 +1053,6 @@ async function loadJobs() {
     store.setState((prev) => ({ ...prev, jobs: SAMPLE_DATA.jobs, recentJobs: computeRecent(SAMPLE_DATA.jobs) }));
   }
 }
-function formatStatus(status) {
-  switch (status) {
-    case 'processing':
-      return 'Procesando';
-    case 'completed':
-      return 'Completa';
-    case 'queued':
-      return 'En cola';
-    case 'error':
-      return 'Error';
-    default:
-      return status;
-  }
-}
-
-function formatDuration(seconds = 0) {
-  if (!Number.isFinite(seconds)) return '—';
-  const totalMinutes = Math.floor(seconds / 60);
-  const mins = totalMinutes % 60;
-  const hours = Math.floor(totalMinutes / 60);
-  const secs = Math.floor(seconds % 60);
-  if (hours) {
-    return `${hours}h ${String(mins).padStart(2, '0')}m`;
-  }
-  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-}
-
-function formatDate(value) {
-  if (!value) return '—';
-  const date = new Date(value);
-  return new Intl.DateTimeFormat('es-ES', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
-}
-
-function createId(prefix) {
-  return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function ensureFolderPath(pathInput) {
-  const normalized = pathInput.trim();
-  if (!normalized) return null;
-  const parts = normalized.split('/').map((part) => part.trim()).filter(Boolean);
-  if (!parts.length) return null;
-  const existingMap = new Map(store.getState().folders.map((folder) => [folder.path, folder]));
-  const folders = [...store.getState().folders];
-  let parentId = null;
-  let currentPath = '';
-  let finalId = null;
-  parts.forEach((segment) => {
-    currentPath += `/${segment}`;
-    let folder = existingMap.get(currentPath);
-    if (!folder) {
-      folder = {
-        id: createId('fld'),
-        name: segment,
-        parentId,
-        path: currentPath,
-        createdAt: new Date().toISOString(),
-      };
-      existingMap.set(currentPath, folder);
-      folders.push(folder);
-    }
-    parentId = folder.id;
-    finalId = folder.id;
-  });
-  store.setState((prev) => ({ ...prev, folders }));
-  return finalId;
-}
-function setupLiveControls() {
-  elements.home.start.addEventListener('click', startLiveSession);
-  elements.live.start.addEventListener('click', startLiveSession);
-  elements.home.pause.addEventListener('click', pauseLiveSession);
-  elements.live.pause.addEventListener('click', pauseLiveSession);
-  elements.home.resume.addEventListener('click', resumeLiveSession);
-  elements.live.resume.addEventListener('click', resumeLiveSession);
-  elements.home.finish.addEventListener('click', finishLiveSession);
-  elements.live.finish.addEventListener('click', finishLiveSession);
-
-  elements.live.tailSize.value = String(store.getState().live.maxSegments);
-  elements.live.tailSize.addEventListener('change', (event) => {
-    const value = Number(event.target.value);
-    preferences.set(LOCAL_KEYS.liveTailSize, value);
-    store.setState((prev) => ({
-      ...prev,
-      live: {
-        ...prev.live,
-        maxSegments: value,
-        segments: prev.live.segments.slice(-value),
-      },
-    }));
-  });
 
 async function loadJobDetail(jobId) {
   const current = store.getState().jobs.find((job) => job.id === jobId);
@@ -1746,41 +1665,49 @@ function setupJobActions() {
   });
 }
 function setupLiveControls() {
-  elements.home.start.addEventListener('click', startLiveSession);
-  elements.live.start.addEventListener('click', startLiveSession);
-  elements.home.pause.addEventListener('click', pauseLiveSession);
-  elements.live.pause.addEventListener('click', pauseLiveSession);
-  elements.home.resume.addEventListener('click', resumeLiveSession);
-  elements.live.resume.addEventListener('click', resumeLiveSession);
-  elements.home.finish.addEventListener('click', finishLiveSession);
-  elements.live.finish.addEventListener('click', finishLiveSession);
+  const bind = (element, type, handler) => {
+    if (element) element.addEventListener(type, handler);
+  };
 
-  elements.live.tailSize.value = String(store.getState().live.maxSegments);
-  elements.live.tailSize.addEventListener('change', (event) => {
-    const value = Number(event.target.value);
-    preferences.set(LOCAL_KEYS.liveTailSize, value);
-    store.setState((prev) => ({
-      ...prev,
-      live: {
-        ...prev.live,
-        maxSegments: value,
-        segments: prev.live.segments.slice(-value),
-      },
-    }));
-  });
+  bind(elements.home.start, 'click', startLiveSession);
+  bind(elements.live.start, 'click', startLiveSession);
+  bind(elements.home.pause, 'click', pauseLiveSession);
+  bind(elements.live.pause, 'click', pauseLiveSession);
+  bind(elements.home.resume, 'click', resumeLiveSession);
+  bind(elements.live.resume, 'click', resumeLiveSession);
+  bind(elements.home.finish, 'click', finishLiveSession);
+  bind(elements.live.finish, 'click', finishLiveSession);
 
-  elements.job.tailSize.value = String(store.getState().job.maxSegments);
-  elements.job.tailSize.addEventListener('change', (event) => {
-    const value = Number(event.target.value);
-    preferences.set(LOCAL_KEYS.jobTailSize, value);
-    store.setState((prev) => ({
-      ...prev,
-      job: {
-        ...prev.job,
-        maxSegments: value,
-      },
-    }));
-  });
+  if (elements.live.tailSize) {
+    elements.live.tailSize.value = String(store.getState().live.maxSegments);
+    elements.live.tailSize.addEventListener('change', (event) => {
+      const value = Number(event.target.value);
+      preferences.set(LOCAL_KEYS.liveTailSize, value);
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          maxSegments: value,
+          segments: prev.live.segments.slice(-value),
+        },
+      }));
+    });
+  }
+
+  if (elements.job.tailSize) {
+    elements.job.tailSize.value = String(store.getState().job.maxSegments);
+    elements.job.tailSize.addEventListener('change', (event) => {
+      const value = Number(event.target.value);
+      preferences.set(LOCAL_KEYS.jobTailSize, value);
+      store.setState((prev) => ({
+        ...prev,
+        job: {
+          ...prev.job,
+          maxSegments: value,
+        },
+      }));
+    });
+  }
 }
 function setupFontControls(increaseBtn, decreaseBtn, textElement) {
   if (!textElement) return;
