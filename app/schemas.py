@@ -139,6 +139,7 @@ class LiveChunkResponse(BaseModel):
     segments: List[dict] = Field(default_factory=list)
     new_segments: List[dict] = Field(default_factory=list)
     new_text: Optional[str] = None
+    dropped_chunks: int = 0
 
 
 class LiveFinalizeRequest(BaseModel):

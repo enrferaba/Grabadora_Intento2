@@ -128,6 +128,7 @@ class LiveSessionState:
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     chunk_count: int = 0
+    dropped_chunks: int = 0
     last_text: str = ""
     last_duration: Optional[float] = None
     last_runtime: Optional[float] = None
@@ -318,7 +319,7 @@ def _transcription_to_srt(transcription: Transcription) -> str:
     return "\n".join(entries).strip() + "\n"
 
 
-def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> AudioSegment:
+def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> Optional[AudioSegment]:
     try:
         fmt = _guess_audio_format(chunk_path)
         if fmt:
@@ -326,13 +327,25 @@ def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> AudioSegment
         else:
             segment = AudioSegment.from_file(chunk_path)
     except CouldntDecodeError as exc:
-        raise RuntimeError(
-            "No se pudo decodificar el fragmento de audio recibido para la sesión en vivo."
-        ) from exc
+        logger.warning(
+            "No se pudo decodificar el fragmento de audio para la sesión en vivo %s: %s",
+            state.session_id,
+            exc,
+        )
+        return None
     except Exception as exc:  # pragma: no cover - depende del runtime
-        raise RuntimeError(f"No se pudo procesar el fragmento de audio: {exc}") from exc
+        logger.warning(
+            "Fallo inesperado procesando un fragmento de audio en vivo %s: %s",
+            state.session_id,
+            exc,
+        )
+        return None
 
     segment = _normalize_audio_segment(segment)
+    if len(segment) <= 0 and state.audio_path.exists():
+        # No hay audio nuevo; mantenemos el acumulado existente.
+        return segment
+
     if state.audio_path.exists():
         try:
             base = AudioSegment.from_file(state.audio_path, format="wav")
@@ -343,7 +356,10 @@ def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> AudioSegment
     else:
         combined = segment
 
-    combined.export(state.audio_path, format="wav")
+    try:
+        combined.export(state.audio_path, format="wav")
+    except Exception as exc:  # pragma: no cover - depende del runtime
+        raise RuntimeError(f"No se pudo guardar el audio acumulado: {exc}") from exc
     return segment
 
 
@@ -477,6 +493,25 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         finally:
             chunk_path.unlink(missing_ok=True)
+        if segment is None or len(segment) <= 0:
+            state.chunk_count = index + 1
+            state.dropped_chunks += 1
+            state.last_activity = time.time()
+            return LiveChunkResponse(
+                session_id=session_id,
+                text=state.last_text,
+                duration=state.last_duration,
+                runtime_seconds=state.last_runtime,
+                chunk_count=state.chunk_count,
+                model_size=state.model_size,
+                device_preference=state.device,
+                language=state.language,
+                beam_size=state.beam_size,
+                segments=list(state.segments),
+                new_segments=[],
+                new_text=None,
+                dropped_chunks=state.dropped_chunks,
+            )
         transcriber = get_transcriber(state.model_size, state.device)
         try:
             result = transcriber.transcribe(
@@ -536,6 +571,7 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
         segments=list(state.segments),
         new_segments=list(new_segments),
         new_text=appended_text,
+        dropped_chunks=state.dropped_chunks,
     )
 
 
