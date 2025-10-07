@@ -129,8 +129,8 @@
                   <div class="live-panel__status" id="home-live-status">Listo para grabar.</div>
                   <div class="live-progress" id="home-live-progress" hidden>
                     <div class="live-progress__meta">
-                      <span id="home-live-progress-label">00:00 procesados</span>
-                      <span id="home-live-progress-rate">Esperando audio…</span>
+                      <span class="live-progress__label" id="home-live-progress-label">00:00 procesados</span>
+                      <span class="live-progress__percent" id="home-live-progress-percent">0%</span>
                     </div>
                     <div
                       class="live-progress__bar"
@@ -142,6 +142,10 @@
                       aria-labelledby="home-live-progress-label"
                     >
                       <span class="live-progress__fill" id="home-live-progress-fill"></span>
+                    </div>
+                    <div class="live-progress__status">
+                      <span id="home-live-progress-remaining">Restante —</span>
+                      <span id="home-live-progress-rate">Esperando audio…</span>
                     </div>
                   </div>
                 </div>
@@ -463,8 +467,8 @@
               <footer class="live-view__footer">
                 <div class="live-progress" id="live-progress" hidden>
                   <div class="live-progress__meta">
-                    <span id="live-progress-label">00:00 procesados</span>
-                    <span id="live-progress-rate">Esperando audio…</span>
+                    <span class="live-progress__label" id="live-progress-label">00:00 procesados</span>
+                    <span class="live-progress__percent" id="live-progress-percent">0%</span>
                   </div>
                   <div
                     class="live-progress__bar"
@@ -476,6 +480,10 @@
                     aria-labelledby="live-progress-label"
                   >
                     <span class="live-progress__fill" id="live-progress-fill"></span>
+                  </div>
+                  <div class="live-progress__status">
+                    <span id="live-progress-remaining">Restante —</span>
+                    <span id="live-progress-rate">Esperando audio…</span>
                   </div>
                 </div>
                 <label class="toggle" for="live-follow">
@@ -623,9 +631,18 @@
               <h2 class="panel__title" id="benefits-heading">Planes y ventajas</h2>
             </header>
             <ul class="benefits-list" id="benefits-list">
-              <li>Checkout seguro con tarjeta, PayPal y transferencias SEPA con confirmación inmediata.</li>
-              <li>Facturas automáticas mensuales con desglose de consumo, IVA y descarga en PDF.</li>
-              <li>Panel financiero para actualizar métodos de pago, límites de gasto y recibos compartidos.</li>
+              <li>
+                <strong>Checkout seguro y adaptable:</strong> cada plan abre un flujo cifrado con 3‑D Secure opcional, opciones de
+                PayPal y transferencias SEPA con verificación en menos de un minuto.
+              </li>
+              <li>
+                <strong>Facturación automática:</strong> emitimos facturas con IVA desglosado, conversión de divisa y recordatorios
+                de renovación para cumplir con auditorías y obligaciones fiscales.
+              </li>
+              <li>
+                <strong>Centro de pagos avanzado:</strong> gestiona límites de gasto por miembro, invita a finanzas como
+                observadores y descarga recibos en PDF o CSV siempre que lo necesites.
+              </li>
             </ul>
           </section>
           <section class="panel" aria-labelledby="pricing-heading">
@@ -698,6 +715,33 @@
             Cancelar descarga
           </button>
         </div>
+      </div>
+    </div>
+
+    <div class="plan-dialog" id="plan-dialog" hidden>
+      <div class="plan-dialog__backdrop" data-plan-dismiss></div>
+      <div class="plan-dialog__panel" role="dialog" aria-modal="true" aria-labelledby="plan-dialog-title" tabindex="-1">
+        <button class="plan-dialog__close" type="button" data-plan-dismiss aria-label="Cerrar resumen de plan">×</button>
+        <header class="plan-dialog__header">
+          <p class="plan-dialog__badge" id="plan-dialog-badge">Plan premium</p>
+          <h2 class="plan-dialog__title" id="plan-dialog-title">Selecciona tu plan</h2>
+          <p class="plan-dialog__subtitle" id="plan-dialog-subtitle"></p>
+        </header>
+        <div class="plan-dialog__price" id="plan-dialog-price">
+          <span class="plan-dialog__amount" id="plan-dialog-amount">—</span>
+          <span class="plan-dialog__cadence" id="plan-dialog-cadence"></span>
+        </div>
+        <div class="plan-dialog__body">
+          <h3 class="plan-dialog__section-title">Qué incluye</h3>
+          <ul class="plan-dialog__features" id="plan-dialog-features"></ul>
+          <h3 class="plan-dialog__section-title">Cómo se realiza el pago</h3>
+          <ol class="plan-dialog__steps" id="plan-dialog-steps"></ol>
+          <p class="plan-dialog__note" id="plan-dialog-payment"></p>
+        </div>
+        <footer class="plan-dialog__footer">
+          <a class="btn btn--primary" id="plan-dialog-checkout" href="#" target="_blank" rel="noopener">Ir al checkout seguro</a>
+          <button class="btn btn--ghost" type="button" data-plan-dismiss>Seguir explorando</button>
+        </footer>
       </div>
     </div>
 

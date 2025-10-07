@@ -13,6 +13,7 @@ const PREMIUM_PLANS = [
   {
     slug: 'student-local',
     name: 'Estudiante Local',
+    badge: 'Plan educativo',
     price: '10 €',
     cadence: '/mes',
     description: 'Procesa en tu propio ordenador para pagar solo la licencia básica y conservar la privacidad.',
@@ -21,11 +22,19 @@ const PREMIUM_PLANS = [
       'Renovación automática con tarjeta, débito o PayPal (puedes pausar cuando quieras).',
       'Recordatorios de pago y validación de dispositivo para mantener el descuento educativo.',
     ],
-    paymentNote: 'Pagas 10 € al mes de forma recurrente. El cobro se gestiona desde tu panel con cancelación inmediata y recibos en PDF.',
+    paymentNote:
+      'Pagas 10 € al mes de forma recurrente. El cobro se gestiona desde tu panel con cancelación inmediata y recibos en PDF.',
+    paymentSteps: [
+      'Confirma tu correo académico o documento equivalente para aplicar la tarifa de 10 €.',
+      'Autoriza la descarga inicial del modelo seleccionado para ejecutar el procesamiento en tu ordenador.',
+      'Selecciona tarjeta, débito o PayPal y confirma el pago seguro. Podrás cancelar cuando quieras desde el panel.',
+    ],
+    checkoutUrl: 'https://pay.grabadora.pro/checkout/student-local',
   },
   {
     slug: 'starter-15',
     name: 'Starter Cloud',
+    badge: 'Pequeños equipos',
     price: '25 €',
     cadence: '/mes',
     description: 'Minutos en la nube optimizados con colas prioritarias, exportaciones enriquecidas y soporte rápido.',
@@ -34,11 +43,19 @@ const PREMIUM_PLANS = [
       'Facturación con IVA y recibos automáticos para tarjetas corporativas o PayPal.',
       'Notas automáticas, exportaciones DOCX/PDF y soporte en menos de 12 horas.',
     ],
-    paymentNote: 'Acepta tarjetas, PayPal y transferencias SEPA. Emitimos factura automática cada mes y puedes cambiar el método de pago al instante.',
+    paymentNote:
+      'Acepta tarjetas, PayPal y transferencias SEPA. Emitimos factura automática cada mes y puedes cambiar el método de pago al instante.',
+    paymentSteps: [
+      'Selecciona el espacio de trabajo que quieres priorizar y define los miembros con acceso a GPU.',
+      'Completa los datos de facturación (razón social, CIF/NIF, dirección) para generar la factura desde el primer ciclo.',
+      'Autoriza el pago con tarjeta, PayPal o SEPA recurrente y recibe confirmación inmediata en tu correo.',
+    ],
+    checkoutUrl: 'https://pay.grabadora.pro/checkout/starter-15',
   },
   {
     slug: 'pro-60',
     name: 'Pro Teams',
+    badge: 'Productoras & agencias',
     price: '59 €',
     cadence: '/mes',
     description: 'Pensado para equipos y productoras con integraciones, controles avanzados y asistencia dedicada.',
@@ -47,7 +64,14 @@ const PREMIUM_PLANS = [
       'Pagos agrupados, órdenes de compra y facturación consolidada por departamento.',
       'Integraciones con Drive, Notion, webhooks y soporte directo con gestor técnico.',
     ],
-    paymentNote: 'Disponible pago mensual o anual (2 meses de cortesía). Soportamos facturación multiempresa y límites de gasto por miembro.',
+    paymentNote:
+      'Disponible pago mensual o anual (2 meses de cortesía). Soportamos facturación multiempresa y límites de gasto por miembro.',
+    paymentSteps: [
+      'Agenda una breve validación de volumen para personalizar las horas incluidas y los límites de consumo.',
+      'Adjunta la orden de compra o datos fiscales avanzados para emitir contratos y facturación consolidada.',
+      'Confirma el método de pago (tarjeta, transferencia programada o factura anual anticipada) y recibe tu gestor técnico.',
+    ],
+    checkoutUrl: 'https://pay.grabadora.pro/checkout/pro-60',
   },
 ];
 
@@ -257,6 +281,8 @@ const elements = {
     progressRate: document.getElementById('home-live-progress-rate'),
     progressFill: document.getElementById('home-live-progress-fill'),
     progressBar: document.getElementById('home-live-progress-bar'),
+    progressPercent: document.getElementById('home-live-progress-percent'),
+    progressRemaining: document.getElementById('home-live-progress-remaining'),
   },
   upload: {
     form: document.getElementById('upload-form'),
@@ -279,6 +305,18 @@ const elements = {
     pricing: document.getElementById('pricing-grid'),
     prompt: document.getElementById('codex-prompt'),
     copy: document.getElementById('copy-prompt'),
+    planDialog: document.getElementById('plan-dialog'),
+    planDialogPanel: document.querySelector('#plan-dialog .plan-dialog__panel'),
+    planDialogBadge: document.getElementById('plan-dialog-badge'),
+    planDialogTitle: document.getElementById('plan-dialog-title'),
+    planDialogSubtitle: document.getElementById('plan-dialog-subtitle'),
+    planDialogAmount: document.getElementById('plan-dialog-amount'),
+    planDialogCadence: document.getElementById('plan-dialog-cadence'),
+    planDialogFeatures: document.getElementById('plan-dialog-features'),
+    planDialogSteps: document.getElementById('plan-dialog-steps'),
+    planDialogPayment: document.getElementById('plan-dialog-payment'),
+    planDialogCheckout: document.getElementById('plan-dialog-checkout'),
+    planDialogDismiss: document.querySelectorAll('#plan-dialog [data-plan-dismiss]'),
   },
   library: {
     tree: document.getElementById('folder-tree'),
@@ -318,6 +356,8 @@ const elements = {
     progressRate: document.getElementById('live-progress-rate'),
     progressFill: document.getElementById('live-progress-fill'),
     progressBar: document.getElementById('live-progress-bar'),
+    progressPercent: document.getElementById('live-progress-percent'),
+    progressRemaining: document.getElementById('live-progress-remaining'),
   },
   job: {
     breadcrumbs: document.getElementById('job-breadcrumbs'),
@@ -718,6 +758,13 @@ function renderPricingPlans() {
     const header = document.createElement('div');
     header.className = 'pricing-card__header';
 
+    if (plan.badge) {
+      const badge = document.createElement('span');
+      badge.className = 'pricing-card__badge';
+      badge.textContent = plan.badge;
+      header.appendChild(badge);
+    }
+
     const title = document.createElement('h3');
     title.className = 'pricing-card__title';
     title.textContent = plan.name;
@@ -754,7 +801,7 @@ function renderPricingPlans() {
     const cta = document.createElement('a');
     cta.className = 'pricing-card__cta';
     cta.href = `/checkout?plan=${encodeURIComponent(plan.slug)}`;
-    cta.textContent = 'Elegir plan';
+    cta.textContent = `Elegir ${plan.name}`;
     cta.addEventListener('click', (event) => {
       event.preventDefault();
       handlePlanSelection(plan);
@@ -765,21 +812,116 @@ function renderPricingPlans() {
   });
 }
 
+let planDialogActivePlan = null;
+let planDialogKeyListenerAttached = false;
+
+function isPlanDialogOpen() {
+  const dialog = elements.benefits.planDialog;
+  return Boolean(dialog && !dialog.hidden);
+}
+
+function closePlanDialog() {
+  const dialog = elements.benefits.planDialog;
+  if (!dialog || dialog.hidden) return;
+  dialog.classList.remove('is-visible');
+  dialog.setAttribute('aria-hidden', 'true');
+  dialog.hidden = true;
+  delete dialog.dataset.planSlug;
+  document.body.classList.remove('has-modal');
+  planDialogActivePlan = null;
+}
+
+function openPlanDialog(plan) {
+  const dialog = elements.benefits.planDialog;
+  if (!dialog) {
+    const steps = Array.isArray(plan.paymentSteps) && plan.paymentSteps.length
+      ? `\n\nPasos de pago:\n- ${plan.paymentSteps.join('\n- ')}`
+      : '';
+    const fallback = [
+      plan.name,
+      `Precio: ${plan.price}${plan.cadence || ''}`,
+      plan.description,
+      plan.paymentNote,
+      steps.trim(),
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    alert(fallback);
+    return;
+  }
+
+  planDialogActivePlan = plan;
+  dialog.dataset.planSlug = plan.slug;
+  dialog.setAttribute('aria-hidden', 'false');
+  dialog.hidden = false;
+  window.requestAnimationFrame(() => {
+    dialog.classList.add('is-visible');
+    elements.benefits.planDialogPanel?.focus({ preventScroll: true });
+  });
+  document.body.classList.add('has-modal');
+
+  if (elements.benefits.planDialogBadge) {
+    elements.benefits.planDialogBadge.textContent = plan.badge || 'Plan premium';
+  }
+  if (elements.benefits.planDialogTitle) {
+    elements.benefits.planDialogTitle.textContent = plan.name;
+  }
+  if (elements.benefits.planDialogSubtitle) {
+    elements.benefits.planDialogSubtitle.textContent = plan.description || '';
+  }
+  if (elements.benefits.planDialogAmount) {
+    elements.benefits.planDialogAmount.textContent = plan.price;
+  }
+  if (elements.benefits.planDialogCadence) {
+    elements.benefits.planDialogCadence.textContent = plan.cadence || '';
+  }
+  if (elements.benefits.planDialogFeatures) {
+    elements.benefits.planDialogFeatures.innerHTML = '';
+    (plan.perks || []).forEach((perk) => {
+      const item = document.createElement('li');
+      item.textContent = perk;
+      elements.benefits.planDialogFeatures?.appendChild(item);
+    });
+  }
+  if (elements.benefits.planDialogSteps) {
+    elements.benefits.planDialogSteps.innerHTML = '';
+    (plan.paymentSteps || []).forEach((step) => {
+      const item = document.createElement('li');
+      item.textContent = step;
+      elements.benefits.planDialogSteps?.appendChild(item);
+    });
+  }
+  if (elements.benefits.planDialogPayment) {
+    elements.benefits.planDialogPayment.textContent = plan.paymentNote || '';
+    elements.benefits.planDialogPayment.hidden = !plan.paymentNote;
+  }
+  if (elements.benefits.planDialogCheckout) {
+    const url = plan.checkoutUrl || `/checkout?plan=${encodeURIComponent(plan.slug)}`;
+    elements.benefits.planDialogCheckout.href = url;
+    elements.benefits.planDialogCheckout.textContent = plan.ctaLabel || `Contratar ${plan.name}`;
+    elements.benefits.planDialogCheckout.setAttribute('data-plan-slug', plan.slug);
+  }
+}
+
+function setupPlanDialog() {
+  const dialog = elements.benefits.planDialog;
+  if (!dialog) return;
+  elements.benefits.planDialogDismiss?.forEach((element) => {
+    element.addEventListener('click', closePlanDialog);
+  });
+  if (!planDialogKeyListenerAttached) {
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      if (!isPlanDialogOpen()) return;
+      event.preventDefault();
+      closePlanDialog();
+    });
+    planDialogKeyListenerAttached = true;
+  }
+}
+
 function handlePlanSelection(plan) {
-  const deviceMessage =
-    plan.slug === 'student-local'
-      ? 'El procesamiento se realiza en tu ordenador y el modelo se descargará la primera vez para minimizar costes.'
-      : 'El audio se enviará cifrado a nuestros servidores GPU y podrás seguir el consumo y las facturas en el panel.';
-  const summary = [
-    plan.name,
-    `Precio: ${plan.price}${plan.cadence}`,
-    plan.paymentNote || null,
-    deviceMessage,
-    'Serás redirigido al checkout para completar el pago seguro.',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-  alert(summary);
+  openPlanDialog(plan);
 }
 
 function injectPrompt() {
@@ -1793,6 +1935,8 @@ function renderLiveProgress(liveState) {
       rate: elements.home.progressRate,
       fill: elements.home.progressFill,
       bar: elements.home.progressBar,
+      percent: elements.home.progressPercent,
+      remaining: elements.home.progressRemaining,
     },
     {
       container: elements.live.progress,
@@ -1800,6 +1944,8 @@ function renderLiveProgress(liveState) {
       rate: elements.live.progressRate,
       fill: elements.live.progressFill,
       bar: elements.live.progressBar,
+      percent: elements.live.progressPercent,
+      remaining: elements.live.progressRemaining,
     },
   ];
   const status = liveState?.status || 'idle';
@@ -1828,16 +1974,20 @@ function renderLiveProgress(liveState) {
       widget.container.hidden = true;
       if (widget.fill) widget.fill.style.width = '0%';
       widget.bar?.setAttribute('aria-valuenow', '0');
+      if (widget.percent) widget.percent.textContent = '0%';
       if (widget.label) widget.label.textContent = '00:00 procesados';
       if (widget.rate) widget.rate.textContent = 'Esperando audio…';
+      if (widget.remaining) widget.remaining.textContent = 'Restante —';
       return;
     }
     widget.container.hidden = false;
     const processed = processedSeconds > 0 ? processedSeconds : elapsedSeconds;
-    if (widget.label) widget.label.textContent = `${formatClock(processed)} procesados`;
     const ratio = elapsedSeconds > 0 ? Math.min(1, processed / elapsedSeconds) : processed > 0 ? 1 : 0;
-    if (widget.fill) widget.fill.style.width = `${Math.round(ratio * 100)}%`;
-    widget.bar?.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+    const percentValue = Math.round(ratio * 100);
+    if (widget.label) widget.label.textContent = `${formatClock(processed)} procesados`;
+    if (widget.percent) widget.percent.textContent = `${percentValue}%`;
+    if (widget.fill) widget.fill.style.width = `${percentValue}%`;
+    widget.bar?.setAttribute('aria-valuenow', String(percentValue));
     let rateText = '';
     if (status === 'paused') {
       rateText = 'Grabación en pausa';
@@ -1854,6 +2004,14 @@ function renderLiveProgress(liveState) {
       rateText = lag > 1 ? `Retraso ${formatClock(lag)}` : 'Procesando…';
     }
     if (widget.rate) widget.rate.textContent = rateText;
+    if (widget.remaining) {
+      if (ratio >= 1) {
+        widget.remaining.textContent = 'Sin retraso pendiente';
+      } else {
+        const remainingSeconds = Math.max(0, elapsedSeconds - processed);
+        widget.remaining.textContent = `Restante ${formatClock(remainingSeconds)}`;
+      }
+    }
   });
 }
 
@@ -3606,6 +3764,7 @@ async function init() {
   setupAnchorGuards();
   setupRouter();
   setupModelSelectors();
+  setupPlanDialog();
   renderPricingPlans();
   injectPrompt();
   setupPromptCopy();

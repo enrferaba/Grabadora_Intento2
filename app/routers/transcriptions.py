@@ -58,6 +58,7 @@ from ..whisper_service import (
     serialize_segments,
 )
 from pydub import AudioSegment
+from pydub.exceptions import CouldntDecodeError
 
 ALLOWED_MEDIA_EXTENSIONS = {
     ".aac",
@@ -109,6 +110,10 @@ router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])
 
 LIVE_SESSIONS_ROOT = Path(settings.storage_dir).parent / "live_sessions"
 LIVE_SESSIONS_ROOT.mkdir(parents=True, exist_ok=True)
+
+LIVE_AUDIO_SAMPLE_RATE = 16_000
+LIVE_AUDIO_CHANNELS = 1
+LIVE_AUDIO_SAMPLE_WIDTH = 2
 
 
 @dataclass
@@ -316,13 +321,22 @@ def _transcription_to_srt(transcription: Transcription) -> str:
 def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> AudioSegment:
     try:
         fmt = _guess_audio_format(chunk_path)
-        segment = AudioSegment.from_file(chunk_path, format=fmt) if fmt else AudioSegment.from_file(chunk_path)
+        if fmt:
+            segment = AudioSegment.from_file(chunk_path, format=fmt)
+        else:
+            segment = AudioSegment.from_file(chunk_path)
+    except CouldntDecodeError as exc:
+        raise RuntimeError(
+            "No se pudo decodificar el fragmento de audio recibido para la sesión en vivo."
+        ) from exc
     except Exception as exc:  # pragma: no cover - depende del runtime
         raise RuntimeError(f"No se pudo procesar el fragmento de audio: {exc}") from exc
 
+    segment = _normalize_audio_segment(segment)
     if state.audio_path.exists():
         try:
             base = AudioSegment.from_file(state.audio_path, format="wav")
+            base = _normalize_audio_segment(base)
             combined = base + segment
         except Exception as exc:  # pragma: no cover - depende del runtime
             raise RuntimeError(f"No se pudo unir el audio acumulado: {exc}") from exc
@@ -1001,3 +1015,14 @@ def delete_transcription(transcription_id: int, session: Session = Depends(_get_
     if txt_path.exists():  # pragma: no cover - filesystem side effects
         txt_path.unlink()
     return Response(status_code=204)
+
+
+def _normalize_audio_segment(segment: AudioSegment) -> AudioSegment:
+    """Ensure consistent sample rate, channels and sample width for live audio."""
+    if segment.channels != LIVE_AUDIO_CHANNELS:
+        segment = segment.set_channels(LIVE_AUDIO_CHANNELS)
+    if segment.frame_rate != LIVE_AUDIO_SAMPLE_RATE:
+        segment = segment.set_frame_rate(LIVE_AUDIO_SAMPLE_RATE)
+    if segment.sample_width != LIVE_AUDIO_SAMPLE_WIDTH:
+        segment = segment.set_sample_width(LIVE_AUDIO_SAMPLE_WIDTH)
+    return segment

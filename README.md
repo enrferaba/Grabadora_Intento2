@@ -13,6 +13,7 @@ Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, 
 - **Biblioteca por carpetas** con filtros por etiquetas, estado, número de tema y búsqueda libre para localizar transcripciones rápidas.
 - **Dashboard con métricas en vivo** (totales, completadas, minutos procesados, etc.) y vista estilo ChatGPT con animación adaptativa que escribe según el modelo y el dispositivo usado, desplazando la vista automáticamente.
 - **Beneficios premium simulados** con checkout y confirmación que desbloquean notas IA enriquecidas sin mostrar importes hasta definir tu estrategia comercial.
+- **Selector de planes profesional** con fichas enriquecidas, resumen de cobro paso a paso y diálogo modal listo para conectar con tu pasarela real.
 - **Selector de idioma** con español (predeterminado), inglés y francés, además de autodetección cuando lo necesites.
 - **Autocompletado de carpetas** que recuerda la última carpeta usada, sugiere destinos existentes y sincroniza el modo en vivo con el formulario principal.
 - **Modo estudiante web**: vista ligera con anuncios educativos y ejecución local accesible en `student.html` o desde el botón “Abrir simulador independiente”.
@@ -81,6 +82,16 @@ El comando revisa las dependencias clave (FastAPI, SQLAlchemy, WhisperX, etc.) y
 5. **Pausa y reanudación**: aprovecha los controles del visor para detener la captura sin cerrar la sesión. El TTL de la sesión se renueva con cada actividad, por lo que no expirará mientras sigas hablando.
 6. **Finalización**: al pulsar “Finalizar & guardar” se detiene la grabación, se espera a que se procesen los últimos fragmentos y se invoca `POST /api/transcriptions/live/sessions/{id}/finalize` para crear una transcripción completa con su `.txt`. El historial del visor permanece visible hasta que inicies una nueva sesión.
 7. **Cancelación segura**: si cierras el navegador o hay un error, la interfaz solicita `DELETE /api/transcriptions/live/sessions/{id}` para limpiar memoria y archivos temporales.
+
+## Planes premium y pagos
+
+| Plan | Precio | Dónde se procesa | Incluye | Flujo de pago |
+| --- | --- | --- | --- | --- |
+| **Estudiante Local** | 10 €/mes | Tu propio ordenador | Ejecución ilimitada en local, validación académica y recibos inmediatos en PDF. | Confirma correo educativo, descarga el modelo en tu equipo y autoriza tarjeta, débito o PayPal sin recargos. |
+| **Starter Cloud** | 25 €/mes | Servidores GPU gestionados | 30 h/mes prioritarias, exportaciones enriquecidas y soporte <12 h. | Completa datos de facturación, asigna miembros con GPU y paga con tarjeta, PayPal o SEPA recurrente. |
+| **Pro Teams** | 59 €/mes | Infraestructura dedicada | 120 h/mes, reprocesado large-v3, integraciones y gestor técnico. | Aporta orden de compra, configura límites por equipo y elige tarjeta corporativa, transferencia programada o factura anual. |
+
+Cada botón “Elegir plan” abre un resumen modal con los beneficios, los pasos de cobro y un CTA que enlaza al checkout seguro (`https://pay.grabadora.pro/checkout/{plan}`). El modal bloquea el scroll, puede cerrarse con `Escape` o clic fuera y está listo para inyectar lógica real de pago.
 
 ### Copiar y pegar todo el flujo
 
