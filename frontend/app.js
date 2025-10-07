@@ -527,6 +527,14 @@ function applyTheme(theme, persist = true) {
     } catch (error) {
       console.warn('No se pudo guardar el tema', error);
     }
+  });
+  if (persist) preferences.set(LOCAL_KEYS.lastRoute, normalized);
+  if (updateHash) {
+    const targetHash = `#${normalized}`;
+    if (window.location.hash !== targetHash) {
+      suppressHashChange = true;
+      window.location.hash = targetHash;
+    }
   }
   updateThemeToggle(normalized);
 }
@@ -615,6 +623,18 @@ async function triggerDownload(url, fallbackContent, filename, mimeType = 'text/
       alert('No fue posible descargar el archivo solicitado.');
     }
   }
+  jobs.forEach((job) => {
+    const row = document.createElement('tr');
+    row.dataset.jobId = job.id;
+    row.innerHTML = `
+      <td>${job.name}</td>
+      <td>${formatStatus(job.status)}</td>
+      <td>${formatDuration(job.durationSec)}</td>
+      <td>${formatDate(job.updatedAt)}</td>
+    `;
+    row.addEventListener('click', () => openJob(job.id));
+    body.appendChild(row);
+  });
 }
 
 function setupTheme() {
