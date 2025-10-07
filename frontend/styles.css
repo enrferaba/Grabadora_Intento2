@@ -355,11 +355,13 @@ html.dark .topbar {
   font-size: 1rem;
   line-height: 1.6;
   overflow-y: auto;
-  min-height: clamp(320px, 65vh, 820px);
+  overflow-x: hidden;
+  min-height: clamp(320px, 55vh, 820px);
+  max-height: clamp(320px, 65vh, 820px);
 }
 
 .live-panel .live-tail {
-  height: clamp(320px, 65vh, 820px);
+  height: clamp(320px, 60vh, 820px);
 }
 
 .live-view .live-tail {
@@ -367,8 +369,52 @@ html.dark .topbar {
 }
 
 .job-tail {
-  min-height: clamp(320px, 60vh, 760px);
+  min-height: clamp(320px, 55vh, 760px);
+  max-height: clamp(320px, 62vh, 780px);
   background: var(--job-bg);
+}
+
+.job-statusline {
+  font-size: 0.95rem;
+  color: var(--text-soft);
+}
+
+.job-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-alt);
+  color: var(--text-soft);
+}
+
+html.dark .job-progress {
+  background: rgba(17, 23, 42, 0.35);
+}
+
+.job-progress__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+}
+
+.job-progress__bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  overflow: hidden;
+}
+
+.job-progress__fill {
+  position: absolute;
+  inset: 0;
+  width: 0%;
+  background: linear-gradient(90deg, var(--primary), var(--primary-strong));
+  transition: width 0.4s ease;
 }
 
 .live-tail__text {

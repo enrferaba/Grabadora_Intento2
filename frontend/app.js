@@ -109,6 +109,7 @@ const WHISPER_MODELS = [
 
 const BEAM_OPTIONS = [1, 2, 3, 4, 5, 8];
 const DEFAULT_MODEL = 'large-v3';
+const NUMERIC_ID_PATTERN = /^\d+$/;
 
 const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
@@ -226,6 +227,7 @@ const SAMPLE_LIVE_SEGMENTS = [
   'Puedes pausar la sesión si necesitas responder preguntas en vivo.\n',
   'Al finalizar, descarga el .txt o exporta a Markdown para compartirlo con tu equipo.\n',
 ];
+const STREAM_SEGMENT_LIMIT = 400;
 const elements = {
   themeToggle: document.getElementById('theme-toggle'),
   navButtons: document.querySelectorAll('[data-route-target]'),
@@ -326,6 +328,12 @@ const elements = {
     downloadTxt: document.getElementById('job-download-txt'),
     downloadSrt: document.getElementById('job-download-srt'),
     exportMd: document.getElementById('job-export-md'),
+    liveStatus: document.getElementById('job-live-status'),
+    progress: document.getElementById('job-progress'),
+    progressBar: document.getElementById('job-progress-bar'),
+    progressFill: document.getElementById('job-progress-fill'),
+    progressLabel: document.getElementById('job-progress-label'),
+    progressEta: document.getElementById('job-progress-eta'),
     status: document.getElementById('job-status'),
     folder: document.getElementById('job-folder'),
     duration: document.getElementById('job-duration'),
@@ -405,6 +413,157 @@ function populateBeamSelect(select, defaultBeam) {
   if (BEAM_OPTIONS.includes(currentValue)) {
     select.value = String(currentValue);
   }
+}
+
+function normalizeStatus(status) {
+  const value = (status || '').toLowerCase();
+  if (value === 'failed') return 'error';
+  if (value === 'pending') return 'queued';
+  if (value === 'processing') return 'processing';
+  if (value === 'completed') return 'completed';
+  return value || 'queued';
+}
+
+function hashString(value) {
+  let hash = 0;
+  const text = String(value);
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0; // eslint-disable-line no-bitwise
+  }
+  return hash.toString(36);
+}
+
+function humanizeFolderSegment(segment) {
+  const normalized = String(segment || '').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'General';
+  return normalized.replace(/(^|\s)\w/g, (match) => match.toUpperCase());
+}
+
+function deriveFolderSegments(raw) {
+  if (raw == null) return ['General'];
+  const normalized = String(raw).replace(/\\/g, '/');
+  const parts = normalized
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return ['General'];
+  return parts.map(humanizeFolderSegment);
+}
+
+function buildFoldersFromTranscriptionsPayload(items) {
+  const map = new Map();
+  const ensureSegmentPath = (segments, createdAt) => {
+    let parentPath = '';
+    let parentId = null;
+    segments.forEach((segment) => {
+      const path = `${parentPath}/${segment}`;
+      if (!map.has(path)) {
+        const folder = {
+          id: `fld-${hashString(path)}`,
+          name: segment,
+          parentId,
+          path,
+          createdAt: createdAt || new Date().toISOString(),
+        };
+        map.set(path, folder);
+      }
+      parentId = map.get(path).id;
+      parentPath = path;
+    });
+  };
+
+  items.forEach((item) => {
+    const segments = deriveFolderSegments(item.output_folder);
+    ensureSegmentPath(segments, item.created_at);
+  });
+
+  if (!map.size) {
+    ensureSegmentPath(['General'], new Date().toISOString());
+  }
+
+  return {
+    folders: Array.from(map.values()),
+    byPath: map,
+  };
+}
+
+function mapTranscriptionToJob(item, folderIndex) {
+  const segments = deriveFolderSegments(item.output_folder);
+  const folderPath = segments.reduce((acc, segment) => `${acc}/${segment}`, '');
+  const folder = folderIndex.get(folderPath);
+  return {
+    id: String(item.id),
+    name: item.original_filename,
+    status: normalizeStatus(item.status),
+    rawStatus: item.status,
+    durationSec: Number.isFinite(item.duration) ? item.duration : null,
+    language: item.language ?? '',
+    model: item.model_size ?? '',
+    beam: item.beam_size ?? null,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    folderId: folder ? folder.id : null,
+    folderPath,
+    outputFolder: segments.join('/'),
+    devicePreference: item.device_preference ?? '',
+    runtimeSeconds: item.runtime_seconds ?? null,
+    transcriptPath: item.transcript_path ?? null,
+  };
+}
+
+function computeStatsFromJobs(jobs, referenceItems = []) {
+  const todayKey = new Date().toISOString().slice(0, 10);
+  let totalMinutes = 0;
+  let todayMinutes = 0;
+  let todayCount = 0;
+  let queue = 0;
+
+  jobs.forEach((job) => {
+    const minutes = Number(job.durationSec || 0) / 60;
+    if (Number.isFinite(minutes)) {
+      totalMinutes += minutes;
+      const createdAt = job.createdAt ? new Date(job.createdAt) : null;
+      if (createdAt && !Number.isNaN(createdAt.getTime())) {
+        const createdKey = createdAt.toISOString().slice(0, 10);
+        if (createdKey === todayKey) {
+          todayMinutes += minutes;
+          todayCount += 1;
+        }
+      }
+    }
+    if (job.status === 'processing' || job.status === 'queued') {
+      queue += 1;
+    }
+  });
+
+  const reference = [...referenceItems]
+    .sort((a, b) => {
+      const aDate = new Date(a.updated_at || a.created_at || 0).getTime();
+      const bDate = new Date(b.updated_at || b.created_at || 0).getTime();
+      return bDate - aDate;
+    })
+    .find(Boolean);
+  const fallbackJob = jobs.find(Boolean);
+  const device = (reference?.device_preference || fallbackJob?.devicePreference || '').toLowerCase();
+  const model = reference?.model_size || fallbackJob?.model || DEFAULT_MODEL;
+  const mode =
+    device === 'cuda' || device === 'gpu'
+      ? 'GPU'
+      : device === 'cpu'
+      ? 'CPU'
+      : device
+      ? device.toUpperCase()
+      : 'Automático';
+
+  return {
+    totalMinutes: Math.max(0, Math.round(totalMinutes)),
+    todayMinutes: Math.max(0, Math.round(todayMinutes)),
+    totalCount: jobs.length,
+    todayCount,
+    queue,
+    mode,
+    model,
+  };
 }
 
 function updateBeamRecommendation(context, { forceValue = false } = {}) {
@@ -615,18 +774,6 @@ async function triggerDownload(url, fallbackContent, filename, mimeType = 'text/
       alert('No fue posible descargar el archivo solicitado.');
     }
   }
-  jobs.forEach((job) => {
-    const row = document.createElement('tr');
-    row.dataset.jobId = job.id;
-    row.innerHTML = `
-      <td>${job.name}</td>
-      <td>${formatStatus(job.status)}</td>
-      <td>${formatDuration(job.durationSec)}</td>
-      <td>${formatDate(job.updatedAt)}</td>
-    `;
-    row.addEventListener('click', () => openJob(job.id));
-    body.appendChild(row);
-  });
 }
 
 function setupTheme() {
@@ -675,6 +822,16 @@ const store = createStore({
     detail: null,
     maxSegments: preferences.get(LOCAL_KEYS.jobTailSize, 200),
   },
+  stream: {
+    jobId: null,
+    jobName: '',
+    status: 'idle',
+    text: '',
+    segments: [],
+    debugEvents: [],
+    durationSec: null,
+    updatedAt: null,
+  },
 });
 
 function createTailController({ scroller, text, followToggle, returnButton, preferenceKey }) {
@@ -685,7 +842,9 @@ function createTailController({ scroller, text, followToggle, returnButton, pref
 
   const scrollToEnd = (smooth = false) => {
     const behavior = smooth ? 'smooth' : 'auto';
-    requestAnimationFrame(() => sentinel.scrollIntoView({ behavior, block: 'end' }));
+    requestAnimationFrame(() => {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+    });
   };
 
   const setFollow = (value) => {
@@ -750,6 +909,48 @@ const liveSession = {
   timer: null,
   cursor: 0,
 };
+
+const jobPolling = {
+  timer: null,
+  jobId: null,
+};
+
+const jobTextCache = new Map();
+
+function stopJobPolling() {
+  if (jobPolling.timer) {
+    clearInterval(jobPolling.timer);
+    jobPolling.timer = null;
+  }
+  jobPolling.jobId = null;
+}
+
+function shouldContinueJobPolling(jobId) {
+  const state = store.getState();
+  const job = state.jobs.find((item) => item.id === jobId);
+  if (!job) return false;
+  return job.status === 'processing' || job.status === 'queued';
+}
+
+function evaluateJobPolling(jobId) {
+  if (!shouldContinueJobPolling(jobId)) {
+    stopJobPolling();
+    return false;
+  }
+  return true;
+}
+
+function startJobPolling(jobId) {
+  const targetId = String(jobId);
+  stopJobPolling();
+  if (!evaluateJobPolling(targetId)) return;
+  jobPolling.jobId = targetId;
+  jobPolling.timer = setInterval(() => {
+    if (!evaluateJobPolling(targetId)) return;
+    loadJobDetail(targetId, { startPolling: false, suppressErrors: true });
+  }, 3000);
+}
+
 function goToRoute(route, { updateHash = true, persist = true } = {}) {
   const normalized = ROUTES.includes(route) ? route : 'home';
   elements.views.forEach((view) => {
@@ -775,6 +976,9 @@ function goToRoute(route, { updateHash = true, persist = true } = {}) {
       suppressHashChange = true;
       window.location.hash = targetHash;
     }
+  }
+  if (normalized !== 'job') {
+    stopJobPolling();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1097,30 +1301,121 @@ function renderLibraryTable(state) {
     });
 }
 function renderLiveSegments(segments) {
-  const content = segments.length ? segments.join('') : 'Inicia una sesión para ver la transcripción en directo.';
-  tailControllers.home.render(content);
-  tailControllers.live.render(segments.length ? content : 'Conecta el micro para comenzar.');
+  const content = segments.length ? segments.join('') : 'Conecta el micro para comenzar.';
+  tailControllers.live.render(content);
 }
 
-function renderLiveStatus(status) {
+function computeLiveStatusMessage(status) {
   const modelValue = elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
   const modelConfig = getModelConfig(modelValue);
   const beamValue = Number(elements.live.beam?.value || modelConfig.recommendedBeam);
-  if (elements.home.status) {
-    switch (status) {
-      case 'recording':
-        elements.home.status.textContent = `Grabando en vivo con ${modelConfig.label.split('·')[0].trim()} · beam ${beamValue}`;
-        break;
-      case 'paused':
-        elements.home.status.textContent = 'Sesión en pausa. Reanuda cuando estés listo.';
-        break;
-      case 'completed':
-        elements.home.status.textContent = 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
-        break;
-      default:
-        elements.home.status.textContent = 'Listo para grabar.';
+  switch (status) {
+    case 'recording':
+      return `Grabando en vivo con ${modelConfig.label.split('·')[0].trim()} · beam ${beamValue}`;
+    case 'paused':
+      return 'Sesión en pausa. Reanuda cuando estés listo.';
+    case 'completed':
+      return 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
+    default:
+      return 'Listo para grabar.';
+  }
+}
+
+function computeStreamStatusMessage(stream) {
+  if (!stream?.jobId) return null;
+  const name = stream.jobName?.trim();
+  const suffix = name ? ` · ${name}` : '';
+  switch (stream.status) {
+    case 'processing':
+      return `Transcribiendo${suffix}`;
+    case 'queued':
+      return `En cola${suffix}`;
+    case 'completed':
+      return `Transcripción completada${suffix}`;
+    case 'error':
+      return `Error en la transcripción${suffix}`;
+    default:
+      return `Seguimiento activo${suffix}`;
+  }
+}
+
+function buildStreamContent(stream) {
+  if (!stream) return '';
+  const segments = Array.isArray(stream.segments) ? stream.segments : [];
+  const joinedSegments = segments.length ? segments.join('\n\n') : '';
+  const text = typeof stream.text === 'string' ? stream.text : '';
+  const hasText = text && text.trim();
+  const hasSegments = Boolean(joinedSegments);
+  if (hasText && hasSegments) {
+    if (text.includes(joinedSegments)) {
+      return text;
+    }
+    if (joinedSegments.includes(text)) {
+      return joinedSegments;
+    }
+    return text.length >= joinedSegments.length ? text : joinedSegments;
+  }
+  if (hasText) return text;
+  if (hasSegments) return joinedSegments;
+  return '';
+}
+
+function renderHomePanel(state) {
+  if (!tailControllers.home) return;
+  const { stream, live } = state;
+  if (stream.jobId) {
+    const content = buildStreamContent(stream);
+    if (content) {
+      tailControllers.home.render(content);
+    } else {
+      const fallback = stream.jobName
+        ? `Transcribiendo ${stream.jobName}…`
+        : stream.status === 'queued'
+        ? 'Transcripción en cola…'
+        : 'Transcripción en curso…';
+      tailControllers.home.render(fallback);
+    }
+    return;
+  }
+  const liveContent = live.segments.length
+    ? live.segments.join('')
+    : 'Inicia una sesión para ver la transcripción en directo.';
+  tailControllers.home.render(liveContent);
+}
+
+function updateHomeStatus(state) {
+  if (!elements.home.status) return;
+  const stream = state.stream;
+  if (stream?.jobId) {
+    let message = '';
+    const debugEvents = Array.isArray(stream.debugEvents) ? stream.debugEvents : [];
+    const job = state.jobs.find((item) => String(item.id) === String(stream.jobId));
+    const detail = state.job.detail && String(state.job.detail.job.id) === String(stream.jobId) ? state.job.detail : null;
+    const jobForProgress = detail?.job || job;
+    if (jobForProgress) {
+      const info = computeJobProgressState(jobForProgress, debugEvents);
+      if (info?.statusText) {
+        message = info.statusText;
+        if (info.etaText && info.percent != null && info.percent < 1) {
+          message += ` · ${info.etaText}`;
+        }
+      }
+    }
+    if (!message) {
+      message = computeStreamStatusMessage(stream) || '';
+    }
+    if (message) {
+      if (stream.jobName && !message.includes(stream.jobName)) {
+        message += ` · ${stream.jobName}`;
+      }
+      elements.home.status.textContent = message;
+      return;
     }
   }
+  elements.home.status.textContent = computeLiveStatusMessage(state.live.status);
+}
+
+function renderLiveStatus(status) {
   const isRecording = status === 'recording';
   const isPaused = status === 'paused';
 
@@ -1147,6 +1442,214 @@ function renderLiveStatus(status) {
   if (elements.live.finish) elements.live.finish.disabled = status === 'idle';
 }
 
+function buildSegmentsFromEvents(events) {
+  if (!Array.isArray(events)) return [];
+  const collected = new Map();
+  events.forEach((event) => {
+    if (!event || event.stage !== 'transcribe.segment') return;
+    const extra = event.extra || {};
+    const text = typeof extra.text === 'string' ? extra.text.trim() : '';
+    if (!text) return;
+    const index = Number(extra.index);
+    const key = Number.isFinite(index) ? index : collected.size;
+    collected.set(key, text);
+  });
+  return Array.from(collected.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, text]) => text);
+}
+
+function extractDurationFromEvents(events) {
+  if (!Array.isArray(events)) return null;
+  let duration = null;
+  events.forEach((event) => {
+    if (!event) return;
+    const extra = event.extra || {};
+    if (event.stage === 'analyze.duration') {
+      const seconds = Number(extra.seconds ?? extra.duration ?? extra.total_seconds ?? extra.ms / 1000);
+      if (Number.isFinite(seconds)) {
+        duration = duration == null ? seconds : Math.max(duration, seconds);
+      }
+    }
+    if (event.stage === 'transcribe.segment') {
+      const end = Number(extra.end);
+      if (Number.isFinite(end)) {
+        duration = duration == null ? end : Math.max(duration, end);
+      }
+    }
+  });
+  return duration;
+}
+
+function formatClock(seconds = 0) {
+  if (!Number.isFinite(seconds)) return '—';
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatEta(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  const total = Math.ceil(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const parts = [];
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (!hours && secs) parts.push(`${secs}s`);
+  if (!parts.length) parts.push('1s');
+  return `Quedan ~${parts.join(' ')}`;
+}
+
+function computeJobProgressState(job, debugEvents) {
+  const events = Array.isArray(debugEvents) ? debugEvents : [];
+  const durationFromEvents = extractDurationFromEvents(events);
+  const jobDuration = Number.isFinite(job.durationSec) ? job.durationSec : null;
+  const totalSeconds = Number.isFinite(jobDuration)
+    ? jobDuration
+    : Number.isFinite(durationFromEvents)
+    ? durationFromEvents
+    : null;
+
+  let processedSeconds = job.status === 'completed' && Number.isFinite(totalSeconds) ? totalSeconds : 0;
+  let sawSegment = false;
+  let sawModelLoad = false;
+  let sawTranscribeStart = false;
+  let startTimestamp = null;
+  let errorEvent = null;
+
+  events.forEach((event) => {
+    if (!event) return;
+    const stage = event.stage || '';
+    const extra = event.extra || {};
+    if (stage === 'processing-start' && event.timestamp) {
+      const parsed = Date.parse(event.timestamp);
+      if (!Number.isNaN(parsed)) {
+        startTimestamp = parsed;
+      }
+    }
+    if (stage === 'load-model' || stage === 'load-model.retry') {
+      sawModelLoad = true;
+    }
+    if (stage === 'transcribe.start') {
+      sawTranscribeStart = true;
+    }
+    if (stage === 'transcribe.segment') {
+      sawSegment = true;
+      const end = Number(extra.end);
+      if (Number.isFinite(end)) {
+        processedSeconds = Math.max(processedSeconds, end);
+      }
+    }
+    if (stage === 'transcribe.completed' && Number.isFinite(totalSeconds)) {
+      processedSeconds = Math.max(processedSeconds, totalSeconds);
+    }
+    if (stage.endsWith('.error') || stage === 'processing-missing-file') {
+      errorEvent = event;
+    }
+  });
+
+  if (Number.isFinite(totalSeconds) && job.status === 'completed') {
+    processedSeconds = Math.max(processedSeconds, totalSeconds);
+  }
+
+  let percent = null;
+  if (Number.isFinite(totalSeconds) && totalSeconds > 0) {
+    percent = Math.min(1, processedSeconds / totalSeconds);
+  } else if (job.status === 'completed') {
+    percent = 1;
+  }
+
+  let etaSeconds = null;
+  if (
+    percent != null &&
+    percent < 1 &&
+    Number.isFinite(totalSeconds) &&
+    startTimestamp &&
+    processedSeconds > 0
+  ) {
+    const elapsed = Math.max(1, (Date.now() - startTimestamp) / 1000);
+    const speed = processedSeconds / elapsed;
+    if (speed > 0.05) {
+      etaSeconds = Math.max(0, (totalSeconds - processedSeconds) / speed);
+    }
+  }
+
+  const label = Number.isFinite(totalSeconds)
+    ? `${formatClock(processedSeconds)} / ${formatClock(totalSeconds)}`
+    : processedSeconds > 0
+    ? `${formatClock(processedSeconds)} procesados`
+    : '';
+
+  let statusText = '';
+  if (job.status === 'error') {
+    statusText = errorEvent?.message ? `Error: ${errorEvent.message}` : 'La transcripción se detuvo con errores.';
+  } else if (job.status === 'completed') {
+    statusText = 'Transcripción completada.';
+  } else if (sawSegment) {
+    statusText = Number.isFinite(totalSeconds)
+      ? `Transcribiendo… ${formatClock(processedSeconds)} / ${formatClock(totalSeconds)}`
+      : 'Transcribiendo…';
+  } else if (sawTranscribeStart) {
+    statusText = 'Analizando audio…';
+  } else if (sawModelLoad) {
+    statusText = `Descargando modelo ${job.model || 'seleccionado'}…`;
+  } else if (job.status === 'processing') {
+    statusText = 'Preparando transcripción…';
+  } else {
+    statusText = formatStatus(job.status);
+  }
+
+  return {
+    showBar: percent != null,
+    percent: percent ?? 0,
+    label,
+    etaText: etaSeconds ? formatEta(etaSeconds) : '',
+    statusText,
+  };
+}
+
+function renderJobProgress(job, debugEvents) {
+  const { progress, progressBar, progressFill, progressLabel, progressEta, liveStatus } = elements.job;
+  if (!progress || !progressBar || !progressFill || !progressLabel || !progressEta) return;
+  const info = computeJobProgressState(job, debugEvents);
+  if (liveStatus) {
+    const fallback =
+      job.status === 'completed'
+        ? 'Transcripción completada.'
+        : job.status === 'processing'
+        ? 'Preparando transcripción…'
+        : formatStatus(job.status);
+    liveStatus.textContent = info?.statusText || fallback;
+  }
+  if (!info || !info.showBar) {
+    progress.hidden = true;
+    progressFill.style.width = '0%';
+    progressBar.setAttribute('aria-valuenow', '0');
+    if (!info) {
+      progressLabel.textContent = '00:00 / 00:00';
+      progressEta.textContent = '—';
+    } else {
+      progressLabel.textContent = info.label || '';
+      progressEta.textContent = info.etaText || '—';
+    }
+    return;
+  }
+
+  const percentValue = Math.max(0, Math.min(100, Math.round(info.percent * 100)));
+  progress.hidden = false;
+  progressFill.style.width = `${percentValue}%`;
+  progressBar.setAttribute('aria-valuenow', String(percentValue));
+  progressLabel.textContent = info.label || `${percentValue}%`;
+  progressEta.textContent = info.etaText || '—';
+}
+
 function renderJobDetail(state) {
   const detail = state.job.detail;
   if (!detail) {
@@ -1167,20 +1670,37 @@ function renderJobDetail(state) {
     elements.job.model.textContent = '—';
     if (elements.job.beam) elements.job.beam.textContent = '—';
     elements.job.wer.textContent = '—';
+    if (elements.job.liveStatus) {
+      elements.job.liveStatus.textContent = 'Selecciona una transcripción para ver el progreso.';
+    }
+    if (elements.job.progress) {
+      elements.job.progress.hidden = true;
+      if (elements.job.progressFill) elements.job.progressFill.style.width = '0%';
+      if (elements.job.progressBar) elements.job.progressBar.setAttribute('aria-valuenow', '0');
+      if (elements.job.progressLabel) elements.job.progressLabel.textContent = '00:00 / 00:00';
+      if (elements.job.progressEta) elements.job.progressEta.textContent = '—';
+    }
     const list = elements.job.breadcrumbs;
     while (list.children.length > 3) list.removeChild(list.lastChild);
     return;
   }
-  const { job, text, segments, folderPath } = detail;
-  const displayed = segments && segments.length ? segments.slice(-state.job.maxSegments) : [text];
-  tailControllers.job.render(displayed.join(''));
+  const { job, text, segments, folderPath, debugEvents } = detail;
+  const fallbackText = text && text.trim() ? text : 'La transcripción se está generando y se actualizará automáticamente.';
+  const displayed = segments && segments.length ? segments.slice(-state.job.maxSegments) : [fallbackText];
+  tailControllers.job.render(displayed.join('\n\n'));
+  renderJobProgress(job, debugEvents);
+  const numericId = /^\d+$/.test(String(job.id));
   elements.job.title.textContent = job.name;
-  elements.job.subtitle.textContent = `Actualizado ${formatDate(job.updatedAt)} · ${formatDuration(job.durationSec)}`;
+  const subtitleParts = [];
+  subtitleParts.push(formatStatus(job.status));
+  if (job.updatedAt) subtitleParts.push(`Actualizado ${formatDate(job.updatedAt)}`);
+  if (Number.isFinite(job.durationSec)) subtitleParts.push(formatDuration(job.durationSec));
+  elements.job.subtitle.textContent = subtitleParts.join(' · ');
   elements.job.status.textContent = formatStatus(job.status);
   elements.job.folder.textContent = folderPath ? folderPath.slice(1) : '—';
   elements.job.duration.textContent = formatDuration(job.durationSec);
-  elements.job.language.textContent = job.language?.toUpperCase() ?? '—';
-  elements.job.model.textContent = job.model ?? '—';
+  elements.job.language.textContent = job.language ? job.language.toUpperCase() : '—';
+  elements.job.model.textContent = job.model || '—';
   if (elements.job.beam) elements.job.beam.textContent = job.beam ? `Beam ${job.beam}` : '—';
   elements.job.wer.textContent = job.status === 'completed' ? '3.4%' : '—';
   elements.job.move.disabled = false;
@@ -1188,10 +1708,26 @@ function renderJobDetail(state) {
   elements.job.downloadTxt.disabled = false;
   elements.job.downloadSrt.disabled = false;
   elements.job.exportMd.disabled = false;
-  elements.job.audio.hidden = false;
-  elements.job.audio.href = `/api/jobs/${job.id}/audio`;
-  elements.job.logs.hidden = false;
-  elements.job.logs.href = `/api/jobs/${job.id}/logs`;
+  if (elements.job.audio) {
+    elements.job.audio.hidden = !numericId;
+    if (numericId) {
+      elements.job.audio.href = `/api/transcriptions/${job.id}/audio`;
+    } else {
+      elements.job.audio.removeAttribute('href');
+    }
+  }
+  if (elements.job.logs) {
+    elements.job.logs.hidden = !numericId;
+    if (numericId) {
+      elements.job.logs.href = `/api/transcriptions/${job.id}/logs`;
+      elements.job.logs.title = debugEvents?.length
+        ? 'Descarga los eventos y diagnósticos de esta transcripción.'
+        : 'Aún no hay eventos registrados; el archivo incluirá un mensaje informativo.';
+    } else {
+      elements.job.logs.removeAttribute('href');
+      elements.job.logs.removeAttribute('title');
+    }
+  }
 
   const list = elements.job.breadcrumbs;
   while (list.children.length > 3) list.removeChild(list.lastChild);
@@ -1236,98 +1772,346 @@ store.subscribe((state, prev) => {
   if (state.live.status !== prev.live.status) {
     renderLiveStatus(state.live.status);
   }
+  if (state.stream !== prev.stream || state.live.segments !== prev.live.segments) {
+    renderHomePanel(state);
+  }
+  if (state.stream !== prev.stream || state.live.status !== prev.live.status) {
+    updateHomeStatus(state);
+  }
   if (state.job.detail !== prev.job.detail || state.job.maxSegments !== prev.job.maxSegments) {
     renderJobDetail(state);
   }
 });
+
+function maybeUpdateActiveStream() {
+  const state = store.getState();
+  const current = state.stream;
+  const trackedStatuses = new Set(['processing', 'queued']);
+  const processing = state.jobs
+    .filter((job) => trackedStatuses.has(job.status))
+    .sort((a, b) => {
+      const aDate = new Date(a.updatedAt || a.createdAt || Date.now()).getTime();
+      const bDate = new Date(b.updatedAt || b.createdAt || Date.now()).getTime();
+      return bDate - aDate;
+    });
+  if (processing.length) {
+    const next = processing[0];
+    const jobIdStr = String(next.id);
+    const shouldPrime = current.jobId !== jobIdStr;
+    const needsStatusUpdate =
+      !shouldPrime &&
+      (
+        current.status !== next.status ||
+        current.jobName !== next.name ||
+        current.updatedAt !== next.updatedAt ||
+        (Number.isFinite(next.durationSec) && next.durationSec !== current.durationSec)
+      );
+    if (shouldPrime || needsStatusUpdate) {
+      store.setState((prev) => ({
+        ...prev,
+        stream: {
+          jobId: jobIdStr,
+          jobName: next.name,
+          status: next.status,
+          text: shouldPrime ? '' : prev.stream.text,
+          segments: shouldPrime ? [] : prev.stream.segments,
+          debugEvents: shouldPrime ? [] : prev.stream.debugEvents,
+          durationSec: shouldPrime ? null : prev.stream.durationSec,
+          updatedAt: next.updatedAt,
+        },
+      }));
+      if (shouldPrime) {
+        tailControllers.home?.setFollow(true);
+      }
+    }
+    if (shouldPrime || jobPolling.jobId !== jobIdStr) {
+      loadJobDetail(jobIdStr, { startPolling: true });
+    }
+    return;
+  }
+
+  if (current.jobId) {
+    const job = state.jobs.find((item) => item.id === current.jobId);
+    if (!job) {
+      store.setState((prev) => ({
+        ...prev,
+        stream: {
+          jobId: null,
+          jobName: '',
+          status: 'idle',
+          text: '',
+          segments: [],
+          debugEvents: [],
+          durationSec: null,
+          updatedAt: null,
+        },
+      }));
+      return;
+    }
+    if (current.status !== job.status || current.jobName !== job.name || current.updatedAt !== job.updatedAt) {
+      store.setState((prev) => ({
+        ...prev,
+        stream: {
+          ...prev.stream,
+          status: job.status,
+          jobName: job.name,
+          durationSec: Number.isFinite(job.durationSec) ? job.durationSec : prev.stream.durationSec,
+          updatedAt: job.updatedAt,
+        },
+      }));
+    }
+  }
+}
 function computeRecent(jobs) {
   return [...jobs]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
     .slice(0, 5);
 }
 
-async function loadStats() {
-  try {
-    const response = await fetch('/api/stats');
-    if (!response.ok) throw new Error('Respuesta no válida');
-    const stats = await response.json();
-    store.setState((prev) => ({ ...prev, stats }));
-  } catch (error) {
-    console.warn('Usando estadísticas de ejemplo', error);
-    store.setState((prev) => ({ ...prev, stats: SAMPLE_DATA.stats }));
-  }
-}
-
-async function loadFolders() {
-  try {
-    const response = await fetch('/api/folders');
-    if (!response.ok) throw new Error('Respuesta no válida');
-    const folders = await response.json();
-    store.setState((prev) => ({ ...prev, folders }));
-  } catch (error) {
-    console.warn('Usando carpetas de ejemplo', error);
-    store.setState((prev) => ({ ...prev, folders: SAMPLE_DATA.folders }));
-  }
-}
-
 async function loadJobs() {
   try {
-    const response = await fetch('/api/jobs');
+    const response = await fetch('/api/transcriptions');
     if (!response.ok) throw new Error('Respuesta no válida');
     const payload = await response.json();
-    const jobs = Array.isArray(payload)
-      ? payload.map((job) => ({ ...job, beam: job.beam ?? job.beam_size ?? null }))
+    const results = Array.isArray(payload?.results)
+      ? payload.results
+      : Array.isArray(payload)
+      ? payload
       : [];
-    store.setState((prev) => ({ ...prev, jobs, recentJobs: computeRecent(jobs) }));
+    const folderData = buildFoldersFromTranscriptionsPayload(results);
+    const jobs = results.map((item) => mapTranscriptionToJob(item, folderData.byPath));
+    const stats = computeStatsFromJobs(jobs, results);
+    store.setState((prev) => {
+      const folderIds = new Set(folderData.folders.map((folder) => folder.id));
+      let selectedFolderId = prev.selectedFolderId;
+      if (selectedFolderId && !folderIds.has(selectedFolderId)) {
+        selectedFolderId = null;
+      }
+      if (!selectedFolderId && folderData.folders.length) {
+        selectedFolderId = folderData.folders[0].id;
+      }
+      return {
+        ...prev,
+        jobs,
+        recentJobs: computeRecent(jobs),
+        folders: folderData.folders,
+        stats,
+        selectedFolderId,
+      };
+    });
+    maybeUpdateActiveStream();
   } catch (error) {
     console.warn('Usando transcripciones de ejemplo', error);
-    store.setState((prev) => ({ ...prev, jobs: SAMPLE_DATA.jobs, recentJobs: computeRecent(SAMPLE_DATA.jobs) }));
+    store.setState((prev) => ({
+      ...prev,
+      jobs: SAMPLE_DATA.jobs,
+      recentJobs: computeRecent(SAMPLE_DATA.jobs),
+      folders: SAMPLE_DATA.folders,
+      stats: SAMPLE_DATA.stats,
+      selectedFolderId: prev.selectedFolderId ?? SAMPLE_DATA.folders[0]?.id ?? null,
+    }));
+    maybeUpdateActiveStream();
   }
 }
 
-async function loadJobDetail(jobId) {
-  const current = store.getState().jobs.find((job) => job.id === jobId);
+async function loadJobDetail(jobId, { startPolling = true, suppressErrors = false } = {}) {
+  const jobIdStr = String(jobId);
+  const state = store.getState();
+  const current = state.jobs.find((job) => job.id === jobIdStr);
   if (!current) return;
   try {
-    const response = await fetch(`/api/jobs/${jobId}/text`);
+    const response = await fetch(`/api/transcriptions/${jobIdStr}`);
     if (!response.ok) throw new Error('Respuesta no válida');
     const payload = await response.json();
-    const folderMap = new Map(store.getState().folders.map((folder) => [folder.id, folder]));
-    const folderPath = current.folderId && folderMap.get(current.folderId) ? folderMap.get(current.folderId).path : '';
-    store.setState((prev) => ({
-      ...prev,
-      job: {
-        ...prev.job,
-        detail: {
-          job: current,
-          text: payload.text ?? '',
-          segments: payload.segments ?? null,
-          folderPath,
+    const folderSegments = deriveFolderSegments(payload.output_folder ?? current.outputFolder);
+    const folderPath = folderSegments.reduce((acc, segment) => `${acc}/${segment}`, '');
+    const debugEvents = Array.isArray(payload.debug_events) ? payload.debug_events : [];
+    const limitedEvents = debugEvents.slice(-600);
+    const payloadSegments = Array.isArray(payload.speakers)
+      ? payload.speakers
+          .map((segment) => (segment && segment.text ? String(segment.text).trim() : ''))
+          .filter(Boolean)
+      : null;
+    const eventSegments = buildSegmentsFromEvents(debugEvents);
+    const normalizedSegments =
+      payloadSegments && payloadSegments.length
+        ? payloadSegments
+        : eventSegments.length
+        ? eventSegments
+        : null;
+    const durationFromEvents = extractDurationFromEvents(debugEvents);
+    const payloadDuration = Number(payload.duration);
+    const resolvedDuration = Number.isFinite(payloadDuration) && payloadDuration > 0
+      ? payloadDuration
+      : Number.isFinite(durationFromEvents) && durationFromEvents > 0
+      ? durationFromEvents
+      : Number.isFinite(current.durationSec)
+      ? current.durationSec
+      : null;
+    const incomingText = typeof payload.text === 'string' ? payload.text : '';
+    const cachedText = jobTextCache.get(jobIdStr) || '';
+    const resolvedText = incomingText && incomingText.trim() ? incomingText : cachedText;
+    if (incomingText && incomingText.trim()) {
+      jobTextCache.set(jobIdStr, incomingText);
+    }
+    const folderLookup = new Map(state.folders.map((folder) => [folder.path, folder]));
+    let foldersForUpdate = state.folders;
+    if (folderPath && !folderLookup.has(folderPath)) {
+      const updatedFolders = [...state.folders];
+      let parentPath = '';
+      let parentId = null;
+      folderSegments.forEach((segment) => {
+        const path = `${parentPath}/${segment}`;
+        if (!folderLookup.has(path)) {
+          const folder = {
+            id: `fld-${hashString(path)}`,
+            name: segment,
+            parentId,
+            path,
+            createdAt: payload.created_at || new Date().toISOString(),
+          };
+          folderLookup.set(path, folder);
+          updatedFolders.push(folder);
+        }
+        parentId = folderLookup.get(path).id;
+        parentPath = path;
+      });
+      foldersForUpdate = updatedFolders;
+    }
+    const folderEntry = folderLookup.get(folderPath);
+    store.setState((prev) => {
+      const jobs = prev.jobs.map((job) => {
+        if (job.id !== jobIdStr) return job;
+        const nextDuration = Number.isFinite(resolvedDuration) ? resolvedDuration : job.durationSec;
+        return {
+          ...job,
+          status: normalizeStatus(payload.status ?? job.rawStatus),
+          rawStatus: payload.status ?? job.rawStatus,
+          durationSec: nextDuration,
+          language: payload.language ?? job.language,
+          model: payload.model_size ?? job.model,
+          beam: payload.beam_size ?? job.beam,
+          updatedAt: payload.updated_at ?? job.updatedAt,
+          createdAt: payload.created_at ?? job.createdAt,
+          devicePreference: payload.device_preference ?? job.devicePreference,
+          runtimeSeconds: payload.runtime_seconds ?? job.runtimeSeconds,
+          transcriptPath: payload.transcript_path ?? job.transcriptPath,
+          folderId: folderEntry ? folderEntry.id : job.folderId,
+          folderPath: folderPath || job.folderPath,
+          outputFolder: folderSegments.join('/'),
+        };
+      });
+      const stats = computeStatsFromJobs(jobs);
+      const activeJob = jobs.find((job) => job.id === jobIdStr) || current;
+      const streamMatches = prev.stream.jobId === jobIdStr || (!prev.stream.jobId && activeJob.status === 'processing');
+      const streamSegments = normalizedSegments && normalizedSegments.length
+        ? normalizedSegments.slice(-STREAM_SEGMENT_LIMIT)
+        : streamMatches
+        ? prev.stream.segments
+        : [];
+      const streamText = resolvedText && resolvedText.trim()
+        ? resolvedText
+        : streamMatches
+        ? prev.stream.text
+        : '';
+      const stream = streamMatches
+        ? {
+            jobId: jobIdStr,
+            jobName: activeJob.name,
+            status: activeJob.status,
+            text: streamText,
+            segments: streamSegments,
+            debugEvents: limitedEvents,
+            durationSec: Number.isFinite(resolvedDuration)
+              ? resolvedDuration
+              : Number.isFinite(activeJob.durationSec)
+              ? activeJob.durationSec
+              : prev.stream.durationSec,
+            updatedAt: activeJob.updatedAt,
+          }
+        : prev.stream;
+      return {
+        ...prev,
+        jobs,
+        folders: foldersForUpdate,
+        stats,
+        recentJobs: computeRecent(jobs),
+        job: {
+          ...prev.job,
+          detail: {
+            job: activeJob,
+            text: resolvedText,
+            segments: normalizedSegments,
+            folderPath: activeJob.folderPath,
+            debugEvents: limitedEvents,
+          },
         },
-      },
-    }));
+        stream,
+      };
+    });
+    if (startPolling) {
+      startJobPolling(jobIdStr);
+    } else {
+      evaluateJobPolling(jobIdStr);
+    }
   } catch (error) {
-    console.warn('Usando detalle de ejemplo', error);
-    const sample = SAMPLE_DATA.texts[jobId];
-    const folderMap = new Map(store.getState().folders.map((folder) => [folder.id, folder]));
+    if (!suppressErrors) {
+      console.warn('Usando detalle de ejemplo', error);
+    }
+    const folderMap = new Map(state.folders.map((folder) => [folder.id, folder]));
     const folderPath = current.folderId && folderMap.get(current.folderId) ? folderMap.get(current.folderId).path : '';
-    store.setState((prev) => ({
-      ...prev,
-      job: {
-        ...prev.job,
-        detail: {
-          job: current,
-          text: sample?.text ?? '',
-          segments: sample?.segments ?? null,
-          folderPath,
+    const sample = SAMPLE_DATA.texts[jobIdStr];
+    store.setState((prev) => {
+      const streamMatches = prev.stream.jobId === jobIdStr;
+      const streamSegments = sample?.segments?.length
+        ? sample.segments.slice(-STREAM_SEGMENT_LIMIT)
+        : streamMatches
+        ? prev.stream.segments
+        : [];
+      const streamText = sample?.text?.trim()
+        ? sample.text
+        : streamMatches
+        ? prev.stream.text
+        : '';
+    const stream = streamMatches
+        ? {
+            jobId: jobIdStr,
+            jobName: current.name,
+            status: current.status,
+            text: streamText,
+            segments: streamSegments,
+            debugEvents: sample?.debugEvents?.slice(-600) ?? prev.stream.debugEvents,
+            durationSec: Number.isFinite(current.durationSec)
+              ? current.durationSec
+              : prev.stream.durationSec,
+            updatedAt: current.updatedAt,
+          }
+        : prev.stream;
+      return {
+        ...prev,
+        job: {
+          ...prev.job,
+          detail: {
+            job: current,
+            text: sample?.text ?? '',
+            segments: sample?.segments ?? null,
+            folderPath,
+            debugEvents: sample?.debugEvents ?? [],
+          },
         },
-      },
-    }));
+        stream,
+      };
+    });
+    if (startPolling) {
+      startJobPolling(jobIdStr);
+    } else {
+      evaluateJobPolling(jobIdStr);
+    }
   }
 }
 
 async function loadInitialData() {
-  await Promise.all([loadStats(), loadFolders(), loadJobs()]);
+  await loadJobs();
 }
 function formatStatus(status) {
   switch (status) {
@@ -1534,7 +2318,7 @@ async function handleUploadSubmit(event) {
     elements.upload.feedback.textContent = `Subida parcial: ${completed} archivo(s) listo(s), ${failed} con error.`;
   } else if (completed) {
     elements.upload.feedback.textContent = 'Archivos encolados correctamente.';
-    await loadStats().catch((error) => console.warn('No se pudieron refrescar las métricas', error));
+    await loadJobs().catch((error) => console.warn('No se pudieron refrescar las transcripciones', error));
   } else if (failed) {
     elements.upload.feedback.textContent = 'No se pudo subir ningún archivo. Revisa el tamaño y el formato.';
   }
@@ -1877,8 +2661,14 @@ function setupJobActions() {
   elements.job.downloadTxt?.addEventListener('click', async () => {
     const detail = store.getState().job.detail;
     if (!detail) return;
-    const url = `/api/transcriptions/${detail.job.id}.txt`;
-    await triggerDownload(url, detail.text, `${detail.job.id}.txt`);
+    const idStr = String(detail.job.id);
+    const filename = `${idStr}.txt`;
+    if (!NUMERIC_ID_PATTERN.test(idStr)) {
+      downloadFileFallback(filename, detail.text);
+      return;
+    }
+    const url = `/api/transcriptions/${idStr}.txt`;
+    await triggerDownload(url, detail.text, filename);
   });
 
   elements.job.downloadSrt?.addEventListener('click', async () => {
@@ -1888,8 +2678,14 @@ function setupJobActions() {
       ? detail.segments.map((segment, index) => `${index + 1}\n00:00:${String(index).padStart(2, '0')} --> 00:00:${String(index + 1).padStart(2, '0')}\n${segment}\n`)
       : [`1\n00:00:00 --> 00:10:00\n${detail.text}\n`];
     const fallback = lines.join('\n');
-    const url = `/api/transcriptions/${detail.job.id}.srt`;
-    await triggerDownload(url, fallback, `${detail.job.id}.srt`);
+    const idStr = String(detail.job.id);
+    const filename = `${idStr}.srt`;
+    if (!NUMERIC_ID_PATTERN.test(idStr)) {
+      downloadFileFallback(filename, fallback, 'application/x-subrip;charset=utf-8');
+      return;
+    }
+    const url = `/api/transcriptions/${idStr}.srt`;
+    await triggerDownload(url, fallback, filename);
   });
 
   elements.job.exportMd?.addEventListener('click', () => {
@@ -2044,6 +2840,8 @@ async function init() {
   setupFullscreenButtons();
   setupHomeShortcuts();
   setupDiagnostics();
+  renderHomePanel(store.getState());
+  updateHomeStatus(store.getState());
   await loadInitialData();
   initRouteFromStorage();
 }
