@@ -527,14 +527,6 @@ function applyTheme(theme, persist = true) {
     } catch (error) {
       console.warn('No se pudo guardar el tema', error);
     }
-  });
-  if (persist) preferences.set(LOCAL_KEYS.lastRoute, normalized);
-  if (updateHash) {
-    const targetHash = `#${normalized}`;
-    if (window.location.hash !== targetHash) {
-      suppressHashChange = true;
-      window.location.hash = targetHash;
-    }
   }
   updateThemeToggle(normalized);
 }

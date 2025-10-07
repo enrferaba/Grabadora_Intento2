@@ -100,8 +100,8 @@ class LiveSessionState:
     created_at: float = field(default_factory=time.time)
     chunk_count: int = 0
     last_text: str = ""
-    last_duration: Optional[float] = None
-    last_runtime: Optional[float] = None
+    last_duration: float = 0.0
+    last_runtime: float = 0.0
     lock: Lock = field(default_factory=Lock)
 
 
@@ -214,7 +214,7 @@ def _transcription_to_srt(transcription: Transcription) -> str:
     return "\n".join(entries).strip() + "\n"
 
 
-def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> None:
+def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> AudioSegment:
     try:
         segment = AudioSegment.from_file(chunk_path)
     except Exception as exc:  # pragma: no cover - depende del runtime
@@ -230,6 +230,7 @@ def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> None:
         combined = segment
 
     combined.export(state.audio_path, format="wav")
+    return segment
 
 
 def _cleanup_live_session(session_id: str) -> None:
@@ -354,22 +355,44 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
     chunk.file.close()
     with state.lock:
         try:
-            _merge_live_chunk(state, chunk_path)
+            segment = _merge_live_chunk(state, chunk_path)
         except RuntimeError as exc:
             chunk_path.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         finally:
             chunk_path.unlink(missing_ok=True)
-        state.chunk_count = index + 1
         transcriber = get_transcriber(state.model_size, state.device)
-        result = transcriber.transcribe(
-            state.audio_path,
-            state.language,
-            beam_size=state.beam_size,
+        chunk_wav_path = state.directory / f"chunk-{index:05d}-transcribe.wav"
+        segment.export(chunk_wav_path, format="wav")
+        try:
+            result = transcriber.transcribe(
+                chunk_wav_path,
+                state.language,
+                beam_size=state.beam_size,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - dependerá del runtime
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al transcribir el fragmento: {exc}",
+            ) from exc
+        finally:
+            chunk_wav_path.unlink(missing_ok=True)
+        state.chunk_count = index + 1
+        new_text = (result.text or "").strip()
+        if new_text:
+            if state.last_text:
+                separator = "" if state.last_text.endswith((" ", "\n")) else " "
+                state.last_text = f"{state.last_text}{separator}{new_text}".strip()
+            else:
+                state.last_text = new_text
+        chunk_duration = (
+            result.duration if result.duration is not None else len(segment) / 1000.0
         )
-        state.last_text = result.text
-        state.last_duration = result.duration
-        state.last_runtime = result.runtime_seconds
+        state.last_duration += float(chunk_duration)
+        runtime_seconds = result.runtime_seconds or 0.0
+        state.last_runtime += float(runtime_seconds)
         state.language = result.language or state.language
     return LiveChunkResponse(
         session_id=session_id,
