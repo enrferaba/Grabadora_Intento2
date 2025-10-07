@@ -839,6 +839,7 @@ function createTailController({ scroller, text, followToggle, returnButton, pref
   sentinel.setAttribute('aria-hidden', 'true');
   let follow = followToggle ? preferences.get(preferenceKey, true) : true;
   if (followToggle) followToggle.checked = follow;
+  let lastContent = '';
 
   const scrollToEnd = (smooth = false) => {
     const behavior = smooth ? 'smooth' : 'auto';
@@ -856,10 +857,29 @@ function createTailController({ scroller, text, followToggle, returnButton, pref
   };
 
   const render = (content) => {
-    text.textContent = content || '';
-    if (!text.contains(sentinel)) {
+    const nextContent = content || '';
+    const extendsPrevious = nextContent.startsWith(lastContent);
+    const hasGrown = extendsPrevious && nextContent.length > lastContent.length;
+
+    if (!extendsPrevious) {
+      text.textContent = nextContent;
+      if (!text.contains(sentinel)) {
+        text.appendChild(sentinel);
+      }
+    } else if (hasGrown) {
+      const suffix = nextContent.slice(lastContent.length);
+      if (!text.contains(sentinel)) {
+        text.appendChild(sentinel);
+      }
+      if (suffix) {
+        const node = document.createTextNode(suffix);
+        text.insertBefore(node, sentinel);
+      }
+    } else if (!text.contains(sentinel)) {
       text.appendChild(sentinel);
     }
+
+    lastContent = nextContent;
     if (follow) scrollToEnd(false);
   };
 
@@ -915,7 +935,23 @@ const jobPolling = {
   jobId: null,
 };
 
+const JOB_TEXT_CACHE_LIMIT = 50;
 const jobTextCache = new Map();
+
+function pruneJobTextCache() {
+  const { jobs } = store.getState();
+  const activeJobIds = new Set(jobs.map((job) => String(job.id)));
+  for (const key of Array.from(jobTextCache.keys())) {
+    if (!activeJobIds.has(key)) {
+      jobTextCache.delete(key);
+    }
+  }
+  while (jobTextCache.size > JOB_TEXT_CACHE_LIMIT) {
+    const oldestKey = jobTextCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    jobTextCache.delete(oldestKey);
+  }
+}
 
 function stopJobPolling() {
   if (jobPolling.timer) {
@@ -1899,6 +1935,7 @@ async function loadJobs() {
         selectedFolderId,
       };
     });
+    pruneJobTextCache();
     maybeUpdateActiveStream();
   } catch (error) {
     console.warn('Usando transcripciones de ejemplo', error);
@@ -1910,6 +1947,7 @@ async function loadJobs() {
       stats: SAMPLE_DATA.stats,
       selectedFolderId: prev.selectedFolderId ?? SAMPLE_DATA.folders[0]?.id ?? null,
     }));
+    pruneJobTextCache();
     maybeUpdateActiveStream();
   }
 }
@@ -1953,6 +1991,7 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
     const resolvedText = incomingText && incomingText.trim() ? incomingText : cachedText;
     if (incomingText && incomingText.trim()) {
       jobTextCache.set(jobIdStr, incomingText);
+      pruneJobTextCache();
     }
     const folderLookup = new Map(state.folders.map((folder) => [folder.path, folder]));
     let foldersForUpdate = state.folders;
