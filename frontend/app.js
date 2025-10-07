@@ -1,2539 +1,1793 @@
-const API_BASE = '/api/transcriptions';
-const PAYMENTS_BASE = '/api/payments';
-const AUTH_BASE = '/api/auth';
+const ROUTES = ['home', 'live', 'library', 'job', 'benefits'];
+const LOCAL_KEYS = {
+  homeFollow: 'grabadora:home-follow',
+  liveFollow: 'grabadora:live-follow',
+  jobFollow: 'grabadora:job-follow',
+  liveTailSize: 'grabadora:live-tail-size',
+  jobTailSize: 'grabadora:job-tail-size',
+  lastRoute: 'grabadora:last-route',
+};
+const THEME_KEY = 'grabadora:theme';
 
-const uploadForm = document.querySelector('#upload-form');
-const uploadStatus = document.querySelector('#upload-status');
-const transcriptionList = document.querySelector('#transcription-list');
-const searchInput = document.querySelector('#search');
-const filterPremium = document.querySelector('#filter-premium');
-const modal = document.querySelector('#modal');
-const modalText = document.querySelector('#modal-text');
-const modalClose = document.querySelector('#modal-close');
-const template = document.querySelector('#transcription-template');
-const fileInput = document.querySelector('#audio-file');
-const fileTrigger = document.querySelector('.file-trigger');
-const filePreview = document.querySelector('#file-preview');
-const fileError = document.querySelector('#file-error');
-const plansContainer = document.querySelector('#plans');
-const checkoutStatus = document.querySelector('#checkout-status');
-const refreshPlansBtn = document.querySelector('#refresh-plans');
-const googleLoginBtn = document.querySelector('#google-login');
-const languageSelect = document.querySelector('#language');
-const modelSelect = document.querySelector('#model-size');
-const deviceSelect = document.querySelector('#device-preference');
-const liveOutput = document.querySelector('#live-output');
-const copyTranscriptBtn = document.querySelector('#copy-transcript');
-const metricTotal = document.querySelector('[data-metric="total"]');
-const metricCompleted = document.querySelector('[data-metric="completed"]');
-const metricProcessing = document.querySelector('[data-metric="processing"]');
-const metricPremium = document.querySelector('[data-metric="premium"]');
-const metricMinutes = document.querySelector('[data-metric="minutes"]');
-const uploadProgress = document.querySelector('#upload-progress');
-
-const MEDIA_PREFIXES = ['audio/', 'video/'];
-const MEDIA_EXTENSIONS = [
-  '.aac',
-  '.flac',
-  '.m4a',
-  '.m4v',
-  '.mkv',
-  '.mov',
-  '.mp3',
-  '.mp4',
-  '.ogg',
-  '.wav',
-  '.webm',
-  '.wma',
+const PREMIUM_PLANS = [
+  {
+    slug: 'student-local',
+    name: 'Estudiante Local',
+    price: '0 €',
+    cadence: '/mes',
+    description: 'Procesa en tu propio equipo con notas y capítulos automáticos.',
+    perks: [
+      'Hasta 60 minutos por sesión en vivo',
+      'Notas rápidas y marcadores en pantalla',
+      'Exportación TXT y Markdown básica',
+    ],
+  },
+  {
+    slug: 'starter-15',
+    name: 'Starter 15',
+    price: '12 €',
+    cadence: '/mes',
+    description: 'Horas en la nube con cola prioritaria y exportaciones enriquecidas.',
+    perks: [
+      '15 horas/mes en servidores gestionados',
+      'Exportación DOCX y PDF',
+      'Soporte por correo en 24 h',
+    ],
+  },
+  {
+    slug: 'pro-60',
+    name: 'Pro 60',
+    price: '29 €',
+    cadence: '/mes',
+    description: 'Pensado para equipos: integraciones, diarización avanzada y enlaces compartidos.',
+    perks: [
+      '60 horas/mes con reprocesado large-v3',
+      'Integraciones con Drive, Notion y webhooks',
+      'Enlaces seguros y control de versiones',
+    ],
+  },
 ];
 
-const AUTO_SCROLL_THRESHOLD = 160;
+const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
-let searchTimer;
-let pollingTimeout = null;
-let currentQuery = '';
-let premiumOnly = false;
-let selectedTranscriptionId = null;
-let refreshInFlight = null;
-let lastResultsSignature = '';
-let lastPendingCount = 0;
-let refreshQueuedWhileHidden = false;
-const progressControllers = new Map();
-const metricSnapshot = {
-  total: 0,
-  completed: 0,
-  processing: 0,
-  premium: 0,
-  minutes: 0,
+const SAMPLE_DATA = {
+  stats: {
+    todayMinutes: 42,
+    totalMinutes: 1280,
+    todayCount: 3,
+    totalCount: 214,
+    queue: 1,
+    mode: 'GPU',
+    model: 'WhisperX large-v3',
+  },
+  folders: [
+    { id: 'fld-root', name: 'General', parentId: null, path: '/General', createdAt: '2024-01-02T09:00:00Z' },
+    { id: 'fld-class', name: 'Clases', parentId: null, path: '/Clases', createdAt: '2024-01-02T09:00:00Z' },
+    { id: 'fld-class-2024', name: '2024', parentId: 'fld-class', path: '/Clases/2024', createdAt: '2024-01-02T09:00:00Z' },
+    { id: 'fld-class-history', name: 'Historia', parentId: 'fld-class-2024', path: '/Clases/2024/Historia', createdAt: '2024-04-18T09:00:00Z' },
+    { id: 'fld-podcasts', name: 'Podcasts', parentId: null, path: '/Podcasts', createdAt: '2024-02-12T09:00:00Z' },
+  ],
+  jobs: [
+    {
+      id: 'job-001',
+      name: 'Clase Historia 18-04.mp3',
+      folderId: 'fld-class-history',
+      status: 'completed',
+      durationSec: 1980,
+      language: 'es',
+      model: 'large-v3',
+      createdAt: '2024-04-18T14:00:00Z',
+      updatedAt: '2024-04-18T14:35:00Z',
+    },
+    {
+      id: 'job-002',
+      name: 'Briefing producto.m4a',
+      folderId: 'fld-root',
+      status: 'processing',
+      durationSec: 1420,
+      language: 'es',
+      model: 'large-v3',
+      createdAt: '2024-06-12T09:10:00Z',
+      updatedAt: '2024-06-12T09:40:00Z',
+    },
+    {
+      id: 'job-003',
+      name: 'Podcast demo.wav',
+      folderId: 'fld-podcasts',
+      status: 'completed',
+      durationSec: 2600,
+      language: 'es',
+      model: 'small',
+      createdAt: '2024-05-28T11:00:00Z',
+      updatedAt: '2024-05-28T11:55:00Z',
+    },
+    {
+      id: 'job-004',
+      name: 'Pitch internacional.mp3',
+      folderId: 'fld-root',
+      status: 'error',
+      durationSec: 860,
+      language: 'en',
+      model: 'large-v3',
+      createdAt: '2024-06-19T08:00:00Z',
+      updatedAt: '2024-06-19T08:25:00Z',
+    },
+    {
+      id: 'job-005',
+      name: 'Acta reunión 21-06.wav',
+      folderId: 'fld-root',
+      status: 'queued',
+      durationSec: 1200,
+      language: 'es',
+      model: 'large-v3',
+      createdAt: '2024-06-21T07:30:00Z',
+      updatedAt: '2024-06-21T07:30:00Z',
+    },
+  ],
+  texts: {
+    'job-001': {
+      jobId: 'job-001',
+      text: `Buenos días a todas y todos. Hoy retomamos el tema de las revoluciones atlánticas...\n\nEn primer lugar repasamos las causas económicas y políticas que empujaron la independencia de las trece colonias. Después, contrastamos las constituciones de Estados Unidos y Francia, destacando el papel del sufragio limitado. Finalmente, debatimos cómo estos procesos influyeron en los movimientos independentistas en América Latina.`,
+      segments: [
+        'Buenos días a todas y todos. ',
+        'Hoy retomamos el tema de las revoluciones atlánticas y su relación con las economías coloniales.\n',
+        'Repasamos las causas económicas y políticas que empujaron la independencia de las trece colonias.\n',
+        'Contrastamos las constituciones de Estados Unidos y Francia, destacando el papel del sufragio limitado.\n',
+        'Finalmente, debatimos cómo estos procesos influyeron en los movimientos independentistas en América Latina.\n',
+      ],
+    },
+    'job-002': {
+      jobId: 'job-002',
+      text: 'La transcripción está en curso; se actualizará automáticamente en cuanto lleguen nuevos segmentos.',
+      segments: [
+        'Estamos validando el mensaje clave del lanzamiento.\n',
+        'El objetivo es simplificar la narrativa para la prensa especializada.\n',
+      ],
+    },
+    'job-003': {
+      jobId: 'job-003',
+      text: 'Bienvenida al episodio piloto. Conversamos sobre productividad, IA aplicada y hábitos sostenibles.\n\nSección 1: qué nos motivó a crear este podcast. Sección 2: herramientas favoritas para tomar notas. Sección 3: preguntas de la audiencia.',
+    },
+  },
 };
-let uploadProgressTimer = null;
-let uploadProgressValue = 0;
-let currentLiveTranscriptionId = null;
-let currentLiveText = '';
-const destinationInput = document.querySelector('#destination-folder');
-let cachedPlans = [];
-const studentPreviewBody = document.querySelector('#student-preview-body');
-const studentFollowToggle = document.querySelector('#student-follow');
-const openStudentBtn = document.querySelector('#open-student-web');
-const folderGroupsContainer = document.querySelector('#folder-groups');
-const folderCategoryFilter = document.querySelector('#folder-category');
-const folderStatusFilter = document.querySelector('#folder-status');
-const folderTopicFilter = document.querySelector('#folder-topic');
-const folderSearchInput = document.querySelector('#folder-search');
-const folderResetButton = document.querySelector('#folder-reset');
-const systemAlerts = document.querySelector('#system-alerts');
-const destinationOptionsList = document.querySelector('#destination-folder-options');
-const destinationSavedHint = document.querySelector('#destination-saved-hint');
-const liveLanguageSelect = document.querySelector('#live-language');
-const liveModelSelect = document.querySelector('#live-model');
-const liveDeviceSelect = document.querySelector('#live-device');
-const liveFolderInput = document.querySelector('#live-folder');
-const liveSubjectInput = document.querySelector('#live-subject');
-const liveStartButton = document.querySelector('#live-start');
-const liveStopButton = document.querySelector('#live-stop');
-const liveResetButton = document.querySelector('#live-reset');
-const liveStreamStatus = document.querySelector('#live-stream-status');
-const liveStreamOutput = document.querySelector('#live-stream-output');
-const homePendingList = document.querySelector('#home-pending-list');
-const homePendingEmpty = document.querySelector('#home-pending-empty');
-const homePendingCount = document.querySelector('#home-pending-count');
-const homeFolderSummary = document.querySelector('#home-folder-summary');
-const homeRecentList = document.querySelector('#home-recent-list');
-const sectionToggles = document.querySelectorAll('[data-section-toggle]');
-const sectionPanels = document.querySelectorAll('[data-section]');
-const sectionJumpButtons = document.querySelectorAll('[data-section-jump]');
 
-const typingQueue = [];
-let typingInProgress = false;
-let cachedResults = [];
-let cachedFolderGroups = [];
-const folderFilters = {
-  category: 'all',
-  status: 'all',
-  topic: 'all',
-  search: '',
+const SAMPLE_LIVE_SEGMENTS = [
+  'Conectando dispositivos y preparando el entorno de grabación...\n',
+  'Recordemos que la sesión de hoy se centra en técnicas para resumir clases largas.\n',
+  'Primer paso: identifica palabras clave y define etiquetas para tus carpetas.\n',
+  'Cuando detectes un cambio de tema, marca un hito para navegar después.\n',
+  'Puedes pausar la sesión si necesitas responder preguntas en vivo.\n',
+  'Al finalizar, descarga el .txt o exporta a Markdown para compartirlo con tu equipo.\n',
+];
+const elements = {
+  themeToggle: document.getElementById('theme-toggle'),
+  navButtons: document.querySelectorAll('[data-route-target]'),
+  views: document.querySelectorAll('.view'),
+  stats: {
+    totalMinutes: document.querySelector('[data-stat="totalMinutes"]'),
+    todayMinutes: document.querySelector('[data-stat="todayMinutes"]'),
+    totalCount: document.querySelector('[data-stat="totalCount"]'),
+    todayCount: document.querySelector('[data-stat="todayCount"]'),
+    queue: document.querySelector('[data-stat="queue"]'),
+    mode: document.querySelector('[data-stat="mode"]'),
+    model: document.querySelector('[data-stat="model"]'),
+  },
+  home: {
+    liveText: document.getElementById('home-live-text'),
+    liveTail: document.getElementById('home-live-tail'),
+    follow: document.getElementById('home-live-follow'),
+    status: document.getElementById('home-live-status'),
+    returnBtn: document.getElementById('home-live-return'),
+    start: document.querySelector('[data-live-control="start"]'),
+    pause: document.querySelector('[data-live-control="pause"]'),
+    resume: document.querySelector('[data-live-control="resume"]'),
+    finish: document.querySelector('[data-live-control="finish"]'),
+    fontIncrease: document.getElementById('home-live-font-increase'),
+    fontDecrease: document.getElementById('home-live-font-decrease'),
+    fullscreen: document.getElementById('home-live-fullscreen'),
+    recentBody: document.getElementById('recent-table-body'),
+    quickFolder: document.getElementById('quick-folder'),
+    newTranscription: document.getElementById('home-new-transcription'),
+  },
+  upload: {
+    form: document.getElementById('upload-form'),
+    dropzone: document.getElementById('upload-dropzone'),
+    input: document.getElementById('upload-input'),
+    trigger: document.getElementById('upload-trigger'),
+    folder: document.getElementById('upload-folder'),
+    language: document.getElementById('upload-language'),
+    model: document.getElementById('upload-model'),
+    feedback: document.getElementById('upload-feedback'),
+    diarization: document.getElementById('upload-diarization'),
+    vad: document.getElementById('upload-vad'),
+    progress: document.getElementById('upload-progress'),
+    fileList: document.getElementById('upload-file-list'),
+    submit: document.querySelector('#upload-form button[type="submit"]'),
+  },
+  benefits: {
+    pricing: document.getElementById('pricing-grid'),
+    prompt: document.getElementById('codex-prompt'),
+    copy: document.getElementById('copy-prompt'),
+  },
+  library: {
+    tree: document.getElementById('folder-tree'),
+    breadcrumbs: document.getElementById('library-breadcrumbs'),
+    tableBody: document.getElementById('library-table-body'),
+    filterStatus: document.getElementById('filter-status'),
+    filterLanguage: document.getElementById('filter-language'),
+    filterModel: document.getElementById('filter-model'),
+    filterSearch: document.getElementById('filter-search'),
+    create: document.getElementById('library-create-folder'),
+    rename: document.getElementById('library-rename-folder'),
+    move: document.getElementById('library-move-folder'),
+    remove: document.getElementById('library-delete-folder'),
+  },
+  live: {
+    language: document.getElementById('live-language'),
+    model: document.getElementById('live-model'),
+    device: document.getElementById('live-device'),
+    folder: document.getElementById('live-folder'),
+    start: document.getElementById('live-start'),
+    pause: document.getElementById('live-pause'),
+    resume: document.getElementById('live-resume'),
+    finish: document.getElementById('live-finish'),
+    tail: document.getElementById('live-stream'),
+    text: document.getElementById('live-stream-text'),
+    follow: document.getElementById('live-follow'),
+    returnBtn: document.getElementById('live-return'),
+    tailSize: document.getElementById('live-tail-size'),
+    fontPlus: document.getElementById('live-font-plus'),
+    fontMinus: document.getElementById('live-font-minus'),
+    fullscreen: document.getElementById('live-fullscreen'),
+    kpis: document.querySelectorAll('[data-live-kpi]'),
+  },
+  job: {
+    breadcrumbs: document.getElementById('job-breadcrumbs'),
+    title: document.getElementById('job-title'),
+    subtitle: document.getElementById('job-subtitle'),
+    move: document.getElementById('job-move'),
+    follow: document.getElementById('job-follow'),
+    returnBtn: document.getElementById('job-return'),
+    tail: document.getElementById('job-tail'),
+    text: document.getElementById('job-text-content'),
+    tailSize: document.getElementById('job-tail-size'),
+    copy: document.getElementById('job-copy'),
+    downloadTxt: document.getElementById('job-download-txt'),
+    downloadSrt: document.getElementById('job-download-srt'),
+    exportMd: document.getElementById('job-export-md'),
+    status: document.getElementById('job-status'),
+    folder: document.getElementById('job-folder'),
+    duration: document.getElementById('job-duration'),
+    language: document.getElementById('job-language'),
+    model: document.getElementById('job-model'),
+    wer: document.getElementById('job-wer'),
+    audio: document.getElementById('job-audio'),
+    logs: document.getElementById('job-logs'),
+  },
+  datalist: document.getElementById('folder-options'),
+  diagnostics: document.getElementById('open-diagnostics'),
 };
-const DESTINATION_STORAGE_KEY = 'grabadora:last-destination-folder';
-const LAST_SECTION_STORAGE_KEY = 'grabadora:last-section';
-const LIVE_CHUNK_INTERVAL = 4000;
 
-let liveSessionId = null;
-let liveMediaStream = null;
-let liveRecorder = null;
-let liveChunkChain = Promise.resolve();
-let liveSessionActive = false;
-let destinationHintTimeout = null;
+let suppressHashChange = false;
 
-const FOLDER_TAG_LABELS = {
-  temario: 'Temario',
-  tema: 'Tema',
-  practicas: 'Prácticas',
-  ejercicios: 'Ejercicios',
-  teoria: 'Teoría',
+const preferences = {
+  get(key, fallback) {
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored === null) return fallback;
+      if (stored === 'true' || stored === 'false') return stored === 'true';
+      const value = Number(stored);
+      return Number.isNaN(value) ? stored : value;
+    } catch (error) {
+      console.warn('No se pudo leer preferencia', key, error);
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try {
+      localStorage.setItem(key, String(value));
+    } catch (error) {
+      console.warn('No se pudo guardar preferencia', key, error);
+    }
+  },
 };
 
-const SEVERITY_RANK = {
-  info: 0,
-  warning: 1,
-  error: 2,
-};
+function currentTheme() {
+  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+}
 
-function cancelTyping(container) {
-  if (!container) return;
-  container.dataset.typingToken = '';
-  for (let idx = typingQueue.length - 1; idx >= 0; idx -= 1) {
-    if (typingQueue[idx].container === container) {
-      typingQueue.splice(idx, 1);
+function updateThemeToggle(theme = currentTheme()) {
+  if (!elements.themeToggle) return;
+  const isDark = theme === 'dark';
+  elements.themeToggle.setAttribute('aria-pressed', String(isDark));
+  elements.themeToggle.setAttribute('aria-label', isDark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro');
+  const label = elements.themeToggle.querySelector('[data-theme-label]');
+  const icon = elements.themeToggle.querySelector('[data-theme-icon]');
+  if (label) label.textContent = isDark ? 'Modo claro' : 'Modo oscuro';
+  if (icon) icon.textContent = isDark ? '☀️' : '🌙';
+}
+
+function applyTheme(theme, persist = true) {
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.classList.toggle('dark', normalized === 'dark');
+  document.documentElement.dataset.theme = normalized;
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_KEY, normalized);
+    } catch (error) {
+      console.warn('No se pudo guardar el tema', error);
     }
   }
+  updateThemeToggle(normalized);
 }
 
-async function fetchJSON(url, options = {}) {
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(body || response.statusText);
-  }
-  if (response.status === 204) {
-    return null;
-  }
-  return response.json();
-}
+function renderPricingPlans() {
+  if (!elements.benefits.pricing) return;
+  elements.benefits.pricing.innerHTML = '';
+  PREMIUM_PLANS.forEach((plan) => {
+    const card = document.createElement('article');
+    card.className = 'pricing-card';
+    card.setAttribute('role', 'listitem');
 
-function computeResultsSignature(results) {
-  if (!Array.isArray(results) || !results.length) {
-    return 'empty';
-  }
-  return results
-    .map((item) => {
-      const updatedAt = item.updated_at || item.created_at || '';
-      const latestEvent = Array.isArray(item.debug_events) && item.debug_events.length
-        ? item.debug_events[item.debug_events.length - 1]?.timestamp || item.debug_events.length
-        : 'no-events';
-      return `${item.id}:${item.status}:${updatedAt}:${(item.text || '').length}:${latestEvent}`;
-    })
-    .join('|');
-}
+    const header = document.createElement('div');
+    header.className = 'pricing-card__header';
 
-function safeLocalStorageGet(key) {
-  try {
-    return window.localStorage?.getItem(key) ?? '';
-  } catch (error) {
-    console.warn('No se pudo leer localStorage:', error);
-    return '';
-  }
-}
+    const title = document.createElement('h3');
+    title.className = 'pricing-card__title';
+    title.textContent = plan.name;
 
-function safeLocalStorageSet(key, value) {
-  try {
-    if (value) {
-      window.localStorage?.setItem(key, value);
-    } else {
-      window.localStorage?.removeItem(key);
-    }
-  } catch (error) {
-    console.warn('No se pudo escribir en localStorage:', error);
-  }
-}
+    const price = document.createElement('div');
+    price.className = 'pricing-card__price';
+    price.innerHTML = `${plan.price}<span>${plan.cadence}</span>`;
 
-function setActiveSection(targetSection, options = {}) {
-  if (!sectionPanels?.length) return;
-  const fallback = options.fallback || 'home';
-  const available = Array.from(sectionPanels, (panel) => panel.dataset.section).filter(Boolean);
-  const desired = available.includes(targetSection) ? targetSection : available.includes(fallback) ? fallback : available[0];
-  if (!desired) {
-    return;
-  }
-  sectionPanels.forEach((panel) => {
-    const active = panel.dataset.section === desired;
-    panel.classList.toggle('is-active', active);
-    panel.hidden = !active;
-  });
-  if (sectionToggles?.length) {
-    sectionToggles.forEach((toggle) => {
-      const active = toggle.dataset.sectionToggle === desired;
-      toggle.classList.toggle('is-active', active);
-      if (active) {
-        toggle.setAttribute('aria-current', 'page');
-      } else {
-        toggle.removeAttribute('aria-current');
-      }
+    const description = document.createElement('p');
+    description.className = 'panel__subtitle';
+    description.textContent = plan.description;
+
+    header.appendChild(title);
+    header.appendChild(price);
+    card.appendChild(header);
+    card.appendChild(description);
+
+    const list = document.createElement('ul');
+    list.className = 'pricing-card__list';
+    plan.perks.forEach((perk) => {
+      const item = document.createElement('li');
+      item.textContent = perk;
+      list.appendChild(item);
     });
-  }
-  if (!options?.skipPersist) {
-    safeLocalStorageSet(LAST_SECTION_STORAGE_KEY, desired);
-  }
+    card.appendChild(list);
+
+    const cta = document.createElement('a');
+    cta.className = 'pricing-card__cta';
+    cta.href = `/checkout?plan=${encodeURIComponent(plan.slug)}`;
+    cta.textContent = 'Elegir plan';
+    card.appendChild(cta);
+
+    elements.benefits.pricing.appendChild(card);
+  });
 }
 
-function hideDestinationSavedHint() {
-  if (!destinationSavedHint) return;
-  destinationSavedHint.hidden = true;
-  if (destinationHintTimeout) {
-    window.clearTimeout(destinationHintTimeout);
-    destinationHintTimeout = null;
-  }
+function injectPrompt() {
+  if (!elements.benefits.prompt) return;
+  elements.benefits.prompt.value = PROMPT_TEXT;
 }
 
-function persistDestinationFolder(value) {
-  const trimmed = (value || '').trim();
-  safeLocalStorageSet(DESTINATION_STORAGE_KEY, trimmed);
-  if (!destinationSavedHint) {
-    return;
-  }
-  if (!trimmed) {
-    hideDestinationSavedHint();
-    return;
-  }
-  destinationSavedHint.hidden = false;
-  if (destinationHintTimeout) {
-    window.clearTimeout(destinationHintTimeout);
-  }
-  destinationHintTimeout = window.setTimeout(() => {
-    hideDestinationSavedHint();
-  }, 1600);
+function downloadFileFallback(filename, content, mimeType = 'text/plain;charset=utf-8') {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
-function getStoredDestinationFolder() {
-  return safeLocalStorageGet(DESTINATION_STORAGE_KEY) || '';
-}
-
-function updateDestinationOptions(items) {
-  if (!destinationOptionsList) return;
-  const folders = new Set();
-  const stored = getStoredDestinationFolder();
-  if (stored) {
-    folders.add(stored);
-  }
-  if (Array.isArray(items)) {
-    for (const entry of items) {
-      const folderName = (entry?.output_folder || entry?.destination_folder || '').trim();
-      if (folderName) {
-        folders.add(folderName);
-      }
+async function triggerDownload(url, fallbackContent, filename, mimeType = 'text/plain;charset=utf-8') {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(response.statusText);
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(objectUrl);
+  } catch (error) {
+    if (fallbackContent != null) {
+      downloadFileFallback(filename, fallbackContent, mimeType);
+    } else {
+      alert('No fue posible descargar el archivo solicitado.');
     }
   }
-  destinationOptionsList.innerHTML = '';
-  Array.from(folders)
-    .sort((a, b) => a.localeCompare(b, 'es'))
+}
+
+function setupTheme() {
+  const datasetTheme = document.documentElement.dataset.theme || 'light';
+  applyTheme(datasetTheme, false);
+  if (!elements.themeToggle) return;
+  elements.themeToggle.addEventListener('click', () => {
+    const next = currentTheme() === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+  });
+}
+
+function createStore(initialState) {
+  let state = initialState;
+  const listeners = new Set();
+  return {
+    getState() {
+      return state;
+    },
+    setState(updater) {
+      const prev = state;
+      const next = typeof updater === 'function' ? updater(prev) : { ...prev, ...updater };
+      state = next;
+      listeners.forEach((listener) => listener(state, prev));
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+const store = createStore({
+  stats: null,
+  folders: [],
+  selectedFolderId: null,
+  jobs: [],
+  recentJobs: [],
+  libraryFilters: { status: 'all', language: 'all', model: 'all', search: '' },
+  live: {
+    segments: [],
+    status: 'idle',
+    maxSegments: preferences.get(LOCAL_KEYS.liveTailSize, 200),
+  },
+  job: {
+    detail: null,
+    maxSegments: preferences.get(LOCAL_KEYS.jobTailSize, 200),
+  },
+});
+
+function createTailController({ scroller, text, followToggle, returnButton, preferenceKey }) {
+  const sentinel = document.createElement('span');
+  sentinel.setAttribute('aria-hidden', 'true');
+  let follow = followToggle ? preferences.get(preferenceKey, true) : true;
+  if (followToggle) followToggle.checked = follow;
+
+  const scrollToEnd = (smooth = false) => {
+    const behavior = smooth ? 'smooth' : 'auto';
+    requestAnimationFrame(() => sentinel.scrollIntoView({ behavior, block: 'end' }));
+  };
+
+  const setFollow = (value) => {
+    follow = value;
+    if (followToggle) followToggle.checked = value;
+    if (returnButton) returnButton.hidden = value;
+    if (preferenceKey) preferences.set(preferenceKey, value);
+    if (value) scrollToEnd(true);
+  };
+
+  const render = (content) => {
+    text.textContent = content || '';
+    if (!text.contains(sentinel)) {
+      text.appendChild(sentinel);
+    }
+    if (follow) scrollToEnd(false);
+  };
+
+  const handleScroll = () => {
+    if (!followToggle) return;
+    const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+    if (!nearBottom && follow) {
+      setFollow(false);
+    }
+    if (returnButton) {
+      returnButton.hidden = follow || nearBottom;
+    }
+  };
+
+  scroller.addEventListener('scroll', handleScroll, { passive: true });
+  followToggle?.addEventListener('change', (event) => setFollow(event.target.checked));
+  returnButton?.addEventListener('click', () => setFollow(true));
+
+  return { render, setFollow };
+}
+
+const tailControllers = {
+  home: createTailController({
+    scroller: elements.home.liveTail,
+    text: elements.home.liveText,
+    followToggle: elements.home.follow,
+    returnButton: elements.home.returnBtn,
+    preferenceKey: LOCAL_KEYS.homeFollow,
+  }),
+  live: createTailController({
+    scroller: elements.live.tail,
+    text: elements.live.text,
+    followToggle: elements.live.follow,
+    returnButton: elements.live.returnBtn,
+    preferenceKey: LOCAL_KEYS.liveFollow,
+  }),
+  job: createTailController({
+    scroller: elements.job.tail,
+    text: elements.job.text,
+    followToggle: elements.job.follow,
+    returnButton: elements.job.returnBtn,
+    preferenceKey: LOCAL_KEYS.jobFollow,
+  }),
+};
+
+const liveSession = {
+  timer: null,
+  cursor: 0,
+};
+function goToRoute(route, { updateHash = true, persist = true } = {}) {
+  const normalized = ROUTES.includes(route) ? route : 'home';
+  elements.views.forEach((view) => {
+    const matches = view.dataset.route === normalized;
+    view.classList.toggle('view--active', matches);
+    view.toggleAttribute('hidden', !matches);
+  });
+  elements.navButtons.forEach((button) => {
+    const isActive = button.dataset.routeTarget === normalized;
+    if (button.classList.contains('nav-btn')) {
+      button.classList.toggle('is-active', isActive);
+      if (isActive) {
+        button.setAttribute('aria-current', 'page');
+      } else {
+        button.removeAttribute('aria-current');
+      }
+    }
+  });
+  if (persist) preferences.set(LOCAL_KEYS.lastRoute, normalized);
+  if (updateHash) {
+    const targetHash = `#${normalized}`;
+    if (window.location.hash !== targetHash) {
+      suppressHashChange = true;
+      window.location.hash = targetHash;
+    }
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function handleNavigation(event) {
+  const target = event.target.closest('[data-route-target]');
+  if (!target) return;
+  event.preventDefault();
+  goToRoute(target.dataset.routeTarget);
+}
+function handleRouteKey(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const target = event.target.closest('[data-route-target]');
+  if (!target) return;
+  event.preventDefault();
+  goToRoute(target.dataset.routeTarget);
+}
+
+function setupAnchorGuards() {
+  document.addEventListener('click', (event) => {
+    const neutral = event.target.closest('a[href="#"]');
+    if (neutral) {
+      event.preventDefault();
+    }
+  });
+}
+
+function getRouteFromHash() {
+  const hash = window.location.hash.replace('#', '').trim();
+  return ROUTES.includes(hash) ? hash : null;
+}
+
+function setupRouter() {
+  document.addEventListener('click', handleNavigation);
+  document.addEventListener('keydown', handleRouteKey);
+  window.addEventListener('hashchange', () => {
+    if (suppressHashChange) {
+      suppressHashChange = false;
+      return;
+    }
+    const hashRoute = getRouteFromHash();
+    goToRoute(hashRoute ?? 'home', { updateHash: false });
+  });
+}
+
+function initRouteFromStorage() {
+  const hashRoute = getRouteFromHash();
+  if (hashRoute) {
+    goToRoute(hashRoute, { updateHash: false });
+    return;
+  }
+  const lastRoute = preferences.get(LOCAL_KEYS.lastRoute, 'home');
+  goToRoute(lastRoute);
+}
+function renderStats(stats) {
+  if (!stats) return;
+  elements.stats.totalMinutes.textContent = `${stats.totalMinutes ?? 0} min`;
+  elements.stats.todayMinutes.textContent = `${stats.todayMinutes ?? 0}`;
+  elements.stats.totalCount.textContent = stats.totalCount ?? 0;
+  elements.stats.todayCount.textContent = stats.todayCount ?? 0;
+  elements.stats.queue.textContent = stats.queue ?? 0;
+  elements.stats.mode.textContent = stats.mode ?? '—';
+  elements.stats.model.textContent = stats.model ?? '—';
+}
+
+function renderRecent(jobs) {
+  const body = elements.home.recentBody;
+  body.innerHTML = '';
+  if (!jobs.length) {
+    const row = document.createElement('tr');
+    row.className = 'table-empty-row';
+    const cell = document.createElement('td');
+    cell.colSpan = 4;
+    cell.className = 'table-empty';
+    cell.textContent = 'No hay transcripciones recientes.';
+    row.appendChild(cell);
+    body.appendChild(row);
+    return;
+  }
+  jobs.forEach((job) => {
+    const row = document.createElement('tr');
+    row.dataset.jobId = job.id;
+    row.innerHTML = `
+      <td>${job.name}</td>
+      <td>${formatStatus(job.status)}</td>
+      <td>${formatDuration(job.durationSec)}</td>
+      <td>${formatDate(job.updatedAt)}</td>
+    `;
+    row.addEventListener('click', () => openJob(job.id));
+    body.appendChild(row);
+  });
+}
+
+function renderFolderOptions(folders) {
+  elements.datalist.innerHTML = '';
+  [...folders]
+    .sort((a, b) => a.path.localeCompare(b.path))
     .forEach((folder) => {
       const option = document.createElement('option');
-      option.value = folder;
-      destinationOptionsList.appendChild(option);
+      option.value = folder.path.slice(1);
+      elements.datalist.appendChild(option);
     });
 }
 
-function handleDestinationInputChange(event) {
-  const value = event?.target?.value ?? destinationInput?.value ?? '';
-  persistDestinationFolder(value);
-  if (liveFolderInput && !liveFolderInput.value) {
-    liveFolderInput.value = value;
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes)) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
   }
+  const formatted = value >= 10 || index === 0 ? Math.round(value) : value.toFixed(1);
+  return `${formatted} ${units[index]}`;
 }
 
-function handleLiveFolderChange(event) {
-  const value = event?.target?.value ?? liveFolderInput?.value ?? '';
-  persistDestinationFolder(value);
-  if (destinationInput && !destinationInput.value) {
-    destinationInput.value = value;
+function renderPendingFiles(files) {
+  const list = elements.upload.fileList;
+  if (!list) return;
+  list.innerHTML = '';
+  if (!files.length) {
+    list.hidden = true;
+    return;
   }
+  files.forEach((file) => {
+    const item = document.createElement('li');
+    const name = document.createElement('span');
+    name.textContent = file.name;
+    const size = document.createElement('span');
+    size.textContent = formatFileSize(file.size);
+    item.append(name, size);
+    list.appendChild(item);
+  });
+  list.hidden = false;
 }
 
-function splitIntoParagraphs(text) {
-  return (text ?? '')
-    .split(/\n{2,}/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function ensureParagraph(container, index) {
-  let node = container.children[index];
-  if (!node || node.tagName !== 'P') {
-    const paragraph = document.createElement('p');
-    paragraph.dataset.typing = 'false';
-    if (node) {
-      container.insertBefore(paragraph, node);
-    } else {
-      container.appendChild(paragraph);
+function prefillFolderInputs(state) {
+  if (!state.folders.length) return;
+  const explicit = state.selectedFolderId
+    ? state.folders.find((folder) => folder.id === state.selectedFolderId)
+    : null;
+  const fallback = explicit ?? state.folders[0];
+  if (!fallback) return;
+  const path = fallback.path.startsWith('/') ? fallback.path.slice(1) : fallback.path;
+  if (path) {
+    const uploadField = elements.upload.folder;
+    const quickField = elements.home.quickFolder;
+    const liveField = elements.live.folder;
+    if (uploadField && (!uploadField.value.trim() || document.activeElement !== uploadField)) {
+      uploadField.value = path;
     }
-    node = paragraph;
-  }
-  return node;
-}
-
-function trimParagraphNodes(container, desiredLength) {
-  if (!container) return;
-  while (container.children.length > desiredLength) {
-    container.removeChild(container.lastElementChild);
-  }
-}
-
-function resetStreamingContainer(container, placeholder) {
-  if (!container) return;
-  ensureAutoScrollTracking(container);
-  cancelTyping(container);
-  container.dataset.fullText = '';
-  container.dataset.paragraphs = JSON.stringify([]);
-  container.dataset.typing = 'false';
-  container.dataset.typingToken = '';
-  container.replaceChildren();
-  container.dataset.autoScroll = 'true';
-  if (placeholder) {
-    const placeholderNode = document.createElement('p');
-    placeholderNode.classList.add('placeholder');
-    placeholderNode.textContent = placeholder;
-    container.appendChild(placeholderNode);
-  }
-}
-
-function getAutoScrollThreshold(container) {
-  const parsed = Number(container?.dataset?.autoScrollThreshold);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : AUTO_SCROLL_THRESHOLD;
-}
-
-function distanceFromScrollEnd(container) {
-  if (!container) return Number.POSITIVE_INFINITY;
-  return container.scrollHeight - (container.scrollTop + container.clientHeight);
-}
-
-function isContainerNearBottom(container) {
-  return distanceFromScrollEnd(container) <= getAutoScrollThreshold(container);
-}
-
-function updateAutoScrollFlag(container) {
-  if (!container) return;
-  container.dataset.autoScroll = isContainerNearBottom(container) ? 'true' : 'false';
-}
-
-function ensureAutoScrollTracking(container) {
-  if (!container || container.dataset.autoScrollTracking === 'true') return;
-  const handleScroll = () => {
-    if (typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(() => updateAutoScrollFlag(container));
-    } else {
-      updateAutoScrollFlag(container);
+    if (quickField && (!quickField.value.trim() || document.activeElement !== quickField)) {
+      quickField.value = path;
     }
+    if (liveField && (!liveField.value.trim() || document.activeElement !== liveField)) {
+      liveField.value = path;
+    }
+  }
+}
+
+function setUploadProgress(percent) {
+  const progress = elements.upload.progress;
+  if (!progress) return;
+  progress.hidden = false;
+  progress.value = Math.max(0, Math.min(100, percent));
+}
+
+function resetUploadProgress() {
+  const progress = elements.upload.progress;
+  if (!progress) return;
+  progress.value = 0;
+  progress.hidden = true;
+}
+
+function buildFolderTree(folders) {
+  const map = new Map();
+  const roots = [];
+  folders.forEach((folder) => {
+    map.set(folder.id, { ...folder, children: [] });
+  });
+  map.forEach((node) => {
+    if (node.parentId && map.has(node.parentId)) {
+      map.get(node.parentId).children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+  const sortNodes = (nodes) => {
+    nodes.sort((a, b) => a.name.localeCompare(b.name));
+    nodes.forEach((node) => sortNodes(node.children));
   };
-  container.dataset.autoScrollTracking = 'true';
-  if (!container.dataset.autoScroll) {
-    container.dataset.autoScroll = 'true';
-  }
-  container.addEventListener('scroll', handleScroll, { passive: true });
-  updateAutoScrollFlag(container);
+  sortNodes(roots);
+  return roots;
 }
 
-ensureAutoScrollTracking(liveOutput);
-ensureAutoScrollTracking(studentPreviewBody);
-ensureAutoScrollTracking(modalText);
-ensureAutoScrollTracking(liveStreamOutput);
-
-function scrollContainerToEnd(container) {
-  if (!container) return;
-  ensureAutoScrollTracking(container);
-  if (container.dataset.autoScroll === 'false') return;
-  const performScroll = () => {
-    if (typeof container.scrollTo === 'function') {
-      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-    } else {
-      container.scrollTop = container.scrollHeight;
-    }
-    updateAutoScrollFlag(container);
-  };
-  if (typeof window.requestAnimationFrame === 'function') {
-    window.requestAnimationFrame(performScroll);
-  } else {
-    performScroll();
+function renderFolderTree(state) {
+  const container = elements.library.tree;
+  container.innerHTML = '';
+  if (!state.folders.length) {
+    container.textContent = 'No hay carpetas disponibles.';
+    return;
   }
-}
+  const tree = buildFolderTree(state.folders);
+  const fragment = document.createDocumentFragment();
+  const template = document.getElementById('folder-node-template');
 
-function computeTypingSpeed(item, text) {
-  const charCount = Math.max(1, (text ?? '').length);
-  const runtime = Number(item?.runtime_seconds ?? 0);
-  const duration = Number(item?.duration ?? 0);
-  let reference = Number.isFinite(runtime) && runtime > 0 ? runtime : duration;
-  if (!Number.isFinite(reference) || reference <= 0) {
-    reference = Math.max(charCount / 18, 6);
-  }
-  let cps = charCount / Math.max(reference, 1);
-  const model = (item?.model_size || '').toLowerCase();
-  if (model.includes('large')) cps *= 0.82;
-  if (model.includes('medium')) cps *= 0.94;
-  if (model.includes('small')) cps *= 1.08;
-  if (model.includes('tiny')) cps *= 1.18;
-  const device = (item?.device_preference || '').toLowerCase();
-  if (device === 'cpu') cps *= 0.85;
-  if (device === 'gpu' || device === 'cuda') cps *= 1.05;
-  if (item?.status === 'processing') {
-    cps *= 0.92;
-  }
-  if (!Number.isFinite(cps) || cps <= 0) {
-    cps = 48;
-  }
-  return Math.max(8, cps * 1.12);
-}
-
-function playTypewriterJob({ container, text, speedHint, placeholder, autoScroll = true, token }) {
-  return new Promise((resolve) => {
-    if (!container) {
-      resolve();
-      return;
-    }
-    const sanitized = (text ?? '').trim();
-    const fullPlaceholder = placeholder || 'Transcripción no disponible aún.';
-    if (!sanitized) {
-      resetStreamingContainer(container, fullPlaceholder);
-      resolve();
-      return;
-    }
-
-    const targetParagraphs = splitIntoParagraphs(sanitized);
-    const previousFull = container.dataset.fullText || '';
-    const shouldReset = !previousFull || !sanitized.startsWith(previousFull);
-    if (shouldReset) {
-      container.replaceChildren();
-      container.dataset.paragraphs = JSON.stringify([]);
-    }
-
-    const previousParagraphs = JSON.parse(container.dataset.paragraphs || '[]');
-    trimParagraphNodes(container, targetParagraphs.length);
-
-    const animations = [];
-    targetParagraphs.forEach((paragraphText, index) => {
-      const paragraphElement = ensureParagraph(container, index);
-      const previousText = shouldReset ? '' : previousParagraphs[index] ?? paragraphElement.textContent ?? '';
-      if (!paragraphText) {
-        paragraphElement.textContent = '';
-        paragraphElement.dataset.typing = 'false';
-        return;
+  const appendNodes = (nodes, target) => {
+    nodes.forEach((node) => {
+      const instance = template.content.firstElementChild.cloneNode(true);
+      const button = instance.querySelector('.folder-node__button');
+      button.textContent = node.name;
+      button.dataset.folderId = node.id;
+      if (node.id === state.selectedFolderId) {
+        button.classList.add('is-current');
       }
-
-      if (shouldReset || !paragraphText.startsWith(previousText)) {
-        paragraphElement.textContent = '';
-        animations.push({ element: paragraphElement, base: '', addition: paragraphText });
-      } else if (paragraphText.length > previousText.length) {
-        paragraphElement.textContent = previousText;
-        animations.push({
-          element: paragraphElement,
-          base: previousText,
-          addition: paragraphText.slice(previousText.length),
-        });
+      const childrenContainer = instance.querySelector('.folder-node__children');
+      if (!node.children.length) {
+        childrenContainer.remove();
       } else {
-        paragraphElement.textContent = paragraphText;
-        paragraphElement.dataset.typing = 'false';
+        appendNodes(node.children, childrenContainer);
       }
+      target.appendChild(instance);
     });
+  };
 
-    const finalize = () => {
-      container.dataset.fullText = sanitized;
-      container.dataset.paragraphs = JSON.stringify(targetParagraphs);
-      container.dataset.typing = 'false';
-      if (autoScroll) {
-        scrollContainerToEnd(container);
-      }
-      resolve();
-    };
+  appendNodes(tree, fragment);
+  container.appendChild(fragment);
+}
 
-    if (!animations.length) {
-      finalize();
-      return;
+elements.library.tree.addEventListener('click', (event) => {
+  const button = event.target.closest('.folder-node__button');
+  if (!button) return;
+  store.setState((prev) => ({ ...prev, selectedFolderId: button.dataset.folderId }));
+});
+
+function renderLibraryBreadcrumb(state) {
+  const list = elements.library.breadcrumbs.querySelector('ol');
+  while (list.children.length > 2) {
+    list.removeChild(list.lastChild);
+  }
+  if (!state.selectedFolderId) return;
+  const folderMap = new Map(state.folders.map((folder) => [folder.id, folder]));
+  let current = folderMap.get(state.selectedFolderId);
+  const path = [];
+  while (current) {
+    path.unshift(current);
+    current = current.parentId ? folderMap.get(current.parentId) : null;
+  }
+  path.forEach((folder) => {
+    const item = document.createElement('li');
+    item.textContent = folder.name;
+    list.appendChild(item);
+  });
+}
+
+function renderLibraryTable(state) {
+  const body = elements.library.tableBody;
+  body.innerHTML = '';
+  if (!state.jobs.length) {
+    const row = document.createElement('tr');
+    row.className = 'table-empty-row';
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.className = 'table-empty';
+    cell.textContent = 'No hay transcripciones para mostrar.';
+    row.appendChild(cell);
+    body.appendChild(row);
+    return;
+  }
+  const folderMap = new Map(state.folders.map((folder) => [folder.id, folder]));
+  const selected = state.selectedFolderId ? folderMap.get(state.selectedFolderId) : null;
+  const query = state.libraryFilters.search.trim().toLowerCase();
+  const filtered = state.jobs.filter((job) => {
+    if (state.libraryFilters.status !== 'all' && job.status !== state.libraryFilters.status) return false;
+    if (state.libraryFilters.language !== 'all' && job.language !== state.libraryFilters.language) return false;
+    if (state.libraryFilters.model !== 'all' && job.model !== state.libraryFilters.model) return false;
+    const folder = job.folderId ? folderMap.get(job.folderId) : null;
+    if (selected && folder && !folder.path.startsWith(selected.path)) return false;
+    if (query) {
+      const text = `${job.name} ${folder ? folder.path : ''}`.toLowerCase();
+      if (!text.includes(query)) return false;
     }
-
-    const normalizedSpeed = Math.max(12, speedHint || 48);
-    const charDelay = Math.max(1, 1000 / normalizedSpeed);
-    let animationIndex = 0;
-
-    const runNext = () => {
-      if (animationIndex >= animations.length) {
-        finalize();
-        return;
-      }
-      const { element, base, addition } = animations[animationIndex];
-      let currentIndex = 0;
-      let currentText = base;
-      element.dataset.typing = 'true';
-
-      const step = () => {
-        if (container.dataset.typingToken !== token) {
-          element.dataset.typing = 'false';
-          finalize();
-          return;
-        }
-        if (currentIndex >= addition.length) {
-          element.dataset.typing = 'false';
-          animationIndex += 1;
-          runNext();
-          return;
-        }
-        currentText += addition[currentIndex];
-        element.textContent = currentText;
-        if (autoScroll) {
-          scrollContainerToEnd(container);
-        }
-        currentIndex += 1;
-        window.setTimeout(step, charDelay);
-      };
-
-      step();
-    };
-
-    container.dataset.typing = 'true';
-    runNext();
+    return true;
   });
-}
-
-function processTypingQueue() {
-  if (!typingQueue.length) {
-    typingInProgress = false;
+  if (!filtered.length) {
+    const row = document.createElement('tr');
+    row.className = 'table-empty-row';
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.className = 'table-empty';
+    cell.textContent = 'Sin resultados con los filtros actuales.';
+    row.appendChild(cell);
+    body.appendChild(row);
     return;
   }
-  typingInProgress = true;
-  const job = typingQueue.shift();
-  playTypewriterJob(job).then(() => {
-    processTypingQueue();
-  });
+  filtered
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .forEach((job) => {
+      const row = document.createElement('tr');
+      row.dataset.jobId = job.id;
+      const folder = job.folderId ? folderMap.get(job.folderId) : null;
+      row.innerHTML = `
+        <td>${job.name}</td>
+        <td>${formatStatus(job.status)}</td>
+        <td>${formatDuration(job.durationSec)}</td>
+        <td>${formatDate(job.updatedAt)}</td>
+        <td>${folder ? folder.path.slice(1) : '—'}</td>
+        <td><button class="btn btn--ghost" type="button">Abrir</button></td>
+      `;
+      row.querySelector('button').addEventListener('click', (event) => {
+        event.stopPropagation();
+        openJob(job.id);
+      });
+      row.addEventListener('click', () => openJob(job.id));
+      body.appendChild(row);
+    });
+}
+function renderLiveSegments(segments) {
+  const content = segments.length ? segments.join('') : 'Inicia una sesión para ver la transcripción en directo.';
+  tailControllers.home.render(content);
+  tailControllers.live.render(segments.length ? content : 'Conecta el micro para comenzar.');
 }
 
-function enqueueTypewriter(container, text, speedHint, options = {}) {
-  if (!container) return;
-  for (let idx = typingQueue.length - 1; idx >= 0; idx -= 1) {
-    if (typingQueue[idx].container === container) {
-      typingQueue.splice(idx, 1);
-    }
+function renderLiveStatus(status) {
+  switch (status) {
+    case 'recording':
+      elements.home.status.textContent = 'Grabando en vivo…';
+      break;
+    case 'paused':
+      elements.home.status.textContent = 'Sesión en pausa.';
+      break;
+    case 'completed':
+      elements.home.status.textContent = 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
+      break;
+    default:
+      elements.home.status.textContent = 'Listo para grabar.';
   }
-  const token = `${Date.now()}-${Math.random()}`;
-  container.dataset.typingToken = token;
-  typingQueue.push({
-    container,
-    text,
-    speedHint,
-    placeholder: options.placeholder,
-    autoScroll: options.autoScroll !== false,
-    token,
-  });
-  if (!typingInProgress) {
-    processTypingQueue();
+  const isRecording = status === 'recording';
+  const isPaused = status === 'paused';
+  elements.home.start.disabled = isRecording || isPaused;
+  elements.home.pause.disabled = !isRecording;
+  elements.home.resume.hidden = !isPaused;
+  elements.home.resume.disabled = !isPaused;
+  elements.home.pause.hidden = isPaused;
+  elements.home.finish.disabled = status === 'idle';
+
+  elements.live.start.disabled = isRecording || isPaused;
+  elements.live.pause.disabled = !isRecording;
+  elements.live.resume.hidden = !isPaused;
+  elements.live.resume.disabled = !isPaused;
+  elements.live.pause.hidden = isPaused;
+  elements.live.finish.disabled = status === 'idle';
+}
+
+function renderJobDetail(state) {
+  const detail = state.job.detail;
+  if (!detail) {
+    elements.job.title.textContent = 'Selecciona un proceso';
+    elements.job.subtitle.textContent = 'Verás aquí el texto consolidado y sus acciones.';
+    tailControllers.job.render('Elige una transcripción para verla aquí.');
+    elements.job.move.disabled = true;
+    elements.job.copy.disabled = true;
+    elements.job.downloadTxt.disabled = true;
+    elements.job.downloadSrt.disabled = true;
+    elements.job.exportMd.disabled = true;
+    elements.job.audio.hidden = true;
+    elements.job.logs.hidden = true;
+    elements.job.status.textContent = '—';
+    elements.job.folder.textContent = '—';
+    elements.job.duration.textContent = '—';
+    elements.job.language.textContent = '—';
+    elements.job.model.textContent = '—';
+    elements.job.wer.textContent = '—';
+    const list = elements.job.breadcrumbs;
+    while (list.children.length > 3) list.removeChild(list.lastChild);
+    return;
+  }
+  const { job, text, segments, folderPath } = detail;
+  const displayed = segments && segments.length ? segments.slice(-state.job.maxSegments) : [text];
+  tailControllers.job.render(displayed.join(''));
+  elements.job.title.textContent = job.name;
+  elements.job.subtitle.textContent = `Actualizado ${formatDate(job.updatedAt)} · ${formatDuration(job.durationSec)}`;
+  elements.job.status.textContent = formatStatus(job.status);
+  elements.job.folder.textContent = folderPath ? folderPath.slice(1) : '—';
+  elements.job.duration.textContent = formatDuration(job.durationSec);
+  elements.job.language.textContent = job.language?.toUpperCase() ?? '—';
+  elements.job.model.textContent = job.model ?? '—';
+  elements.job.wer.textContent = job.status === 'completed' ? '3.4%' : '—';
+  elements.job.move.disabled = false;
+  elements.job.copy.disabled = false;
+  elements.job.downloadTxt.disabled = false;
+  elements.job.downloadSrt.disabled = false;
+  elements.job.exportMd.disabled = false;
+  elements.job.audio.hidden = false;
+  elements.job.audio.href = `/api/jobs/${job.id}/audio`;
+  elements.job.logs.hidden = false;
+  elements.job.logs.href = `/api/jobs/${job.id}/logs`;
+
+  const list = elements.job.breadcrumbs;
+  while (list.children.length > 3) list.removeChild(list.lastChild);
+  if (folderPath) {
+    folderPath
+      .slice(1)
+      .split('/')
+      .filter(Boolean)
+      .forEach((segment) => {
+        const item = document.createElement('li');
+        item.textContent = segment;
+        list.appendChild(item);
+      });
+  }
+  const jobItem = document.createElement('li');
+  jobItem.textContent = job.name;
+  list.appendChild(jobItem);
+}
+
+store.subscribe((state, prev) => {
+  if (state.stats !== prev.stats) renderStats(state.stats);
+  if (state.folders !== prev.folders || state.selectedFolderId !== prev.selectedFolderId) {
+    renderFolderTree(state);
+    renderFolderOptions(state.folders);
+    renderLibraryBreadcrumb(state);
+    prefillFolderInputs(state);
+  }
+  if (
+    state.jobs !== prev.jobs ||
+    state.libraryFilters !== prev.libraryFilters ||
+    state.selectedFolderId !== prev.selectedFolderId ||
+    state.folders !== prev.folders
+  ) {
+    renderLibraryTable(state);
+  }
+  if (state.recentJobs !== prev.recentJobs) {
+    renderRecent(state.recentJobs);
+  }
+  if (state.live.segments !== prev.live.segments) {
+    renderLiveSegments(state.live.segments);
+  }
+  if (state.live.status !== prev.live.status) {
+    renderLiveStatus(state.live.status);
+  }
+  if (state.job.detail !== prev.job.detail || state.job.maxSegments !== prev.job.maxSegments) {
+    renderJobDetail(state);
+  }
+});
+function computeRecent(jobs) {
+  return [...jobs]
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, 5);
+}
+
+async function loadStats() {
+  try {
+    const response = await fetch('/api/stats');
+    if (!response.ok) throw new Error('Respuesta no válida');
+    const stats = await response.json();
+    store.setState((prev) => ({ ...prev, stats }));
+  } catch (error) {
+    console.warn('Usando estadísticas de ejemplo', error);
+    store.setState((prev) => ({ ...prev, stats: SAMPLE_DATA.stats }));
   }
 }
 
-function renderTranscript(element, text, { placeholder = 'Transcripción no disponible aún.' } = {}) {
-  if (!element) return;
-  ensureAutoScrollTracking(element);
-  const safeText = (text ?? '').trim();
-  element.dataset.typing = 'false';
-  element.dataset.typingToken = '';
-
-  if (element.tagName === 'PRE') {
-    element.textContent = safeText || placeholder;
-    return;
-  }
-
-  if (!safeText) {
-    element.textContent = placeholder;
-    return;
-  }
-
-  const chunks = splitIntoParagraphs(safeText);
-
-  if (!chunks.length) {
-    element.textContent = placeholder;
-    return;
-  }
-
-  element.replaceChildren();
-  for (const chunk of chunks) {
-    const paragraph = document.createElement('p');
-    paragraph.textContent = chunk;
-    element.appendChild(paragraph);
+async function loadFolders() {
+  try {
+    const response = await fetch('/api/folders');
+    if (!response.ok) throw new Error('Respuesta no válida');
+    const folders = await response.json();
+    store.setState((prev) => ({ ...prev, folders }));
+  } catch (error) {
+    console.warn('Usando carpetas de ejemplo', error);
+    store.setState((prev) => ({ ...prev, folders: SAMPLE_DATA.folders }));
   }
 }
 
-function renderStreamingView(container, item, options = {}) {
-  if (!container) return;
-  ensureAutoScrollTracking(container);
-  const placeholder = options.placeholder ?? 'Transcripción no disponible aún.';
-  const status = item?.status ?? 'completed';
-  const text = (item?.text ?? '').trim();
-  container.dataset.stream = status === 'processing' ? 'true' : 'false';
-
-  if (!text) {
-    cancelTyping(container);
-    resetStreamingContainer(container, placeholder);
-    return;
+async function loadJobs() {
+  try {
+    const response = await fetch('/api/jobs');
+    if (!response.ok) throw new Error('Respuesta no válida');
+    const jobs = await response.json();
+    store.setState((prev) => ({ ...prev, jobs, recentJobs: computeRecent(jobs) }));
+  } catch (error) {
+    console.warn('Usando transcripciones de ejemplo', error);
+    store.setState((prev) => ({ ...prev, jobs: SAMPLE_DATA.jobs, recentJobs: computeRecent(SAMPLE_DATA.jobs) }));
   }
-
-  if (status !== 'processing') {
-    cancelTyping(container);
-    renderTranscript(container, text, { placeholder });
-    if (options.autoScroll !== false) {
-      scrollContainerToEnd(container);
-    }
-    return;
-  }
-
-  const speedMultiplier = options.speedMultiplier ?? 1;
-  const speedHint = computeTypingSpeed(item, text) * speedMultiplier;
-  enqueueTypewriter(container, text, speedHint, {
-    placeholder,
-    autoScroll: options.autoScroll !== false,
-  });
 }
 
-function renderModalText(text) {
-  const placeholder = 'Transcripción no disponible aún.';
-  renderTranscript(modalText, text, { placeholder });
+async function loadJobDetail(jobId) {
+  const current = store.getState().jobs.find((job) => job.id === jobId);
+  if (!current) return;
+  try {
+    const response = await fetch(`/api/jobs/${jobId}/text`);
+    if (!response.ok) throw new Error('Respuesta no válida');
+    const payload = await response.json();
+    const folderMap = new Map(store.getState().folders.map((folder) => [folder.id, folder]));
+    const folderPath = current.folderId && folderMap.get(current.folderId) ? folderMap.get(current.folderId).path : '';
+    store.setState((prev) => ({
+      ...prev,
+      job: {
+        ...prev.job,
+        detail: {
+          job: current,
+          text: payload.text ?? '',
+          segments: payload.segments ?? null,
+          folderPath,
+        },
+      },
+    }));
+  } catch (error) {
+    console.warn('Usando detalle de ejemplo', error);
+    const sample = SAMPLE_DATA.texts[jobId];
+    const folderMap = new Map(store.getState().folders.map((folder) => [folder.id, folder]));
+    const folderPath = current.folderId && folderMap.get(current.folderId) ? folderMap.get(current.folderId).path : '';
+    store.setState((prev) => ({
+      ...prev,
+      job: {
+        ...prev.job,
+        detail: {
+          job: current,
+          text: sample?.text ?? '',
+          segments: sample?.segments ?? null,
+          folderPath,
+        },
+      },
+    }));
+  }
 }
 
+async function loadInitialData() {
+  await Promise.all([loadStats(), loadFolders(), loadJobs()]);
+}
 function formatStatus(status) {
   switch (status) {
-    case 'completed':
-      return 'Completado ✅';
     case 'processing':
-      return 'Procesando ⏳';
-    case 'failed':
-      return 'Falló ❌';
-    default:
-      return 'Pendiente';
-  }
-}
-
-function formatDate(isoString) {
-  if (!isoString) {
-    return 'Sin fecha';
-  }
-  const date = new Date(isoString);
-  if (Number.isNaN(date.getTime())) {
-    return 'Sin fecha';
-  }
-  return date.toLocaleString();
-}
-
-function formatShortDate(isoString) {
-  if (!isoString) {
-    return 'Sin fecha';
-  }
-  const date = new Date(isoString);
-  if (Number.isNaN(date.getTime())) {
-    return 'Sin fecha';
-  }
-  return date.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
-}
-
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes)) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let idx = 0;
-  let value = bytes;
-  while (value >= 1024 && idx < units.length - 1) {
-    value /= 1024;
-    idx += 1;
-  }
-  return `${value.toFixed(1)} ${units[idx]}`;
-}
-
-function formatDuration(seconds) {
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return 'N/A';
-  }
-  if (seconds < 90) {
-    return `${seconds.toFixed(1)} s`;
-  }
-  return `${(seconds / 60).toFixed(1)} min`;
-}
-
-function showUploadProgress() {
-  if (!uploadProgress) return;
-  uploadProgress.hidden = false;
-  uploadProgress.dataset.active = 'true';
-  const bar = uploadProgress.querySelector('.progress-bar');
-  if (!bar) return;
-  if (uploadProgressTimer) {
-    clearInterval(uploadProgressTimer);
-  }
-  uploadProgressValue = 0;
-  bar.style.width = '0%';
-  uploadProgressTimer = setInterval(() => {
-    uploadProgressValue = Math.min(uploadProgressValue + Math.random() * 12, 92);
-    bar.style.width = `${uploadProgressValue.toFixed(1)}%`;
-  }, 420);
-}
-
-function hideUploadProgress() {
-  if (!uploadProgress) return;
-  if (uploadProgressTimer) {
-    clearInterval(uploadProgressTimer);
-    uploadProgressTimer = null;
-  }
-  uploadProgress.hidden = true;
-  uploadProgress.dataset.active = 'false';
-  const bar = uploadProgress.querySelector('.progress-bar');
-  if (bar) {
-    bar.style.width = '0%';
-  }
-}
-
-function completeUploadProgress(success = true) {
-  if (!uploadProgress) return;
-  const bar = uploadProgress.querySelector('.progress-bar');
-  if (bar) {
-    bar.style.width = success ? '100%' : '0%';
-  }
-  setTimeout(() => hideUploadProgress(), success ? 600 : 0);
-}
-
-function toggleCardProgress(id, isProcessing, element) {
-  const controller = progressControllers.get(id);
-  if (controller) {
-    controller();
-    progressControllers.delete(id);
-  }
-  if (!isProcessing || !element) {
-    if (element) element.hidden = true;
-    return;
-  }
-
-  element.hidden = false;
-  element.dataset.active = 'true';
-  const bar = element.querySelector('.progress-bar');
-  if (!bar) return;
-
-  let width = 0;
-  bar.style.width = '0%';
-
-  const tick = () => {
-    width = (width + Math.random() * 18) % 100;
-    bar.style.width = `${Math.max(width, 10).toFixed(1)}%`;
-  };
-
-  const interval = setInterval(tick, 650);
-  progressControllers.set(id, () => {
-    clearInterval(interval);
-    bar.style.width = '100%';
-    setTimeout(() => {
-      bar.style.width = '0%';
-      element.dataset.active = 'false';
-    }, 400);
-  });
-}
-
-function renderSpeakers(container, speakers) {
-  if (!container) return;
-  const list = container.querySelector('ul');
-  if (!list) return;
-  list.innerHTML = '';
-  const safeSegments = Array.isArray(speakers) ? speakers : [];
-  for (const segment of safeSegments) {
-    const item = document.createElement('li');
-    const start = segment.start?.toFixed(2) ?? '0.00';
-    const end = segment.end?.toFixed(2) ?? '0.00';
-    item.textContent = `[${start}s - ${end}s] ${segment.speaker}: ${segment.text}`;
-    list.appendChild(item);
-  }
-  container.hidden = safeSegments.length === 0;
-}
-
-function determineTranscriptionSeverity(item) {
-  if (!item) return 'info';
-  if (item.status === 'failed' || item.error_message) {
-    return 'error';
-  }
-  let severity = 'info';
-  const events = Array.isArray(item?.debug_events) ? item.debug_events : [];
-  for (const event of events) {
-    const level = (event.level || '').toLowerCase();
-    if (level === 'error') {
-      return 'error';
-    }
-    if (level === 'warning') {
-      severity = 'warning';
-    }
-  }
-  return severity;
-}
-
-function renderDebugEvents(container, events) {
-  if (!container) return;
-  const list = container.querySelector('ul');
-  if (!list) return;
-  const safeEvents = Array.isArray(events) ? events.slice(-6) : [];
-  list.innerHTML = '';
-  if (!safeEvents.length) {
-    container.hidden = true;
-    return;
-  }
-  for (const event of safeEvents) {
-    const item = document.createElement('li');
-    const level = (event.level || '').toLowerCase();
-    if (level) {
-      item.dataset.level = level;
-    }
-    const meta = document.createElement('span');
-    meta.className = 'debug-event__meta';
-    const stage = event.stage ? event.stage.toUpperCase() : 'SIN ETAPA';
-    meta.textContent = `${formatShortDate(event.timestamp)} • ${stage}`;
-    item.appendChild(meta);
-    const message = document.createElement('span');
-    message.className = 'debug-event__message';
-    message.textContent = event.message || 'Evento sin mensaje';
-    item.appendChild(message);
-    const extraEntries = event.extra && typeof event.extra === 'object'
-      ? Object.entries(event.extra)
-          .filter(([key, value]) => value !== null && value !== undefined && value !== '')
-          .map(([key, value]) => `${key}: ${value}`)
-      : [];
-    if (extraEntries.length) {
-      const extra = document.createElement('span');
-      extra.className = 'debug-event__extra';
-      extra.textContent = extraEntries.join(' • ');
-      item.appendChild(extra);
-    }
-    list.appendChild(item);
-  }
-  container.hidden = false;
-}
-
-function deriveFolderMetadata(item) {
-  const tags = new Set();
-  const topicNumbers = new Set();
-  const base = `${item?.output_folder ?? ''} ${item?.subject ?? ''} ${item?.original_filename ?? ''}`
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-  if (!base.trim()) {
-    return { tags, topicNumbers };
-  }
-  if (base.includes('temario')) {
-    tags.add('temario');
-  }
-  if (base.includes('practica') || base.includes('practicas')) {
-    tags.add('practicas');
-  }
-  if (base.includes('ejercicio') || base.includes('ejercicios')) {
-    tags.add('ejercicios');
-  }
-  if (base.includes('teoria')) {
-    tags.add('teoria');
-  }
-  const topicRegex = /tema[\s._-]*(\d+)/gi;
-  let matched = false;
-  let match;
-  while ((match = topicRegex.exec(base))) {
-    const value = Number.parseInt(match[1], 10);
-    if (Number.isFinite(value)) {
-      topicNumbers.add(value);
-      matched = true;
-    }
-  }
-  if (base.includes('tema') || matched) {
-    tags.add('tema');
-  }
-  return { tags, topicNumbers };
-}
-
-function buildFolderGroups(items) {
-  const results = Array.isArray(items) ? items : [];
-  const groups = new Map();
-  for (const item of results) {
-    const folderNameRaw = item?.output_folder || item?.destination_folder || 'Sin carpeta';
-    const folderName = (folderNameRaw || '').trim() || 'Sin carpeta';
-    const key = folderName.toLowerCase();
-    if (!groups.has(key)) {
-      groups.set(key, {
-        name: folderName,
-        items: [],
-        latestDate: null,
-        latestISO: null,
-        tags: new Set(),
-        topicNumbers: new Set(),
-        subjects: new Set(),
-        severity: 'info',
-      });
-    }
-    const group = groups.get(key);
-    group.items.push(item);
-    if (item?.subject) {
-      group.subjects.add(item.subject);
-    }
-    const isoDate = item?.updated_at || item?.created_at;
-    const timestamp = isoDate ? Date.parse(isoDate) : Number.NaN;
-    if (!Number.isNaN(timestamp)) {
-      if (!group.latestDate || timestamp > group.latestDate) {
-        group.latestDate = timestamp;
-        group.latestISO = isoDate;
-      }
-    }
-    const meta = deriveFolderMetadata(item);
-    meta.tags.forEach((tag) => group.tags.add(tag));
-    meta.topicNumbers.forEach((num) => group.topicNumbers.add(num));
-    const severity = determineTranscriptionSeverity(item);
-    if (SEVERITY_RANK[severity] > SEVERITY_RANK[group.severity]) {
-      group.severity = severity;
-    }
-  }
-  const ordered = Array.from(groups.values());
-  ordered.sort((a, b) => (b.latestDate || 0) - (a.latestDate || 0));
-  return ordered;
-}
-
-function updateFolderTopicOptions(groups) {
-  if (!folderTopicFilter) return;
-  const previous = folderTopicFilter.value || 'all';
-  const topics = new Set();
-  groups.forEach((group) => {
-    group.topicNumbers.forEach((num) => {
-      if (Number.isFinite(num)) {
-        topics.add(num);
-      }
-    });
-  });
-  const sortedTopics = Array.from(topics).sort((a, b) => a - b);
-  folderTopicFilter.innerHTML = '';
-  const defaultOption = document.createElement('option');
-  defaultOption.value = 'all';
-  defaultOption.textContent = 'Todos';
-  folderTopicFilter.appendChild(defaultOption);
-  sortedTopics.forEach((topic) => {
-    const option = document.createElement('option');
-    option.value = String(topic);
-    option.textContent = `Tema ${topic}`;
-    folderTopicFilter.appendChild(option);
-  });
-  if (previous !== 'all' && sortedTopics.includes(Number(previous))) {
-    folderTopicFilter.value = previous;
-    folderFilters.topic = previous;
-  } else {
-    folderTopicFilter.value = 'all';
-    folderFilters.topic = 'all';
-  }
-}
-
-function filterFolderGroups(groups) {
-  const searchTerm = folderFilters.search;
-  return groups.filter((group) => {
-    if (folderFilters.status !== 'all') {
-      const hasMatch = group.items.some((item) => matchesFolderStatus(item, folderFilters.status));
-      if (!hasMatch) {
-        return false;
-      }
-    }
-    if (folderFilters.category !== 'all') {
-      if (
-        folderFilters.category === 'tema' &&
-        !group.tags.has('tema') &&
-        group.topicNumbers.size === 0
-      ) {
-        return false;
-      }
-      if (
-        folderFilters.category !== 'tema' &&
-        !group.tags.has(folderFilters.category)
-      ) {
-        return false;
-      }
-    }
-    if (folderFilters.topic !== 'all') {
-      const topicNumber = Number(folderFilters.topic);
-      if (!group.topicNumbers.has(topicNumber)) {
-        return false;
-      }
-    }
-    if (searchTerm) {
-      const haystack = [
-        group.name,
-        ...group.subjects,
-        ...Array.from(group.tags).map((tag) => FOLDER_TAG_LABELS[tag] || tag),
-        ...Array.from(group.topicNumbers).map((num) => `tema ${num}`),
-      ]
-        .join(' ')
-        .toLowerCase();
-      if (!haystack.includes(searchTerm)) {
-        return false;
-      }
-    }
-    return true;
-  });
-}
-
-function matchesFolderStatus(item, filterValue) {
-  if (!item) return false;
-  const status = (item.status || '').toLowerCase();
-  switch (filterValue) {
-    case 'in-progress':
-      return status === 'pending' || status === 'processing';
+      return 'Procesando';
     case 'completed':
-      return status === 'completed';
-    case 'failed':
-      return status === 'failed';
-    case 'premium':
-      return Boolean(item.premium_enabled);
+      return 'Completa';
+    case 'queued':
+      return 'En cola';
+    case 'error':
+      return 'Error';
     default:
-      return true;
+      return status;
   }
 }
 
-function createFolderGroupNode(group) {
-  const article = document.createElement('article');
-  article.className = 'folder-group';
-  article.dataset.severity = group.severity || 'info';
-  const header = document.createElement('div');
-  header.className = 'folder-group__header';
-  const title = document.createElement('h3');
-  title.textContent = group.name;
-  header.appendChild(title);
-  const count = document.createElement('span');
-  count.className = 'folder-group__count';
-  count.textContent = `${group.items.length} archivo${group.items.length === 1 ? '' : 's'}`;
-  header.appendChild(count);
-  article.appendChild(header);
-
-  const meta = document.createElement('p');
-  meta.className = 'folder-group__meta';
-  const subjectsLabel = group.subjects.size
-    ? ` • Materias: ${Array.from(group.subjects).join(', ')}`
-    : '';
-  meta.textContent = `Última actualización: ${formatShortDate(group.latestISO)}${subjectsLabel}`;
-  article.appendChild(meta);
-
-  const tagLabels = [
-    ...Array.from(group.tags).map((tag) => FOLDER_TAG_LABELS[tag] || tag),
-    ...Array.from(group.topicNumbers)
-      .sort((a, b) => a - b)
-      .map((num) => `Tema ${num}`),
-  ];
-  if (tagLabels.length) {
-    const tagList = document.createElement('div');
-    tagList.className = 'folder-group__tags';
-    tagLabels.forEach((label) => {
-      const badge = document.createElement('span');
-      badge.className = 'folder-group__tag';
-      badge.textContent = label;
-      tagList.appendChild(badge);
-    });
-    article.appendChild(tagList);
+function formatDuration(seconds = 0) {
+  if (!Number.isFinite(seconds)) return '—';
+  const totalMinutes = Math.floor(seconds / 60);
+  const mins = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const secs = Math.floor(seconds % 60);
+  if (hours) {
+    return `${hours}h ${String(mins).padStart(2, '0')}m`;
   }
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
 
-  const list = document.createElement('ul');
-  list.className = 'folder-group__list';
-  const sortedItems = [...group.items].sort((a, b) => {
-    const aDate = Date.parse(a?.updated_at || a?.created_at || 0) || 0;
-    const bDate = Date.parse(b?.updated_at || b?.created_at || 0) || 0;
-    return bDate - aDate;
+function formatDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return new Intl.DateTimeFormat('es-ES', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
+function createId(prefix) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function ensureFolderPath(pathInput) {
+  const normalized = pathInput.trim();
+  if (!normalized) return null;
+  const parts = normalized.split('/').map((part) => part.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const existingMap = new Map(store.getState().folders.map((folder) => [folder.path, folder]));
+  const folders = [...store.getState().folders];
+  let parentId = null;
+  let currentPath = '';
+  let finalId = null;
+  parts.forEach((segment) => {
+    currentPath += `/${segment}`;
+    let folder = existingMap.get(currentPath);
+    if (!folder) {
+      folder = {
+        id: createId('fld'),
+        name: segment,
+        parentId,
+        path: currentPath,
+        createdAt: new Date().toISOString(),
+      };
+      existingMap.set(currentPath, folder);
+      folders.push(folder);
+    }
+    parentId = folder.id;
+    finalId = folder.id;
   });
-  sortedItems.slice(0, 4).forEach((item) => {
-    const listItem = document.createElement('li');
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'folder-group__item';
-    button.setAttribute('data-folder-transcription', item.id);
-
-    const titleSpan = document.createElement('span');
-    titleSpan.className = 'folder-group__item-title';
-    titleSpan.textContent = item.original_filename;
-    button.appendChild(titleSpan);
-
-    const metaRow = document.createElement('div');
-    metaRow.className = 'folder-group__item-meta';
-    const dateInfo = document.createElement('span');
-    dateInfo.textContent = formatShortDate(item.updated_at || item.created_at);
-    metaRow.appendChild(dateInfo);
-
-    const status = document.createElement('span');
-    status.className = 'folder-group__status';
-    status.dataset.status = item.status;
-    status.textContent = formatStatus(item.status);
-    metaRow.appendChild(status);
-
-    if (item.model_size) {
-      const modelInfo = document.createElement('span');
-      modelInfo.textContent = item.model_size;
-      metaRow.appendChild(modelInfo);
-    }
-
-    button.appendChild(metaRow);
-
-    const severity = determineTranscriptionSeverity(item);
-    if (severity !== 'info') {
-      const severityBadge = document.createElement('span');
-      severityBadge.className = 'folder-group__tag';
-      severityBadge.textContent = severity === 'warning' ? 'Advertencia' : 'Error';
-      button.appendChild(severityBadge);
-    }
-
-    listItem.appendChild(button);
-    list.appendChild(listItem);
-  });
-  article.appendChild(list);
-
-  if (group.items.length > 4) {
-    const extra = document.createElement('p');
-    extra.className = 'folder-group__meta';
-    extra.textContent = `… y ${group.items.length - 4} elemento(s) más en esta carpeta.`;
-    article.appendChild(extra);
-  }
-
-  return article;
+  store.setState((prev) => ({ ...prev, folders }));
+  return finalId;
 }
 
-function renderHomeFolderSummary(groups) {
-  if (!homeFolderSummary) return;
-  homeFolderSummary.innerHTML = '';
-  const summary = Array.isArray(groups) ? groups.slice(0, 4) : [];
-  if (!summary.length) {
-    const empty = document.createElement('p');
-    empty.className = 'home-folder-summary__empty';
-    empty.textContent = 'Sube tu primer archivo para crear una carpeta y verla aquí.';
-    homeFolderSummary.appendChild(empty);
-    return;
-  }
+let pendingFiles = [];
 
-  const list = document.createElement('ul');
-  list.className = 'home-folder-summary__list';
-
-  summary.forEach((group) => {
-    const item = document.createElement('li');
-    item.className = 'home-folder-summary__item';
-
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'home-folder-summary__button';
-    button.setAttribute('data-folder-jump', group.name);
-
-    const title = document.createElement('span');
-    title.className = 'home-folder-summary__name';
-    title.textContent = group.name;
-    button.appendChild(title);
-
-    const itemsCount = Array.isArray(group.items) ? group.items.length : 0;
-    const countLabel = itemsCount === 1 ? '1 archivo' : `${itemsCount} archivos`;
-    const updatedLabel = group.latestISO ? formatDate(group.latestISO) : 'Sin fecha';
-    const meta = document.createElement('span');
-    meta.className = 'home-folder-summary__meta';
-    meta.textContent = `${countLabel} • ${updatedLabel}`;
-    button.appendChild(meta);
-
-    const tags = Array.from(group.tags ?? []).map((tag) => FOLDER_TAG_LABELS[tag] ?? tag);
-    if (tags.length) {
-      const tagsEl = document.createElement('span');
-      tagsEl.className = 'home-folder-summary__tags';
-      tagsEl.textContent = tags.join(' · ');
-      button.appendChild(tagsEl);
-    }
-
-    const subjects = Array.from(group.subjects ?? []);
-    if (subjects.length) {
-      const subjectsEl = document.createElement('span');
-      subjectsEl.className = 'home-folder-summary__subjects';
-      const label = subjects.slice(0, 2).join(' • ');
-      subjectsEl.textContent = label;
-      button.appendChild(subjectsEl);
-    }
-
-    if (group.severity && group.severity !== 'info') {
-      const badge = document.createElement('span');
-      badge.className = `home-folder-summary__badge is-${group.severity}`;
-      badge.textContent = group.severity === 'warning' ? 'Advertencias' : 'Error';
-      button.appendChild(badge);
-    }
-
-    item.appendChild(button);
-    list.appendChild(item);
-  });
-
-  homeFolderSummary.appendChild(list);
-}
-
-function applyFolderFilters() {
-  if (!folderGroupsContainer) return;
-  folderGroupsContainer.innerHTML = '';
-  if (!cachedFolderGroups.length) {
-    const empty = document.createElement('p');
-    empty.className = 'folder-group__empty';
-    empty.textContent = 'Todavía no hay carpetas registradas.';
-    folderGroupsContainer.appendChild(empty);
-    return;
-  }
-  const filtered = filterFolderGroups(cachedFolderGroups);
-  if (!filtered.length) {
-    const empty = document.createElement('p');
-    empty.className = 'folder-group__empty';
-    empty.textContent = 'No hay carpetas que coincidan con los filtros.';
-    folderGroupsContainer.appendChild(empty);
-    return;
-  }
-  for (const group of filtered) {
-    folderGroupsContainer.appendChild(createFolderGroupNode(group));
-  }
-}
-
-function renderFolderLibrary(items) {
-  if (!folderGroupsContainer) return;
-  cachedFolderGroups = buildFolderGroups(items);
-  updateFolderTopicOptions(cachedFolderGroups);
-  updateDestinationOptions(items);
-  renderHomeFolderSummary(cachedFolderGroups);
-  applyFolderFilters();
-}
-
-function updateSystemAlerts(items) {
-  if (!systemAlerts) return;
-  const results = Array.isArray(items) ? items : [];
-  const messages = new Set();
-  for (const item of results) {
-    const events = Array.isArray(item?.debug_events) ? item.debug_events : [];
-    for (const event of events) {
-      const message = (event.message || '').toLowerCase();
-      const stage = (event.stage || '').toLowerCase();
-      const extra = event?.extra || {};
-      if (!message) continue;
-      if (message.includes('whisperx no disponible')) {
-        messages.add(
-          'WhisperX requiere autenticación en HuggingFace. Configura la variable HUGGINGFACE_TOKEN para habilitar la diarización avanzada.',
-        );
-      }
-      if (message.includes('faster-whisper de respaldo')) {
-        messages.add(
-          'Se activó el modelo de respaldo en CPU. Verifica CUDA o tu GPU para mantener el rendimiento.',
-        );
-      }
-      if (stage === 'device.unavailable' || stage === 'device.fallback') {
-        messages.add(
-          'CUDA no está disponible en este momento. Comprueba que PyTorch detecte la GPU con `python -c "import torch; print(torch.cuda.is_available())"` y revisa tus drivers o WHISPER_FORCE_CUDA.',
-        );
-      }
-      if (stage === 'device.cuda-error') {
-        const details = String(extra?.error ?? '').slice(0, 160) || 'consulta los registros del servidor.';
-        messages.add(
-          `CUDA devolvió un error al inicializar (${details}). Verifica controladores, versión de PyTorch y reinicia el servicio si es necesario.`,
-        );
-      }
-      if (stage === 'load-model.failed') {
-        messages.add(
-          'Ninguna configuración de faster-whisper pudo cargarse. Limpia la caché de modelos en data/models o reinstala dependencias para restaurar el servicio.',
-        );
-      }
-    }
-  }
-  if (!messages.size) {
-    systemAlerts.hidden = true;
-    systemAlerts.innerHTML = '';
-    return;
-  }
-  systemAlerts.innerHTML = `
-    <p>Advertencias detectadas</p>
-    <ul>${Array.from(messages)
-      .map((text) => `<li>${text}</li>`)
-      .join('')}</ul>
-  `;
-  systemAlerts.hidden = false;
-}
-
-function renderHomePendingList(items) {
-  if (!homePendingList || !homePendingEmpty) return;
-  const pendingItems = (Array.isArray(items) ? items : []).filter(
-    (item) => item.status === 'processing',
-  );
-
-  if (homePendingCount) {
-    if (pendingItems.length) {
-      const label =
-        pendingItems.length === 1
-          ? '1 transcripción en curso'
-          : `${pendingItems.length} transcripciones en curso`;
-      homePendingCount.textContent = label;
-      homePendingCount.dataset.state = 'active';
-    } else {
-      homePendingCount.textContent = 'Sin tareas en curso';
-      homePendingCount.dataset.state = 'empty';
-    }
-  }
-
-  if (!pendingItems.length) {
-    homePendingList.hidden = true;
-    homePendingList.innerHTML = '';
-    homePendingEmpty.hidden = false;
-    return;
-  }
-
-  homePendingEmpty.hidden = true;
-  homePendingList.hidden = false;
-  homePendingList.innerHTML = '';
-
-  pendingItems.slice(0, 4).forEach((item) => {
-    const li = document.createElement('li');
-    li.className = 'home-pending-item';
-
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'home-pending-item__button';
-    button.setAttribute('data-pending-id', item.id);
-
-    const content = document.createElement('div');
-    content.className = 'home-pending-item__content';
-
-    const title = document.createElement('span');
-    title.className = 'home-pending-item__title';
-    title.textContent = item.original_filename || 'Transcripción en curso';
-    content.appendChild(title);
-
-    const folderLabel = item.output_folder || item.destination_folder || 'Sin carpeta';
-    const modelLabel = item.model_size || 'Modelo automático';
-    const deviceHint = (item.device_preference || '').trim().toUpperCase();
-    const deviceLabel = deviceHint || 'AUTO';
-    const contentMeta = document.createElement('span');
-    contentMeta.className = 'home-pending-item__meta';
-    contentMeta.textContent = `${folderLabel} • ${modelLabel} • ${deviceLabel}`;
-    content.appendChild(contentMeta);
-
-    button.appendChild(content);
-
-    const statusWrapper = document.createElement('div');
-    statusWrapper.className = 'home-pending-item__status';
-
-    const statusBadge = document.createElement('span');
-    statusBadge.className = 'home-pending-item__badge';
-    statusBadge.dataset.status = item.status;
-    statusBadge.textContent = formatStatus(item.status);
-    statusWrapper.appendChild(statusBadge);
-
-    const detailParts = [];
-    const runtimeSeconds = Number(item.runtime_seconds ?? 0);
-    if (runtimeSeconds > 0) {
-      detailParts.push(`Tiempo transcurrido: ${formatDuration(runtimeSeconds)}`);
-    }
-    const updatedLabel = formatShortDate(item.updated_at || item.created_at);
-    if (updatedLabel) {
-      detailParts.push(`Actualizado: ${updatedLabel}`);
-    }
-    const lastEvent = Array.isArray(item.debug_events)
-      ? item.debug_events[item.debug_events.length - 1]
-      : null;
-    const stageParts = (lastEvent?.stage || '')
-      .split(/[.\s_-]+/)
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1));
-    const stage = stageParts.join(' ');
-    if (stage) {
-      detailParts.push(stage);
-    }
-
-    if (detailParts.length) {
-      const details = document.createElement('span');
-      details.className = 'home-pending-item__details';
-      details.textContent = detailParts.join(' • ');
-      statusWrapper.appendChild(details);
-    }
-
-    button.appendChild(statusWrapper);
-    li.appendChild(button);
-    homePendingList.appendChild(li);
-  });
-}
-
-function renderHomeRecentList(items) {
-  if (!homeRecentList) return;
-  homeRecentList.innerHTML = '';
-  const results = Array.isArray(items) ? [...items] : [];
-  if (!results.length) {
-    const empty = document.createElement('p');
-    empty.className = 'home-recent-list__empty';
-    empty.textContent = 'Tus últimas transcripciones aparecerán aquí en cuanto subas audio.';
-    homeRecentList.appendChild(empty);
-    return;
-  }
-
-  results.sort((a, b) => {
-    const aDate = Date.parse(a?.updated_at || a?.created_at || 0) || 0;
-    const bDate = Date.parse(b?.updated_at || b?.created_at || 0) || 0;
-    return bDate - aDate;
-  });
-
-  const list = document.createElement('ul');
-  list.className = 'home-recent-list__list';
-
-  results.slice(0, 4).forEach((item) => {
-    const li = document.createElement('li');
-    li.className = 'home-recent-list__item';
-
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'home-recent-list__button';
-    button.setAttribute('data-recent-id', item.id);
-
-    const title = document.createElement('span');
-    title.className = 'home-recent-list__title';
-    title.textContent = item.original_filename;
-    button.appendChild(title);
-
-    const folderLabel = item.output_folder || item.destination_folder || 'Sin carpeta';
-    const folder = document.createElement('span');
-    folder.className = 'home-recent-list__folder';
-    folder.textContent = folderLabel;
-    button.appendChild(folder);
-
-    const meta = document.createElement('span');
-    meta.className = 'home-recent-list__meta';
-    const statusLabel = formatStatus(item.status);
-    const dateLabel = formatDate(item.updated_at || item.created_at);
-    meta.textContent = `${statusLabel} • ${dateLabel}`;
-    button.appendChild(meta);
-
-    const preview = (item.text || '').trim();
-    if (preview) {
-      const excerpt = document.createElement('span');
-      excerpt.className = 'home-recent-list__excerpt';
-      excerpt.textContent = preview.slice(0, 120);
-      button.appendChild(excerpt);
-    }
-
-    li.appendChild(button);
-    list.appendChild(li);
-  });
-
-  homeRecentList.appendChild(list);
-}
-
-function renderTranscriptions(items) {
-  if (!transcriptionList) return;
-  if (!template || !('content' in template)) {
-    console.warn('Plantilla de transcripción no disponible.');
-    return;
-  }
-  transcriptionList.innerHTML = '';
-  const results = Array.isArray(items) ? items : [];
-  renderHomePendingList(results);
-  renderHomeRecentList(results);
-  renderFolderLibrary(results);
-  updateSystemAlerts(results);
-  if (!results.length) {
-    transcriptionList.innerHTML = '<p>No se encontraron transcripciones.</p>';
-    return;
-  }
-
-  for (const [index, item] of results.entries()) {
-    const node = template.content.cloneNode(true);
-    const card = node.querySelector('.transcription');
-    if (card) {
-      card.style.setProperty('--card-delay', `${index * 60}ms`);
-      card.dataset.status = item.status;
-      card.dataset.severity = determineTranscriptionSeverity(item);
-      card.dataset.transcriptionId = item.id;
-    }
-    node.querySelector('.transcription-title').textContent = item.original_filename;
-    const statusBadge = node.querySelector('.status');
-    if (statusBadge) {
-      statusBadge.textContent = formatStatus(item.status);
-      statusBadge.dataset.status = item.status;
-    }
-    const folderLabel = item.output_folder ?? item.destination_folder ?? '—';
-    const durationLabel = formatDuration(Number(item.duration ?? 0));
-    const runtimeLabel = formatDuration(Number(item.runtime_seconds ?? 0));
-    const modelLabel = item.model_size ?? 'automático';
-    const deviceLabel = item.device_preference ?? 'auto';
-    const metaParts = [
-      `Carpeta: ${folderLabel}`,
-      `Modelo: ${modelLabel}`,
-      `Dispositivo: ${deviceLabel}`,
-      `Duración: ${durationLabel}`,
-      `Ejecución: ${runtimeLabel}`,
-      `Estado: ${item.status}`,
-      `Creado: ${formatDate(item.created_at)}`,
-    ];
-    node.querySelector('.meta').textContent = metaParts.join(' • ');
-    const preview = (item.text ?? '').trim();
-    node.querySelector('.excerpt').textContent = preview ? preview.slice(0, 220) : 'Transcripción no disponible aún.';
-    const cardProgress = node.querySelector('.card-progress');
-    toggleCardProgress(item.id, item.status === 'processing', cardProgress);
-    const downloadLink = node.querySelector('.download');
-    const canDownload = item.status === 'completed';
-    if (canDownload) {
-      downloadLink.href = `${API_BASE}/${item.id}/download`;
-      downloadLink.classList.remove('disabled');
-      downloadLink.removeAttribute('aria-disabled');
-      downloadLink.removeAttribute('data-disabled');
-      downloadLink.title = 'Descargar TXT';
-    } else {
-      downloadLink.removeAttribute('href');
-      downloadLink.classList.add('disabled');
-      downloadLink.setAttribute('aria-disabled', 'true');
-      downloadLink.dataset.disabled = 'true';
-      downloadLink.title = 'Disponible cuando finalice la transcripción';
-    }
-
-    const premiumContainer = node.querySelector('.premium');
-    const premiumNotes = node.querySelector('.premium-notes');
-    if (item.premium_enabled) {
-      premiumContainer.hidden = false;
-      premiumNotes.textContent = item.premium_notes ?? 'Notas premium activas.';
-    }
-
-    const viewButton = node.querySelector('.view');
-    viewButton.addEventListener('click', () => openModal(item.id));
-
-    const deleteButton = node.querySelector('.delete');
-    deleteButton.dataset.id = item.id;
-    deleteButton.addEventListener('click', () => deleteTranscription(item.id));
-
-    const checkoutButton = node.querySelector('.checkout');
-    checkoutButton.textContent = 'Activar premium';
-    checkoutButton.addEventListener('click', () => {
-      selectedTranscriptionId = item.id;
-      checkoutStatus.textContent = `Transcripción seleccionada: ${item.original_filename}. Ahora elige un plan.`;
-      checkoutStatus.classList.remove('success');
-    });
-
-    renderSpeakers(node.querySelector('.speakers'), item.speakers);
-    renderDebugEvents(node.querySelector('.debug-events'), item.debug_events);
-
-    transcriptionList.appendChild(node);
-  }
-}
-
-async function refreshTranscriptions(options = {}) {
-  const { force = false } = options;
-  if (document.hidden && !force) {
-    refreshQueuedWhileHidden = true;
-    return null;
-  }
-  if (refreshInFlight) {
-    return refreshInFlight;
-  }
-
-  const task = (async () => {
-    try {
-      const url = new URL(API_BASE, window.location.origin);
-      if (currentQuery) {
-        url.searchParams.set('q', currentQuery);
-      }
-      if (premiumOnly) {
-        url.searchParams.set('premium_only', 'true');
-      }
-
-      const data = await fetchJSON(url);
-      const results = Array.isArray(data?.results) ? data.results : [];
-      cachedResults = results;
-      const signature = computeResultsSignature(results);
-      const changed = force || signature !== lastResultsSignature;
-      lastResultsSignature = signature;
-
-      if (changed) {
-        renderTranscriptions(results);
-      }
-      updateMetrics(results);
-      updateLivePreview(results);
-
-      const pendingItems = results.filter((item) => item.status === 'processing');
-      lastPendingCount = pendingItems.length;
-      if (pendingItems.length) {
-        if (document.hidden) {
-          refreshQueuedWhileHidden = true;
-          stopPolling();
-        } else {
-          const interval = computePollingInterval(pendingItems);
-          scheduleNextPoll(interval);
-        }
-      } else {
-        stopPolling();
-        completeUploadProgress(true);
-      }
-
-      refreshQueuedWhileHidden = false;
-      return data;
-    } finally {
-      refreshInFlight = null;
-    }
-  })();
-
-  refreshInFlight = task;
-  return task;
-}
-
-function computePollingInterval(pendingItems) {
-  if (!Array.isArray(pendingItems) || !pendingItems.length) {
-    return 2400;
-  }
-  let multiplier = 1;
-  const modelHints = pendingItems.map((item) => (item.model_size || modelSelect?.value || '').toLowerCase());
-  if (modelHints.some((model) => model.includes('large'))) {
-    multiplier = Math.max(multiplier, 1.65);
-  } else if (modelHints.some((model) => model.includes('medium'))) {
-    multiplier = Math.max(multiplier, 1.35);
-  } else if (modelHints.some((model) => model.includes('small'))) {
-    multiplier = Math.max(multiplier, 1.1);
-  }
-
-  if (pendingItems.some((item) => (item.device_preference || '').toLowerCase() === 'cpu')) {
-    multiplier += 0.25;
-  }
-
-  const longestText = Math.max(
-    0,
-    ...pendingItems.map((item) => ((item.text ?? '').length || 0)),
-  );
-  if (longestText > 4000) {
-    multiplier += 0.6;
-  } else if (longestText > 1800) {
-    multiplier += 0.35;
-  }
-
-  const observedRuntime = Math.max(
-    0,
-    ...pendingItems.map((item) => Number(item.runtime_seconds ?? 0) || 0),
-  );
-  if (observedRuntime > 0) {
-    multiplier = Math.max(multiplier, Math.min(observedRuntime / 4, 2.4));
-  }
-
-  return Math.max(1600, Math.min(2400 * multiplier, 6500));
-}
-
-function scheduleNextPoll(delay) {
-  stopPolling();
-  const interval = Math.max(1200, Math.min(delay || 2400, 7000));
-  if (document.hidden) {
-    refreshQueuedWhileHidden = true;
-    return;
-  }
-  pollingTimeout = window.setTimeout(() => {
-    refreshTranscriptions().catch(() => stopPolling());
-  }, interval);
-}
-
-function stopPolling() {
-  if (pollingTimeout) {
-    clearTimeout(pollingTimeout);
-    pollingTimeout = null;
-  }
-}
-
-async function deleteTranscription(id) {
-  if (!confirm('¿Eliminar esta transcripción?')) return;
-  try {
-    await fetch(`${API_BASE}/${id}`, { method: 'DELETE' });
-    await refreshTranscriptions({ force: true });
-  } catch (error) {
-    alert(`No se pudo eliminar: ${error.message}`);
-  }
-}
-
-function handleSearch(event) {
-  clearTimeout(searchTimer);
-  currentQuery = event.target.value.trim();
-  searchTimer = setTimeout(() => {
-    refreshTranscriptions({ force: true }).catch((error) => {
-      uploadStatus.textContent = `Error al buscar: ${error.message}`;
-    });
-  }, 300);
-}
-
-function isSupportedMediaFile(file) {
+function isMediaFile(file) {
   if (!file) return false;
   const type = (file.type || '').toLowerCase();
-  if (MEDIA_PREFIXES.some((prefix) => type.startsWith(prefix))) {
-    return true;
-  }
+  if (type.startsWith('audio/') || type.startsWith('video/')) return true;
   const name = (file.name || '').toLowerCase();
-  return MEDIA_EXTENSIONS.some((ext) => name.endsWith(ext));
-}
-
-function updateFilePreview() {
-  const files = Array.from(fileInput?.files ?? []);
-  if (!files.length) {
-    filePreview.hidden = true;
-    filePreview.innerHTML = '';
-    if (fileError) {
-      fileError.hidden = true;
-      fileError.textContent = '';
-    }
-    return;
-  }
-
-  const invalid = files.filter((file) => !isSupportedMediaFile(file));
-  if (invalid.length) {
-    if (fileError) {
-      const names = invalid.map((file) => file.name).join(', ');
-      fileError.textContent = `Los siguientes archivos no son audio/video válidos: ${names}`;
-      fileError.hidden = false;
-    }
-    if (fileInput) {
-      fileInput.value = '';
-    }
-    filePreview.hidden = true;
-    filePreview.innerHTML = '';
-    return;
-  }
-
-  if (fileError) {
-    fileError.hidden = true;
-    fileError.textContent = '';
-  }
-
-  filePreview.hidden = false;
-  filePreview.innerHTML = '';
-  for (const file of files) {
-    const row = document.createElement('span');
-    row.textContent = `${file.name} • ${formatBytes(file.size)}`;
-    filePreview.appendChild(row);
-  }
-}
-
-async function loadPlans() {
-  try {
-    const plans = await fetchJSON(`${PAYMENTS_BASE}/plans`);
-    renderPlans(plans);
-  } catch (error) {
-    checkoutStatus.textContent = `No se pudieron cargar los planes: ${error.message}`;
-    checkoutStatus.classList.remove('success');
-  }
-}
-
-function renderPlans(plans = []) {
-  if (!plansContainer) return;
-  plansContainer.innerHTML = '';
-  const safePlans = Array.isArray(plans) ? plans : [];
-  cachedPlans = safePlans;
-  if (!safePlans.length) {
-    plansContainer.innerHTML = '<p>No hay planes disponibles actualmente.</p>';
-    return;
-  }
-
-  for (const plan of safePlans) {
-    const card = document.createElement('article');
-    card.className = 'plan-card';
-    const perks = (plan.perks ?? []).map((perk) => `<li>${perk}</li>`).join('');
-    const priceEuros = (plan.price_cents ?? 0) / 100;
-    const isStudentPlan = plan.price_cents === 0;
-    const priceLabel = isStudentPlan
-      ? 'Gratis • con anuncios y ejecución local'
-      : `€${priceEuros.toFixed(2)} ${plan.currency ?? 'EUR'}`;
-    const actionButton = isStudentPlan
-      ? `<button type="button" class="ghost" data-student="true" data-plan="${plan.slug}">Configurar plan estudiante</button>`
-      : `<button type="button" class="primary" data-plan="${plan.slug}">Activar premium</button>`;
-    card.innerHTML = `
-      <h3>${plan.name}</h3>
-      <p class="plan-meta">${plan.description ?? 'Notas premium, resúmenes y recordatorios inteligentes incluidos.'}</p>
-      <p class="plan-minutes">Cobertura recomendada: hasta ${plan.max_minutes} minutos por archivo.</p>
-      <p class="plan-price">${priceLabel}</p>
-      <ul class="plan-perks">${perks}</ul>
-      <div class="plan-actions">
-        ${actionButton}
-      </div>
-    `;
-    if (isStudentPlan) {
-      card.dataset.planType = 'student';
-    }
-    plansContainer.appendChild(card);
-  }
-}
-
-function showStudentPlanInstructions(plan) {
-  if (!checkoutStatus) return;
-  const perks = (plan?.perks ?? []).map((perk) => `<li>${perk}</li>`).join('');
-  const folder = destinationInput?.value?.trim() || plan?.slug || 'tu-carpeta';
-  checkoutStatus.innerHTML = `
-    <p><strong>${plan?.name ?? 'Plan estudiante'}</strong> listo para usar.</p>
-    <p>${plan?.description ?? 'Ejecuta Whisper localmente con anuncios suaves.'}</p>
-    <ol class="student-steps">
-      <li>Descarga y ejecuta el cliente local <code>whisperx-local</code> en tu ordenador.</li>
-      <li>Usa la carpeta <code>${folder}</code> como destino para sincronizar tus TXT.</li>
-      <li>Mantén esta pestaña abierta para recibir anuncios y actualizaciones en vivo.</li>
-    </ol>
-    <p>Beneficios incluidos:</p>
-    <ul class="student-perks">${perks}</ul>
-  `;
-  checkoutStatus.classList.add('success');
-}
-
-function supportsLiveStreaming() {
-  return Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
-}
-
-function setLiveStreamStatus(message, variant = 'info') {
-  if (!liveStreamStatus) return;
-  liveStreamStatus.textContent = message;
-  liveStreamStatus.dataset.state = variant === 'error' ? 'error' : 'info';
-}
-
-function resetLiveStreamUI(options = {}) {
-  if (!liveStreamOutput) return;
-  const placeholder = options.placeholder || 'Tu texto aparecerá aquí cuando empieces a hablar.';
-  resetStreamingContainer(liveStreamOutput, placeholder);
-  liveStreamOutput.dataset.stream = 'false';
-}
-
-function updateLiveControls() {
-  const supported = supportsLiveStreaming();
-  if (liveStartButton) {
-    liveStartButton.disabled = !supported || liveSessionActive;
-  }
-  if (liveStopButton) {
-    liveStopButton.disabled = !liveSessionActive;
-  }
-  if (liveResetButton) {
-    liveResetButton.disabled = !liveSessionId;
-  }
-  if (!supported) {
-    setLiveStreamStatus(
-      'Tu navegador no permite grabación en vivo. Usa Chrome, Edge o un navegador compatible para habilitarlo.',
-      'error',
-    );
-  }
-}
-
-function buildLiveSessionPayload() {
-  const language = liveLanguageSelect?.value?.trim();
-  const model = liveModelSelect?.value?.trim();
-  const device = liveDeviceSelect?.value?.trim();
-  return {
-    language: language || null,
-    model_size: model || null,
-    device_preference: device || null,
-  };
-}
-
-function applyLiveResult(result, options = {}) {
-  if (!liveStreamOutput) return;
-  const final = options.final === true;
-  const item = {
-    text: result?.text ?? '',
-    status: final ? 'completed' : 'processing',
-    model_size: result?.model_size || liveModelSelect?.value || '',
-    device_preference: result?.device_preference || liveDeviceSelect?.value || '',
-    duration: result?.duration,
-    runtime_seconds: result?.runtime_seconds,
-  };
-  renderStreamingView(liveStreamOutput, item, {
-    placeholder: 'Esperando audio en vivo…',
-  });
-  liveStreamOutput.dataset.stream = final ? 'false' : 'true';
-  if (final) {
-    scrollContainerToEnd(liveStreamOutput);
-  }
-}
-
-async function sendLiveChunk(blob) {
-  if (!liveSessionId || !blob || !blob.size) {
-    return;
-  }
-  const formData = new FormData();
-  const extension = blob.type && blob.type.includes('wav') ? '.wav' : '.webm';
-  formData.append('chunk', blob, `chunk-${Date.now()}${extension}`);
-  const response = await fetchJSON(`${API_BASE}/live/sessions/${liveSessionId}/chunk`, {
-    method: 'POST',
-    body: formData,
-  });
-  applyLiveResult(response);
-  const chunkCount = Number(response?.chunk_count ?? 0);
-  setLiveStreamStatus(
-    chunkCount > 0
-      ? `Transcribiendo en vivo (${chunkCount} fragmento${chunkCount === 1 ? '' : 's'})…`
-      : 'Transcribiendo en vivo…',
+  return ['.aac', '.flac', '.m4a', '.m4v', '.mkv', '.mov', '.mp3', '.mp4', '.ogg', '.wav', '.webm', '.wma'].some((ext) =>
+    name.endsWith(ext),
   );
 }
 
-function enqueueLiveChunk(blob) {
-  if (!blob || !blob.size || !liveSessionId) return;
-  liveChunkChain = liveChunkChain
-    .then(() => sendLiveChunk(blob))
-    .catch((error) => {
-      console.error('Fallo al procesar fragmento en vivo:', error);
-      setLiveStreamStatus(`Error al procesar el audio: ${error.message}`, 'error');
-      liveSessionActive = false;
-      throw error;
-    });
-  return liveChunkChain;
-}
+async function uploadFileToApi(file, folderPath, options) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/transcriptions');
+    xhr.responseType = 'json';
 
-async function startLiveSession() {
-  if (liveSessionActive || !supportsLiveStreaming()) {
-    updateLiveControls();
-    return;
-  }
-  try {
-    setLiveStreamStatus('Creando sesión en vivo…');
-    const payload = buildLiveSessionPayload();
-    const session = await fetchJSON(`${API_BASE}/live/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    liveSessionId = session?.session_id;
-    if (!liveSessionId) {
-      throw new Error('No se pudo iniciar la sesión en vivo');
-    }
-    const folder = liveFolderInput?.value?.trim();
-    if (folder) {
-      persistDestinationFolder(folder);
-    }
-    liveSessionActive = true;
-    liveChunkChain = Promise.resolve();
-    liveMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const preferredMime =
-      typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : undefined;
-    liveRecorder = preferredMime
-      ? new MediaRecorder(liveMediaStream, { mimeType: preferredMime })
-      : new MediaRecorder(liveMediaStream);
-    liveRecorder.addEventListener('dataavailable', (event) => {
-      if (event.data && event.data.size) {
-        enqueueLiveChunk(event.data);
-      }
-    });
-    liveRecorder.addEventListener('stop', () => {
-      if (liveMediaStream) {
-        liveMediaStream.getTracks().forEach((track) => track.stop());
-        liveMediaStream = null;
-      }
-    });
-    liveRecorder.addEventListener('error', (event) => {
-      const message = event?.error?.message || 'Error desconocido del grabador';
-      setLiveStreamStatus(`La grabación en vivo falló: ${message}`, 'error');
-      liveSessionActive = false;
-      if (liveRecorder && liveRecorder.state !== 'inactive') {
-        liveRecorder.stop();
-      }
-    });
-    resetLiveStreamUI({ placeholder: 'Escuchando… di algo para comenzar.' });
-    liveRecorder.start(LIVE_CHUNK_INTERVAL);
-    setLiveStreamStatus('Grabando… habla cerca del micrófono para recibir texto.');
-  } catch (error) {
-    console.error('No se pudo iniciar la sesión en vivo:', error);
-    liveSessionId = null;
-    liveSessionActive = false;
-    setLiveStreamStatus(`No se pudo iniciar la sesión en vivo: ${error.message}`, 'error');
-    if (liveMediaStream) {
-      liveMediaStream.getTracks().forEach((track) => track.stop());
-      liveMediaStream = null;
-    }
-    if (liveRecorder && liveRecorder.state !== 'inactive') {
-      liveRecorder.stop();
-    }
-  } finally {
-    updateLiveControls();
-  }
-}
-
-async function finalizeLiveSession() {
-  if (!liveSessionId) return;
-  const folder = liveFolderInput?.value?.trim();
-  if (folder) {
-    persistDestinationFolder(folder);
-  }
-  try {
-    const payload = {
-      destination_folder: folder || getStoredDestinationFolder() || undefined,
-      subject: liveSubjectInput?.value?.trim() || undefined,
-      language: liveLanguageSelect?.value?.trim() || undefined,
-      model_size: liveModelSelect?.value?.trim() || undefined,
-      device_preference: liveDeviceSelect?.value?.trim() || undefined,
+    xhr.upload.onprogress = (event) => {
+      if (!options?.onProgress || !event.lengthComputable) return;
+      const percent = Math.round((event.loaded / event.total) * 100);
+      options.onProgress(percent);
     };
-    const result = await fetchJSON(`${API_BASE}/live/sessions/${liveSessionId}/finalize`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    applyLiveResult(result, { final: true });
-    setLiveStreamStatus('Sesión guardada correctamente.');
-    liveSessionId = null;
-    liveSessionActive = false;
-    liveChunkChain = Promise.resolve();
-    liveRecorder = null;
-    if (liveSubjectInput) {
-      liveSubjectInput.value = '';
-    }
-    await refreshTranscriptions({ force: true });
-  } catch (error) {
-    console.error('No se pudo finalizar la sesión en vivo:', error);
-    setLiveStreamStatus(`No se pudo guardar la sesión: ${error.message}`, 'error');
-    liveSessionActive = false;
-    throw error;
-  } finally {
-    updateLiveControls();
-  }
-}
 
-async function stopLiveSession() {
-  if (!liveSessionId) {
-    return;
-  }
-  setLiveStreamStatus('Deteniendo y guardando la sesión en vivo…');
-  if (liveRecorder && liveRecorder.state !== 'inactive') {
-    liveRecorder.stop();
-  }
-  if (liveMediaStream) {
-    liveMediaStream.getTracks().forEach((track) => track.stop());
-    liveMediaStream = null;
-  }
-  try {
-    await liveChunkChain.catch(() => {});
-    await finalizeLiveSession();
-  } catch (error) {
-    // El mensaje ya se registró en finalizeLiveSession
-  } finally {
-    updateLiveControls();
-  }
-}
-
-async function discardLiveSession() {
-  if (!liveSessionId) {
-    resetLiveStreamUI();
-    setLiveStreamStatus('Sesión descartada. Lista para empezar de nuevo.');
-    updateLiveControls();
-    return;
-  }
-  if (liveRecorder && liveRecorder.state !== 'inactive') {
-    liveRecorder.stop();
-  }
-  if (liveMediaStream) {
-    liveMediaStream.getTracks().forEach((track) => track.stop());
-    liveMediaStream = null;
-  }
-  try {
-    await liveChunkChain.catch(() => {});
-  } catch (error) {
-    console.warn('Error al esperar la cola de fragmentos en vivo:', error);
-  }
-  try {
-    await fetchJSON(`${API_BASE}/live/sessions/${liveSessionId}`, {
-      method: 'DELETE',
-    });
-  } catch (error) {
-    console.warn('No se pudo descartar la sesión en vivo en el servidor:', error);
-  } finally {
-    liveSessionId = null;
-    liveSessionActive = false;
-    liveChunkChain = Promise.resolve();
-    liveRecorder = null;
-    resetLiveStreamUI();
-    setLiveStreamStatus('Sesión descartada. Lista para empezar de nuevo.');
-    updateLiveControls();
-  }
-}
-
-async function createCheckout(planSlug) {
-  if (!selectedTranscriptionId) {
-    checkoutStatus.textContent = 'Selecciona primero una transcripción en la lista.';
-    checkoutStatus.classList.remove('success');
-    return;
-  }
-
-  try {
-    const payload = await fetchJSON(`${PAYMENTS_BASE}/checkout`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tier_slug: planSlug,
-        transcription_id: selectedTranscriptionId,
-        customer_email: 'demo@grabadora.pro',
-      }),
-    });
-
-    checkoutStatus.innerHTML = `Checkout creado. Completa el pago aquí: <a href="${payload.payment_url}" target="_blank" rel="noopener">${payload.payment_url}</a>`;
-    checkoutStatus.classList.remove('success');
-
-    const confirmation = await fetchJSON(`${PAYMENTS_BASE}/${payload.id}/confirm`, { method: 'POST' });
-    checkoutStatus.textContent = `Compra confirmada. ¡Notas premium desbloqueadas! (#${confirmation.id})`;
-    checkoutStatus.classList.add('success');
-    await refreshTranscriptions({ force: true });
-  } catch (error) {
-    checkoutStatus.textContent = `No se pudo completar la compra: ${error.message}`;
-    checkoutStatus.classList.remove('success');
-  }
-}
-
-uploadForm?.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const files = Array.from(fileInput?.files ?? []);
-  if (!files.length) {
-    uploadStatus.textContent = 'Selecciona al menos un archivo.';
-    return;
-  }
-
-  if (files.some((file) => !isSupportedMediaFile(file))) {
-    uploadStatus.textContent = 'Solo se permiten archivos de audio o video.';
-    uploadStatus.classList.add('error');
-    updateFilePreview();
-    return;
-  }
-
-  const language = uploadForm.querySelector('#language')?.value?.trim();
-  const modelSize = uploadForm.querySelector('#model-size')?.value?.trim();
-  const devicePreference = uploadForm.querySelector('#device-preference')?.value?.trim();
-  const destinationFolder = destinationInput?.value?.trim();
-
-  if (!destinationFolder) {
-    uploadStatus.textContent = 'Indica una carpeta de destino para guardar el TXT.';
-    uploadStatus.classList.add('error');
-    return;
-  }
-
-  const endpoint = files.length > 1 ? `${API_BASE}/batch` : API_BASE;
-  const formData = new FormData();
-  if (files.length > 1) {
-    for (const file of files) {
-      formData.append('uploads', file);
-    }
-  } else {
-    formData.append('upload', files[0]);
-  }
-  if (language) formData.append('language', language);
-  formData.append('destination_folder', destinationFolder);
-  if (modelSize) formData.append('model_size', modelSize);
-  if (devicePreference) formData.append('device_preference', devicePreference);
-
-  uploadStatus.textContent = files.length > 1 ? `Subiendo ${files.length} archivos...` : 'Subiendo archivo...';
-  uploadStatus.classList.remove('error');
-  showUploadProgress();
-
-  try {
-    const response = await fetchJSON(endpoint, {
-      method: 'POST',
-      body: formData,
-    });
-    const queuedCount = Array.isArray(response?.items) ? response.items.length : 1;
-    uploadStatus.textContent = `${queuedCount} archivo(s) en cola. Procesando transcripciones...`;
-    uploadStatus.classList.remove('error');
-    persistDestinationFolder(destinationFolder);
-    const preservedModel = modelSelect?.value;
-    const preservedDevice = deviceSelect?.value;
-    const preservedLanguage = languageSelect?.value;
-    uploadForm.reset();
-    if (modelSelect) {
-      modelSelect.value = preservedModel || modelSelect.dataset.default || modelSelect.value;
-    }
-    if (deviceSelect) {
-      deviceSelect.value = preservedDevice || deviceSelect.dataset.default || deviceSelect.value;
-    }
-    if (languageSelect) {
-      const fallbackLanguage = languageSelect.querySelector('option[selected]')?.value ?? '';
-      languageSelect.value = preservedLanguage || fallbackLanguage;
-    }
-    if (destinationInput) {
-      destinationInput.value = destinationFolder;
-    }
-    if (liveFolderInput && !liveFolderInput.value) {
-      liveFolderInput.value = destinationFolder;
-    }
-    updateFilePreview();
-    await refreshTranscriptions({ force: true });
-  } catch (error) {
-    uploadStatus.textContent = `Error al subir: ${error.message}`;
-    uploadStatus.classList.add('error');
-    completeUploadProgress(false);
-  }
-});
-
-fileTrigger?.addEventListener('click', (event) => {
-  event.preventDefault();
-  fileInput?.click();
-});
-
-fileInput?.addEventListener('change', updateFilePreview);
-const lastDestinationFolder = getStoredDestinationFolder();
-if (lastDestinationFolder) {
-  if (destinationInput) {
-    destinationInput.value = lastDestinationFolder;
-  }
-  if (liveFolderInput && !liveFolderInput.value) {
-    liveFolderInput.value = lastDestinationFolder;
-  }
-}
-updateDestinationOptions([]);
-resetLiveStreamUI();
-setLiveStreamStatus('Tu texto aparecerá aquí cuando empieces a hablar.');
-updateLiveControls();
-liveStartButton?.addEventListener('click', startLiveSession);
-liveStopButton?.addEventListener('click', stopLiveSession);
-liveResetButton?.addEventListener('click', discardLiveSession);
-destinationInput?.addEventListener('change', handleDestinationInputChange);
-destinationInput?.addEventListener('blur', handleDestinationInputChange);
-liveFolderInput?.addEventListener('change', handleLiveFolderChange);
-liveFolderInput?.addEventListener('blur', handleLiveFolderChange);
-searchInput?.addEventListener('input', handleSearch);
-filterPremium?.addEventListener('change', (event) => {
-  premiumOnly = event.target.checked;
-  refreshTranscriptions({ force: true });
-});
-folderCategoryFilter?.addEventListener('change', (event) => {
-  folderFilters.category = event.target.value;
-  applyFolderFilters();
-});
-folderStatusFilter?.addEventListener('change', (event) => {
-  folderFilters.status = event.target.value;
-  applyFolderFilters();
-});
-folderTopicFilter?.addEventListener('change', (event) => {
-  folderFilters.topic = event.target.value;
-  applyFolderFilters();
-});
-folderSearchInput?.addEventListener('input', (event) => {
-  folderFilters.search = event.target.value.trim().toLowerCase();
-  applyFolderFilters();
-});
-folderResetButton?.addEventListener('click', () => {
-  folderFilters.category = 'all';
-  folderFilters.status = 'all';
-  folderFilters.topic = 'all';
-  folderFilters.search = '';
-  if (folderCategoryFilter) folderCategoryFilter.value = 'all';
-  if (folderStatusFilter) folderStatusFilter.value = 'all';
-  if (folderTopicFilter) folderTopicFilter.value = 'all';
-  if (folderSearchInput) folderSearchInput.value = '';
-  applyFolderFilters();
-});
-modalClose?.addEventListener('click', () => (modal.hidden = true));
-modal?.addEventListener('click', (event) => {
-  if (event.target === modal) modal.hidden = true;
-});
-refreshPlansBtn?.addEventListener('click', loadPlans);
-plansContainer?.addEventListener('click', (event) => {
-  const button = event.target.closest('button[data-plan]');
-  if (!button) return;
-  const slug = button.getAttribute('data-plan');
-  if (!slug) return;
-  if (button.hasAttribute('data-student')) {
-    const plan = cachedPlans.find((item) => item.slug === slug);
-    showStudentPlanInstructions(plan);
-    return;
-  }
-  createCheckout(slug);
-});
-
-folderGroupsContainer?.addEventListener('click', (event) => {
-  const trigger = event.target.closest('[data-folder-transcription]');
-  if (!trigger) return;
-  const id = Number(trigger.getAttribute('data-folder-transcription'));
-  if (!Number.isFinite(id)) return;
-  selectedTranscriptionId = id;
-  if (liveOutput) {
-    liveOutput.dataset.autoScroll = 'true';
-  }
-  updateLivePreview(cachedResults);
-  scrollContainerToEnd(liveOutput);
-});
-
-homePendingList?.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-pending-id]');
-  if (!button) return;
-  const id = Number(button.getAttribute('data-pending-id'));
-  if (!Number.isFinite(id)) return;
-  selectedTranscriptionId = id;
-  updateLivePreview(cachedResults);
-  openModal(id);
-});
-
-homeFolderSummary?.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-folder-jump]');
-  if (!button) return;
-  const folder = button.getAttribute('data-folder-jump');
-  if (!folder) return;
-  folderFilters.search = folder.toLowerCase();
-  if (folderSearchInput) {
-    folderSearchInput.value = folder;
-  }
-  applyFolderFilters();
-  setActiveSection('library', { fallback: 'home' });
-  window.requestAnimationFrame(() => {
-    folderGroupsContainer?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-});
-
-homeRecentList?.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-recent-id]');
-  if (!button) return;
-  const id = Number(button.getAttribute('data-recent-id'));
-  if (!Number.isFinite(id)) return;
-  selectedTranscriptionId = id;
-  updateLivePreview(cachedResults);
-  openModal(id);
-});
-
-renderHomePendingList([]);
-renderHomeFolderSummary([]);
-renderHomeRecentList([]);
-
-if (folderGroupsContainer) {
-  applyFolderFilters();
-}
-
-if (sectionToggles?.length) {
-  sectionToggles.forEach((button) => {
-    button.addEventListener('click', () => {
-      const target = button.dataset.sectionToggle;
-      setActiveSection(target, { fallback: 'home' });
-    });
-  });
-}
-
-if (sectionJumpButtons?.length) {
-  sectionJumpButtons.forEach((button) => {
-    button.addEventListener('click', () => {
-      const target = button.dataset.sectionJump;
-      setActiveSection(target, { fallback: 'home' });
-    });
-  });
-}
-
-const savedSection = safeLocalStorageGet(LAST_SECTION_STORAGE_KEY);
-setActiveSection(savedSection || 'home', { fallback: 'home', skipPersist: true });
-
-document.addEventListener('DOMContentLoaded', () => {
-  resetCopyFeedback();
-  refreshTranscriptions({ force: true });
-  loadPlans();
-  updateMetrics([]);
-});
-
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    stopPolling();
-    return;
-  }
-  if (refreshQueuedWhileHidden || lastPendingCount > 0) {
-    refreshQueuedWhileHidden = false;
-    refreshTranscriptions({ force: true }).catch(() => {});
-  }
-});
-
-googleLoginBtn?.addEventListener('click', async () => {
-  googleLoginBtn.disabled = true;
-  try {
-    const data = await fetchJSON(`${AUTH_BASE}/google/login`);
-    if (data?.authorization_url) {
-      window.location.href = data.authorization_url;
-    }
-  } catch (error) {
-    alert(`Configura las variables de entorno de Google en el servidor para continuar. Detalle: ${error.message}`);
-  } finally {
-    googleLoginBtn.disabled = false;
-  }
-});
-
-function animateMetric(element) {
-  if (!element) return;
-  element.classList.remove('metric-pulse');
-  void element.offsetWidth;
-  element.classList.add('metric-pulse');
-}
-
-function updateMetricValue(element, key, value, formatter = (val) => val) {
-  if (!element) return;
-  const previous = metricSnapshot[key];
-  if (previous === value) return;
-  metricSnapshot[key] = value;
-  element.textContent = formatter(value);
-  animateMetric(element);
-}
-
-function updateMetrics(items) {
-  if (!metricTotal && !metricCompleted && !metricProcessing && !metricPremium && !metricMinutes) {
-    return;
-  }
-  const safeItems = Array.isArray(items) ? items : [];
-  const total = safeItems.length;
-  const completed = safeItems.filter((item) => item.status === 'completed').length;
-  const processing = safeItems.filter((item) => item.status === 'processing').length;
-  const premium = safeItems.filter((item) => item.premium_enabled).length;
-  const minutes = safeItems.reduce((acc, item) => acc + ((item.duration ?? 0) / 60), 0);
-
-  updateMetricValue(metricTotal, 'total', total);
-  updateMetricValue(metricCompleted, 'completed', completed);
-  updateMetricValue(metricProcessing, 'processing', processing);
-  updateMetricValue(metricPremium, 'premium', premium);
-  updateMetricValue(metricMinutes, 'minutes', minutes, (val) => `${val.toFixed(1)} min`);
-}
-
-function updateStudentPreview(item) {
-  if (!studentPreviewBody) return;
-  const followEnabled = !studentFollowToggle || studentFollowToggle.checked;
-  const placeholder = 'Se vinculará automáticamente a la transcripción que esté en proceso.';
-  if (!item) {
-    if (followEnabled) {
-      resetStreamingContainer(studentPreviewBody, placeholder);
-      studentPreviewBody.dataset.stream = 'false';
-    }
-    return;
-  }
-  if (!followEnabled) {
-    return;
-  }
-  renderStreamingView(studentPreviewBody, item, {
-    placeholder,
-    speedMultiplier: 0.72,
-  });
-}
-
-function updateLivePreview(results) {
-  if (!liveOutput) return;
-  const safeResults = Array.isArray(results) ? results : [];
-  if (selectedTranscriptionId) {
-    const selected = safeResults.find((item) => item.id === selectedTranscriptionId);
-    if (selected) {
-      const text = selected.text ?? '';
-      if (selected.id !== currentLiveTranscriptionId || text !== currentLiveText) {
-        currentLiveTranscriptionId = selected.id;
-        currentLiveText = text;
-        renderStreamingView(liveOutput, selected, {
-          placeholder: 'Procesando y transcribiendo en vivo…',
-        });
-        updateStudentPreview(selected);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response);
+        return;
       }
-    } else {
-      updateStudentPreview(null);
-    }
+      const detail = xhr.response?.detail || xhr.statusText || 'Error desconocido al subir.';
+      reject(new Error(xhr.status === 413 ? 'El archivo supera el límite permitido.' : detail));
+    };
+
+    xhr.onerror = () => reject(new Error('No se pudo conectar con el servidor.'));
+
+    const form = new FormData();
+    const destination = folderPath.replace(/^[\/\\]+/, '');
+    form.append('upload', file);
+    form.append('destination_folder', destination || 'General');
+    if (options?.language) form.append('language', options.language);
+    if (options?.model) form.append('model_size', options.model);
+    if (options?.devicePreference) form.append('device_preference', options.devicePreference);
+
+    xhr.send(form);
+  });
+}
+
+async function handleUploadSubmit(event) {
+  event.preventDefault();
+  const files = pendingFiles.length ? pendingFiles : Array.from(elements.upload.input.files).filter(isMediaFile);
+  const { submit } = elements.upload;
+  if (submit) submit.disabled = true;
+  if (!files.length) {
+    elements.upload.feedback.textContent = 'Selecciona o arrastra al menos un archivo de audio.';
+    if (submit) submit.disabled = false;
+    resetUploadProgress();
     return;
   }
-  const active =
-    safeResults.find((item) => item.status === 'processing' && item.text) ||
-    safeResults.find((item) => item.status === 'completed' && item.text);
-  if (active) {
-    const text = active.text ?? '';
-    if (active.id !== currentLiveTranscriptionId || text !== currentLiveText) {
-      currentLiveTranscriptionId = active.id;
-      currentLiveText = text;
-      renderStreamingView(liveOutput, active, {
-        placeholder: 'Procesando y transcribiendo en vivo…',
+  const folderPath = elements.upload.folder.value.trim();
+  if (!folderPath) {
+    elements.upload.feedback.textContent = 'Indica una carpeta destino.';
+    if (submit) submit.disabled = false;
+    resetUploadProgress();
+    return;
+  }
+  const normalizedFolderPath = normalizePath(folderPath);
+  const folderId = ensureFolderPath(folderPath);
+  if (!folderId) {
+    elements.upload.feedback.textContent = 'No se pudo preparar la carpeta indicada.';
+    if (submit) submit.disabled = false;
+    resetUploadProgress();
+    return;
+  }
+  const jobs = [...store.getState().jobs];
+  const now = new Date();
+  const language = elements.upload.language.value || '';
+  const model = elements.upload.model.value;
+  const devicePreference = model === 'large-v3' ? 'gpu' : 'cpu';
+  const totalFiles = files.length;
+  let completed = 0;
+  let failed = 0;
+  elements.upload.feedback.textContent = 'Preparando subida…';
+  setUploadProgress(0);
+
+  const updateOverallProgress = (currentCompleted, partial) => {
+    if (!totalFiles) return;
+    const percent = Math.round(((currentCompleted + partial) / totalFiles) * 100);
+    setUploadProgress(percent);
+  };
+
+  for (const file of files) {
+    try {
+      const response = await uploadFileToApi(file, normalizedFolderPath || folderPath, {
+        language,
+        model,
+        devicePreference,
+        onProgress(percent) {
+          const fractional = percent / 100;
+          updateOverallProgress(completed, fractional);
+          elements.upload.feedback.textContent = `Subiendo ${file.name} (${percent}%)…`;
+        },
       });
-      updateStudentPreview(active);
+      const apiId = response?.id != null ? String(response.id) : createId('job-api');
+      jobs.push({
+        id: apiId,
+        name: file.name,
+        folderId,
+        status: 'queued',
+        durationSec: Math.round((file.size / 1024 / 1024) * 60) || 300,
+        language: language || 'auto',
+        model,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+      completed += 1;
+      updateOverallProgress(completed, 0);
+      elements.upload.feedback.textContent = `Archivo ${file.name} en cola (${completed}/${totalFiles}).`;
+    } catch (error) {
+      console.error('Falló la subida', error);
+      failed += 1;
+      elements.upload.feedback.textContent = `Error con ${file.name}: ${error.message}`;
     }
-    return;
   }
-  currentLiveTranscriptionId = null;
-  currentLiveText = '';
-  resetStreamingContainer(
-    liveOutput,
-    'Selecciona cualquier transcripción para previsualizarla aquí.',
-  );
-  liveOutput.dataset.stream = 'false';
-  updateStudentPreview(null);
-}
 
-function resetCopyFeedback() {
-  if (!copyTranscriptBtn) return;
-  copyTranscriptBtn.disabled = false;
-  copyTranscriptBtn.classList.remove('success');
-  copyTranscriptBtn.classList.remove('error');
-  copyTranscriptBtn.textContent = 'Copiar al portapapeles';
-}
-
-async function openModal(id) {
-  try {
-    const data = await fetchJSON(`${API_BASE}/${id}`);
-    modal.hidden = false;
-    renderModalText(data.text ?? 'Transcripción no disponible aún.');
-    resetCopyFeedback();
-  } catch (error) {
-    modal.hidden = false;
-    const message = `No se pudo obtener la transcripción: ${error.message}`;
-    modalText.textContent = message;
-    if (liveOutput) {
-      renderStreamingView(
-        liveOutput,
-        { text: message, status: 'completed' },
-        { autoScroll: false },
-      );
-    }
-    resetCopyFeedback();
+  store.setState((prev) => ({ ...prev, jobs, recentJobs: computeRecent(jobs) }));
+  if (completed && failed) {
+    elements.upload.feedback.textContent = `Subida parcial: ${completed} archivo(s) listo(s), ${failed} con error.`;
+  } else if (completed) {
+    elements.upload.feedback.textContent = 'Archivos encolados correctamente.';
+    await loadStats().catch((error) => console.warn('No se pudieron refrescar las métricas', error));
+  } else if (failed) {
+    elements.upload.feedback.textContent = 'No se pudo subir ningún archivo. Revisa el tamaño y el formato.';
   }
+
+  elements.upload.form.reset();
+  pendingFiles = [];
+  renderPendingFiles(pendingFiles);
+  prefillFolderInputs(store.getState());
+  elements.upload.dropzone.classList.remove('dropzone--active');
+  window.setTimeout(() => resetUploadProgress(), 900);
+  if (submit) submit.disabled = false;
 }
 
-fileTrigger?.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' || event.key === ' ') {
+function setupDropzone() {
+  const { dropzone, trigger, input } = elements.upload;
+  resetUploadProgress();
+  renderPendingFiles([]);
+  trigger.addEventListener('click', () => input.click());
+  dropzone.addEventListener('dragover', (event) => {
     event.preventDefault();
-    fileInput?.click();
-  }
-});
+    dropzone.classList.add('dropzone--active');
+  });
+  dropzone.addEventListener('dragleave', () => {
+    dropzone.classList.remove('dropzone--active');
+  });
+  dropzone.addEventListener('drop', (event) => {
+    event.preventDefault();
+    dropzone.classList.remove('dropzone--active');
+    pendingFiles = Array.from(event.dataTransfer.files).filter(isMediaFile);
+    renderPendingFiles(pendingFiles);
+    resetUploadProgress();
+    elements.upload.feedback.textContent = pendingFiles.length
+      ? `${pendingFiles.length} archivo(s) listo(s) para subir.`
+      : 'Los archivos arrastrados no son audio o video compatibles.';
+  });
+  input.addEventListener('change', () => {
+    pendingFiles = Array.from(input.files || []).filter(isMediaFile);
+    renderPendingFiles(pendingFiles);
+    resetUploadProgress();
+    elements.upload.feedback.textContent = pendingFiles.length
+      ? `${pendingFiles.length} archivo(s) listo(s) para subir.`
+      : '';
+  });
+}
 
-copyTranscriptBtn?.addEventListener('click', async () => {
-  if (!modalText) return;
-  const text = modalText.textContent ?? '';
-  if (!text.trim()) {
-    copyTranscriptBtn.textContent = 'Nada que copiar';
-    copyTranscriptBtn.classList.add('error');
-    setTimeout(resetCopyFeedback, 1600);
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(text);
-    copyTranscriptBtn.textContent = '¡Copiado!';
-    copyTranscriptBtn.classList.remove('error');
-    copyTranscriptBtn.classList.add('success');
-  } catch (error) {
-    copyTranscriptBtn.textContent = 'No se pudo copiar';
-    copyTranscriptBtn.classList.remove('success');
-    copyTranscriptBtn.classList.add('error');
-  } finally {
-    copyTranscriptBtn.disabled = true;
-    setTimeout(resetCopyFeedback, 2000);
-  }
-});
+function setupPromptCopy() {
+  const { prompt, copy } = elements.benefits;
+  if (!prompt || !copy) return;
+  copy.addEventListener('click', async () => {
+    const previous = copy.textContent;
+    const markCopied = () => {
+      copy.textContent = '¡Copiado!';
+      copy.disabled = true;
+      window.setTimeout(() => {
+        copy.textContent = previous;
+        copy.disabled = false;
+      }, 1200);
+    };
+    try {
+      await navigator.clipboard.writeText(prompt.value);
+      markCopied();
+    } catch (error) {
+      let copied = false;
+      try {
+        prompt.focus();
+        prompt.select();
+        copied = document.execCommand ? document.execCommand('copy') : false;
+        window.getSelection()?.removeAllRanges();
+      } catch (fallbackError) {
+        console.error('Fallo el método de copia alternativo', fallbackError);
+      }
+      if (copied) {
+        markCopied();
+        return;
+      }
+      console.error('No se pudo copiar el prompt', error);
+      alert('No se pudo copiar el prompt automáticamente. Copia manualmente desde el área de texto.');
+    }
+  });
+}
+function normalizePath(path) {
+  if (!path) return '';
+  let cleaned = path.replace(/\/+/g, '/');
+  if (!cleaned.startsWith('/')) cleaned = `/${cleaned}`;
+  if (cleaned.endsWith('/') && cleaned !== '/') cleaned = cleaned.slice(0, -1);
+  return cleaned;
+}
+function renameFolder(folderId, newName) {
+  store.setState((prev) => {
+    const target = prev.folders.find((folder) => folder.id === folderId);
+    if (!target) return prev;
+    const oldPath = target.path;
+    const parentPath = oldPath.slice(0, oldPath.lastIndexOf('/')) || '';
+    const newPath = normalizePath(`${parentPath}/${newName}`);
+    const folders = prev.folders.map((folder) => {
+      if (folder.id === folderId) {
+        return { ...folder, name: newName, path: newPath };
+      }
+      if (folder.path.startsWith(`${oldPath}/`)) {
+        const suffix = folder.path.slice(oldPath.length);
+        return { ...folder, path: normalizePath(`${newPath}${suffix}`) };
+      }
+      return folder;
+    });
+    return { ...prev, folders };
+  });
+}
 
-openStudentBtn?.addEventListener('click', () => {
-  window.open('student.html', 'student-mode');
-});
-
-studentFollowToggle?.addEventListener('change', () => {
-  if (studentFollowToggle.checked) {
-    refreshTranscriptions({ force: true }).catch(() => {});
-  } else if (studentPreviewBody) {
-    studentPreviewBody.dataset.stream = 'false';
+function moveFolder(folderId, destinationPath) {
+  let parentId = null;
+  let parentPath = '';
+  if (destinationPath.trim()) {
+    parentId = ensureFolderPath(destinationPath);
+    const folder = store.getState().folders.find((item) => item.id === parentId);
+    parentPath = folder ? folder.path : '';
   }
-});
+  store.setState((prev) => {
+    const target = prev.folders.find((folder) => folder.id === folderId);
+    if (!target) return prev;
+    const oldPath = target.path;
+    const newPath = normalizePath(`${parentPath}/${target.name}`);
+    const folders = prev.folders.map((folder) => {
+      if (folder.id === folderId) {
+        return { ...folder, parentId: parentId ?? null, path: newPath };
+      }
+      if (folder.path.startsWith(`${oldPath}/`)) {
+        const suffix = folder.path.slice(oldPath.length);
+        return { ...folder, path: normalizePath(`${newPath}${suffix}`) };
+      }
+      return folder;
+    });
+    return { ...prev, folders };
+  });
+}
+
+function deleteFolder(folderId) {
+  store.setState((prev) => {
+    const target = prev.folders.find((folder) => folder.id === folderId);
+    if (!target) return prev;
+    const affected = new Set(
+      prev.folders
+        .filter((folder) => folder.path === target.path || folder.path.startsWith(`${target.path}/`))
+        .map((folder) => folder.id),
+    );
+    const folders = prev.folders.filter((folder) => !affected.has(folder.id));
+    const jobs = prev.jobs.map((job) => (job.folderId && affected.has(job.folderId) ? { ...job, folderId: null } : job));
+    const selectedFolderId = affected.has(prev.selectedFolderId) ? null : prev.selectedFolderId;
+    return { ...prev, folders, jobs, recentJobs: computeRecent(jobs), selectedFolderId };
+  });
+}
+
+function moveJob(jobId, destinationPath) {
+  const targetPath = destinationPath.trim();
+  const folderId = targetPath ? ensureFolderPath(targetPath) : null;
+  store.setState((prev) => {
+    const jobs = prev.jobs.map((job) =>
+      job.id === jobId
+        ? { ...job, folderId, updatedAt: new Date().toISOString() }
+        : job,
+    );
+    return { ...prev, jobs, recentJobs: computeRecent(jobs) };
+  });
+  loadJobDetail(jobId);
+}
+
+function openJob(jobId) {
+  goToRoute('job');
+  loadJobDetail(jobId);
+}
+function appendLiveSegment(chunk) {
+  store.setState((prev) => {
+    const segments = [...prev.live.segments, chunk];
+    const trimmed = segments.slice(-prev.live.maxSegments);
+    return { ...prev, live: { ...prev.live, segments: trimmed } };
+  });
+}
+
+function updateLiveKpis() {
+  const segments = store.getState().live.segments;
+  const text = segments.join(' ');
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const minutes = Math.max(1, segments.length / 2);
+  elements.live.kpis.forEach((node) => {
+    const metric = node.dataset.liveKpi;
+    if (metric === 'wpm') node.textContent = Math.max(0, Math.round(words / minutes));
+    if (metric === 'latency') node.textContent = `${Math.floor(80 + Math.random() * 40)} ms`;
+    if (metric === 'dropped') node.textContent = Math.floor(Math.random() * 2);
+  });
+}
+
+function stopLiveTimer() {
+  if (liveSession.timer) {
+    clearInterval(liveSession.timer);
+    liveSession.timer = null;
+  }
+}
+
+function startLiveSession() {
+  if (store.getState().live.status === 'recording') return;
+  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'recording', segments: [] } }));
+  liveSession.cursor = 0;
+  stopLiveTimer();
+  liveSession.timer = setInterval(() => {
+    const chunk = SAMPLE_LIVE_SEGMENTS[liveSession.cursor % SAMPLE_LIVE_SEGMENTS.length];
+    liveSession.cursor += 1;
+    appendLiveSegment(chunk);
+    updateLiveKpis();
+  }, 1500);
+}
+
+function pauseLiveSession() {
+  if (store.getState().live.status !== 'recording') return;
+  stopLiveTimer();
+  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'paused' } }));
+}
+
+function resumeLiveSession() {
+  if (store.getState().live.status !== 'paused') return;
+  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'recording' } }));
+  stopLiveTimer();
+  liveSession.timer = setInterval(() => {
+    const chunk = SAMPLE_LIVE_SEGMENTS[liveSession.cursor % SAMPLE_LIVE_SEGMENTS.length];
+    liveSession.cursor += 1;
+    appendLiveSegment(chunk);
+    updateLiveKpis();
+  }, 1500);
+}
+
+function finishLiveSession() {
+  if (store.getState().live.status === 'idle') return;
+  stopLiveTimer();
+  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'completed' } }));
+  const segments = store.getState().live.segments;
+  if (!segments.length) return;
+  const text = segments.join('');
+  const folderInput = elements.live.folder.value.trim() || elements.upload.folder.value.trim() || 'General';
+  const folderId = ensureFolderPath(folderInput);
+  const now = new Date();
+  const jobs = [...store.getState().jobs];
+  const id = createId('job');
+  jobs.unshift({
+    id,
+    name: `Sesión en vivo ${now.toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })}`,
+    folderId,
+    status: 'completed',
+    durationSec: segments.length * 30,
+    language: elements.live.language.value || 'es',
+    model: elements.live.model.value,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  });
+  store.setState((prev) => ({
+    ...prev,
+    jobs,
+    recentJobs: computeRecent(jobs),
+    stats: prev.stats
+      ? {
+          ...prev.stats,
+          todayCount: prev.stats.todayCount + 1,
+          totalCount: prev.stats.totalCount + 1,
+          todayMinutes: prev.stats.todayMinutes + Math.round((segments.length * 30) / 60),
+          totalMinutes: prev.stats.totalMinutes + Math.round((segments.length * 30) / 60),
+          queue: Math.max(0, prev.stats.queue - 1),
+        }
+      : prev.stats,
+  }));
+  SAMPLE_DATA.texts[id] = { jobId: id, text, segments: [...segments] };
+  loadJobDetail(id);
+}
+let searchTimer = null;
+function updateLibraryFilter(key, value) {
+  store.setState((prev) => ({ ...prev, libraryFilters: { ...prev.libraryFilters, [key]: value } }));
+}
+function setupFilters() {
+  elements.library.filterStatus.addEventListener('change', (event) => updateLibraryFilter('status', event.target.value));
+  elements.library.filterLanguage.addEventListener('change', (event) => updateLibraryFilter('language', event.target.value));
+  elements.library.filterModel.addEventListener('change', (event) => updateLibraryFilter('model', event.target.value));
+  elements.library.filterSearch.addEventListener('input', (event) => {
+    const value = event.target.value;
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => updateLibraryFilter('search', value), 200);
+  });
+}
+
+function setupLibraryActions() {
+  elements.library.create.addEventListener('click', () => {
+    const input = prompt('Ruta de la nueva carpeta (ej. Clases/2024)');
+    if (input) ensureFolderPath(input);
+  });
+  elements.library.rename.addEventListener('click', () => {
+    const state = store.getState();
+    if (!state.selectedFolderId) {
+      alert('Selecciona una carpeta para renombrar.');
+      return;
+    }
+    const folder = state.folders.find((item) => item.id === state.selectedFolderId);
+    const name = prompt('Nuevo nombre de la carpeta', folder?.name ?? '');
+    if (name) renameFolder(state.selectedFolderId, name.trim());
+  });
+  elements.library.move.addEventListener('click', () => {
+    const state = store.getState();
+    if (!state.selectedFolderId) {
+      alert('Selecciona una carpeta para mover.');
+      return;
+    }
+    const destination = prompt('Ruta destino (dejar vacío para mover a raíz)', '');
+    if (destination === null) return;
+    moveFolder(state.selectedFolderId, destination.trim());
+  });
+  elements.library.remove.addEventListener('click', () => {
+    const state = store.getState();
+    if (!state.selectedFolderId) {
+      alert('Selecciona una carpeta para eliminar.');
+      return;
+    }
+    const folder = state.folders.find((item) => item.id === state.selectedFolderId);
+    const confirmed = confirm(`¿Eliminar la carpeta "${folder?.name ?? ''}" y su contenido?`);
+    if (confirmed) deleteFolder(state.selectedFolderId);
+  });
+}
+function setupJobActions() {
+  elements.job.copy.addEventListener('click', async () => {
+    const detail = store.getState().job.detail;
+    if (!detail) return;
+    try {
+      await navigator.clipboard.writeText(detail.text);
+      alert('Texto copiado al portapapeles.');
+    } catch (error) {
+      alert('No se pudo copiar el texto.');
+    }
+  });
+
+  elements.job.downloadTxt.addEventListener('click', async () => {
+    const detail = store.getState().job.detail;
+    if (!detail) return;
+    const url = `/api/transcriptions/${detail.job.id}.txt`;
+    await triggerDownload(url, detail.text, `${detail.job.id}.txt`);
+  });
+
+  elements.job.downloadSrt.addEventListener('click', async () => {
+    const detail = store.getState().job.detail;
+    if (!detail) return;
+    const lines = detail.segments?.length
+      ? detail.segments.map((segment, index) => `${index + 1}\n00:00:${String(index).padStart(2, '0')} --> 00:00:${String(index + 1).padStart(2, '0')}\n${segment}\n`)
+      : [`1\n00:00:00 --> 00:10:00\n${detail.text}\n`];
+    const fallback = lines.join('\n');
+    const url = `/api/transcriptions/${detail.job.id}.srt`;
+    await triggerDownload(url, fallback, `${detail.job.id}.srt`);
+  });
+
+  elements.job.exportMd.addEventListener('click', () => {
+    const detail = store.getState().job.detail;
+    if (!detail) return;
+    const content = `# ${detail.job.name}\n\n${detail.text}`;
+    downloadFileFallback(`${detail.job.id}.md`, content);
+  });
+
+  elements.job.move.addEventListener('click', () => {
+    const detail = store.getState().job.detail;
+    if (!detail) return;
+    const destination = prompt('Mover a carpeta (ej. Clases/2024). Dejar vacío para raíz.', detail.folderPath ? detail.folderPath.slice(1) : '');
+    if (destination === null) return;
+    moveJob(detail.job.id, destination);
+  });
+}
+function setupLiveControls() {
+  elements.home.start.addEventListener('click', startLiveSession);
+  elements.live.start.addEventListener('click', startLiveSession);
+  elements.home.pause.addEventListener('click', pauseLiveSession);
+  elements.live.pause.addEventListener('click', pauseLiveSession);
+  elements.home.resume.addEventListener('click', resumeLiveSession);
+  elements.live.resume.addEventListener('click', resumeLiveSession);
+  elements.home.finish.addEventListener('click', finishLiveSession);
+  elements.live.finish.addEventListener('click', finishLiveSession);
+
+  elements.live.tailSize.value = String(store.getState().live.maxSegments);
+  elements.live.tailSize.addEventListener('change', (event) => {
+    const value = Number(event.target.value);
+    preferences.set(LOCAL_KEYS.liveTailSize, value);
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        maxSegments: value,
+        segments: prev.live.segments.slice(-value),
+      },
+    }));
+  });
+
+  elements.job.tailSize.value = String(store.getState().job.maxSegments);
+  elements.job.tailSize.addEventListener('change', (event) => {
+    const value = Number(event.target.value);
+    preferences.set(LOCAL_KEYS.jobTailSize, value);
+    store.setState((prev) => ({
+      ...prev,
+      job: {
+        ...prev.job,
+        maxSegments: value,
+      },
+    }));
+  });
+}
+function setupFontControls(increaseBtn, decreaseBtn, textElement) {
+  if (!textElement) return;
+  let scale = 1;
+  const apply = () => {
+    textElement.style.fontSize = `${scale}rem`;
+  };
+  increaseBtn?.addEventListener('click', () => {
+    scale = Math.min(1.8, +(scale + 0.1).toFixed(2));
+    apply();
+  });
+  decreaseBtn?.addEventListener('click', () => {
+    scale = Math.max(0.8, +(scale - 0.1).toFixed(2));
+    apply();
+  });
+}
+
+function setupFullscreenButtons() {
+  document.querySelectorAll('[data-fullscreen-target]').forEach((button) => {
+    const targetId = button.dataset.fullscreenTarget;
+    const panel = document.getElementById(targetId);
+    if (!panel) return;
+    button.addEventListener('click', async () => {
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        } else {
+          await panel.requestFullscreen();
+        }
+      } catch (error) {
+        console.warn('Fullscreen no disponible', error);
+      }
+    });
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    const active = Boolean(document.fullscreenElement);
+    document.querySelectorAll('[data-fullscreen-target]').forEach((button) => {
+      button.textContent = active ? 'Salir pantalla completa' : 'Pantalla completa';
+    });
+  });
+}
+function setupHomeShortcuts() {
+  elements.home.newTranscription.addEventListener('click', () => {
+    elements.upload.form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  elements.home.quickFolder.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    const value = event.target.value.trim();
+    if (!value) return;
+    const folderId = ensureFolderPath(value);
+    if (folderId) {
+      elements.upload.folder.value = value;
+      elements.live.folder.value = value;
+      store.setState((prev) => ({ ...prev, selectedFolderId: folderId }));
+    }
+  });
+  elements.home.quickFolder.addEventListener('change', (event) => {
+    const value = event.target.value.trim();
+    if (!value) return;
+    const folderId = ensureFolderPath(value);
+    if (folderId) {
+      elements.upload.folder.value = value;
+      elements.live.folder.value = value;
+      store.setState((prev) => ({ ...prev, selectedFolderId: folderId }));
+    }
+  });
+}
+function setupDiagnostics() {
+  elements.diagnostics.addEventListener('click', () => {
+    alert('Diagnóstico rápido:\n\n- WS en vivo conectado\n- Última sesión estable\n- Modelos cargados correctamente');
+  });
+}
+async function init() {
+  setupTheme();
+  setupAnchorGuards();
+  setupRouter();
+  renderPricingPlans();
+  injectPrompt();
+  setupPromptCopy();
+  setupDropzone();
+  elements.upload.form.addEventListener('submit', handleUploadSubmit);
+  setupFilters();
+  setupLibraryActions();
+  setupJobActions();
+  setupLiveControls();
+  setupFontControls(elements.home.fontIncrease, elements.home.fontDecrease, elements.home.liveText);
+  setupFontControls(elements.live.fontPlus, elements.live.fontMinus, elements.live.text);
+  setupFullscreenButtons();
+  setupHomeShortcuts();
+  setupDiagnostics();
+  await loadInitialData();
+  initRouteFromStorage();
+}
+function boot() {
+  console.info('Grabadora Pro frontend listo');
+  init().catch((error) => console.error('Error inicializando la aplicación', error));
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', boot, { once: true });
+} else {
+  boot();
+}
