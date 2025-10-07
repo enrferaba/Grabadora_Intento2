@@ -1018,6 +1018,29 @@ function ensureFolderPath(pathInput) {
   store.setState((prev) => ({ ...prev, folders }));
   return finalId;
 }
+function setupLiveControls() {
+  elements.home.start.addEventListener('click', startLiveSession);
+  elements.live.start.addEventListener('click', startLiveSession);
+  elements.home.pause.addEventListener('click', pauseLiveSession);
+  elements.live.pause.addEventListener('click', pauseLiveSession);
+  elements.home.resume.addEventListener('click', resumeLiveSession);
+  elements.live.resume.addEventListener('click', resumeLiveSession);
+  elements.home.finish.addEventListener('click', finishLiveSession);
+  elements.live.finish.addEventListener('click', finishLiveSession);
+
+  elements.live.tailSize.value = String(store.getState().live.maxSegments);
+  elements.live.tailSize.addEventListener('change', (event) => {
+    const value = Number(event.target.value);
+    preferences.set(LOCAL_KEYS.liveTailSize, value);
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        maxSegments: value,
+        segments: prev.live.segments.slice(-value),
+      },
+    }));
+  });
 
 let pendingFiles = [];
 
