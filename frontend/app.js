@@ -219,14 +219,6 @@ const SAMPLE_DATA = {
   },
 };
 
-const SAMPLE_LIVE_SEGMENTS = [
-  'Conectando dispositivos y preparando el entorno de grabación...\n',
-  'Recordemos que la sesión de hoy se centra en técnicas para resumir clases largas.\n',
-  'Primer paso: identifica palabras clave y define etiquetas para tus carpetas.\n',
-  'Cuando detectes un cambio de tema, marca un hito para navegar después.\n',
-  'Puedes pausar la sesión si necesitas responder preguntas en vivo.\n',
-  'Al finalizar, descarga el .txt o exporta a Markdown para compartirlo con tu equipo.\n',
-];
 const STREAM_SEGMENT_LIMIT = 400;
 const elements = {
   themeToggle: document.getElementById('theme-toggle'),
@@ -612,9 +604,9 @@ function setupModelSelectors() {
       context.beam.addEventListener('change', () => {
         context.beam.dataset.dirty = 'true';
         if (context.model === elements.live.model) {
-          const status = store.getState().live.status;
-          if (status === 'recording' || status === 'paused') {
-            renderLiveStatus(status);
+          const liveState = store.getState().live;
+          if (liveState.status === 'recording' || liveState.status === 'paused') {
+            renderLiveStatus(liveState);
           }
         }
       });
@@ -625,9 +617,9 @@ function setupModelSelectors() {
       }
       updateBeamRecommendation(context, { forceValue: true });
       if (context.model === elements.live.model) {
-        const status = store.getState().live.status;
-        if (status === 'recording' || status === 'paused') {
-          renderLiveStatus(status);
+        const liveState = store.getState().live;
+        if (liveState.status === 'recording' || liveState.status === 'paused') {
+          renderLiveStatus(liveState);
         }
       }
     });
@@ -658,7 +650,9 @@ function setupModelSelectors() {
     });
   }
 
-  renderLiveStatus(store.getState().live.status);
+  const initialLiveState = store.getState().live;
+  renderLiveStatus(initialLiveState);
+  renderLiveKpis(initialLiveState);
 }
 
 function currentTheme() {
@@ -815,8 +809,25 @@ const store = createStore({
   libraryFilters: { status: 'all', language: 'all', model: 'all', search: '' },
   live: {
     segments: [],
+    text: '',
     status: 'idle',
+    sessionId: null,
+    duration: null,
+    runtimeSeconds: null,
+    language: null,
+    model: null,
+    device: null,
+    beam: null,
     maxSegments: preferences.get(LOCAL_KEYS.liveTailSize, 200),
+    startedAt: null,
+    pauseStartedAt: null,
+    totalPausedMs: 0,
+    lastChunkAt: null,
+    latencyMs: 0,
+    wpm: 0,
+    droppedChunks: 0,
+    error: null,
+    isFinalizing: false,
   },
   job: {
     detail: null,
@@ -839,6 +850,7 @@ function createTailController({ scroller, text, followToggle, returnButton, pref
   sentinel.setAttribute('aria-hidden', 'true');
   let follow = followToggle ? preferences.get(preferenceKey, true) : true;
   if (followToggle) followToggle.checked = follow;
+  let lastContent = '';
 
   const scrollToEnd = (smooth = false) => {
     const behavior = smooth ? 'smooth' : 'auto';
@@ -856,10 +868,29 @@ function createTailController({ scroller, text, followToggle, returnButton, pref
   };
 
   const render = (content) => {
-    text.textContent = content || '';
-    if (!text.contains(sentinel)) {
+    const nextContent = content || '';
+    const extendsPrevious = nextContent.startsWith(lastContent);
+    const hasGrown = extendsPrevious && nextContent.length > lastContent.length;
+
+    if (!extendsPrevious) {
+      text.textContent = nextContent;
+      if (!text.contains(sentinel)) {
+        text.appendChild(sentinel);
+      }
+    } else if (hasGrown) {
+      const suffix = nextContent.slice(lastContent.length);
+      if (!text.contains(sentinel)) {
+        text.appendChild(sentinel);
+      }
+      if (suffix) {
+        const node = document.createTextNode(suffix);
+        text.insertBefore(node, sentinel);
+      }
+    } else if (!text.contains(sentinel)) {
       text.appendChild(sentinel);
     }
+
+    lastContent = nextContent;
     if (follow) scrollToEnd(false);
   };
 
@@ -906,16 +937,89 @@ const tailControllers = {
 };
 
 const liveSession = {
-  timer: null,
-  cursor: 0,
+  sessionId: null,
+  mediaStream: null,
+  recorder: null,
+  chunkQueue: [],
+  sending: false,
+  chunkIndex: 0,
+  finishing: false,
 };
+
+const LIVE_CHUNK_INTERVAL_MS = 2000;
+const LIVE_CHUNK_MIME_TYPES = [
+  'audio/webm;codecs=opus',
+  'audio/ogg;codecs=opus',
+  'audio/webm',
+  'audio/ogg',
+];
+
+function pickLiveMimeType() {
+  if (!window.MediaRecorder || !window.MediaRecorder.isTypeSupported) return null;
+  return LIVE_CHUNK_MIME_TYPES.find((type) => window.MediaRecorder.isTypeSupported(type)) || null;
+}
+
+function resetLiveSessionLocalState() {
+  if (liveSession.recorder && liveSession.recorder.state !== 'inactive') {
+    try {
+      liveSession.recorder.stop();
+    } catch (error) {
+      console.warn('No se pudo detener el MediaRecorder al limpiar la sesión', error);
+    }
+  }
+  liveSession.recorder = null;
+  if (liveSession.mediaStream) {
+    liveSession.mediaStream.getTracks().forEach((track) => track.stop());
+  }
+  liveSession.mediaStream = null;
+  liveSession.chunkQueue = [];
+  liveSession.sending = false;
+  liveSession.chunkIndex = 0;
+  liveSession.finishing = false;
+  liveSession.sessionId = null;
+}
+
+async function discardRemoteLiveSession(sessionId) {
+  if (!sessionId) return;
+  try {
+    await fetch(`/api/transcriptions/live/sessions/${sessionId}`, { method: 'DELETE' });
+  } catch (error) {
+    console.warn('No se pudo descartar la sesión en vivo en el servidor', error);
+  }
+}
 
 const jobPolling = {
   timer: null,
   jobId: null,
 };
 
+const JOB_TEXT_CACHE_LIMIT = 50;
 const jobTextCache = new Map();
+
+function pruneJobTextCache() {
+  const { jobs } = store.getState();
+  const activeJobIds = new Set(jobs.map((job) => String(job.id)));
+  for (const key of Array.from(jobTextCache.keys())) {
+    if (!activeJobIds.has(key)) {
+      jobTextCache.delete(key);
+    }
+  }
+  while (jobTextCache.size > JOB_TEXT_CACHE_LIMIT) {
+    const oldestKey = jobTextCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    jobTextCache.delete(oldestKey);
+  }
+}
+
+function rememberJobText(jobId, text) {
+  if (!text) return;
+  const key = String(jobId);
+  if (jobTextCache.has(key)) {
+    jobTextCache.delete(key);
+  }
+  jobTextCache.set(key, text);
+  pruneJobTextCache();
+}
 
 function stopJobPolling() {
   if (jobPolling.timer) {
@@ -1300,20 +1404,33 @@ function renderLibraryTable(state) {
       body.appendChild(row);
     });
 }
-function renderLiveSegments(segments) {
-  const content = segments.length ? segments.join('') : 'Conecta el micro para comenzar.';
+function renderLiveTail(liveState) {
+  if (!liveState) {
+    tailControllers.live.render('Conecta el micro para comenzar.');
+    return;
+  }
+  const hasText = typeof liveState.text === 'string' && liveState.text.trim();
+  const fromSegments = Array.isArray(liveState.segments) && liveState.segments.length
+    ? liveState.segments.join('')
+    : '';
+  const content = hasText ? liveState.text : fromSegments || 'Conecta el micro para comenzar.';
   tailControllers.live.render(content);
 }
 
-function computeLiveStatusMessage(status) {
-  const modelValue = elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
+function computeLiveStatusMessage(liveState) {
+  const status = liveState?.status ?? 'idle';
+  const modelValue = liveState?.model || elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
   const modelConfig = getModelConfig(modelValue);
-  const beamValue = Number(elements.live.beam?.value || modelConfig.recommendedBeam);
+  const beamValue = Number(
+    liveState?.beam ?? elements.live.beam?.value ?? modelConfig.recommendedBeam,
+  );
   switch (status) {
     case 'recording':
       return `Grabando en vivo con ${modelConfig.label.split('·')[0].trim()} · beam ${beamValue}`;
     case 'paused':
       return 'Sesión en pausa. Reanuda cuando estés listo.';
+    case 'finalizing':
+      return 'Guardando sesión en vivo…';
     case 'completed':
       return 'Sesión finalizada. Guarda o inicia otra cuando quieras.';
     default:
@@ -1377,7 +1494,9 @@ function renderHomePanel(state) {
     }
     return;
   }
-  const liveContent = live.segments.length
+  const liveContent = live.text && live.text.trim()
+    ? live.text
+    : live.segments.length
     ? live.segments.join('')
     : 'Inicia una sesión para ver la transcripción en directo.';
   tailControllers.home.render(liveContent);
@@ -1412,34 +1531,38 @@ function updateHomeStatus(state) {
       return;
     }
   }
-  elements.home.status.textContent = computeLiveStatusMessage(state.live.status);
+  elements.home.status.textContent = computeLiveStatusMessage(state.live);
 }
 
-function renderLiveStatus(status) {
+function renderLiveStatus(liveState) {
+  const status = liveState.status;
   const isRecording = status === 'recording';
   const isPaused = status === 'paused';
+  const isIdle = status === 'idle';
+  const isFinalizing = status === 'finalizing';
+  const disableStart = isRecording || isPaused || isFinalizing;
 
-  if (elements.home.start) elements.home.start.disabled = isRecording || isPaused;
+  if (elements.home.start) elements.home.start.disabled = disableStart;
   if (elements.home.pause) {
     elements.home.pause.disabled = !isRecording;
-    elements.home.pause.hidden = isPaused;
+    elements.home.pause.hidden = isPaused || isFinalizing || isIdle;
   }
   if (elements.home.resume) {
     elements.home.resume.hidden = !isPaused;
     elements.home.resume.disabled = !isPaused;
   }
-  if (elements.home.finish) elements.home.finish.disabled = status === 'idle';
+  if (elements.home.finish) elements.home.finish.disabled = isIdle || isFinalizing;
 
-  if (elements.live.start) elements.live.start.disabled = isRecording || isPaused;
+  if (elements.live.start) elements.live.start.disabled = disableStart;
   if (elements.live.pause) {
     elements.live.pause.disabled = !isRecording;
-    elements.live.pause.hidden = isPaused;
+    elements.live.pause.hidden = isPaused || isFinalizing || isIdle;
   }
   if (elements.live.resume) {
     elements.live.resume.hidden = !isPaused;
     elements.live.resume.disabled = !isPaused;
   }
-  if (elements.live.finish) elements.live.finish.disabled = status === 'idle';
+  if (elements.live.finish) elements.live.finish.disabled = isIdle || isFinalizing;
 }
 
 function buildSegmentsFromEvents(events) {
@@ -1766,17 +1889,36 @@ store.subscribe((state, prev) => {
   if (state.recentJobs !== prev.recentJobs) {
     renderRecent(state.recentJobs);
   }
-  if (state.live.segments !== prev.live.segments) {
-    renderLiveSegments(state.live.segments);
+  if (state.live.text !== prev.live.text || state.live.segments !== prev.live.segments) {
+    renderLiveTail(state.live);
   }
-  if (state.live.status !== prev.live.status) {
-    renderLiveStatus(state.live.status);
+  if (
+    state.live.status !== prev.live.status ||
+    state.live.isFinalizing !== prev.live.isFinalizing
+  ) {
+    renderLiveStatus(state.live);
   }
-  if (state.stream !== prev.stream || state.live.segments !== prev.live.segments) {
+  if (
+    state.stream !== prev.stream ||
+    state.live.text !== prev.live.text ||
+    state.live.segments !== prev.live.segments
+  ) {
     renderHomePanel(state);
   }
-  if (state.stream !== prev.stream || state.live.status !== prev.live.status) {
+  if (
+    state.stream !== prev.stream ||
+    state.live.status !== prev.live.status ||
+    state.live.isFinalizing !== prev.live.isFinalizing ||
+    state.live.text !== prev.live.text
+  ) {
     updateHomeStatus(state);
+  }
+  if (
+    state.live.latencyMs !== prev.live.latencyMs ||
+    state.live.wpm !== prev.live.wpm ||
+    state.live.droppedChunks !== prev.live.droppedChunks
+  ) {
+    renderLiveKpis(state.live);
   }
   if (state.job.detail !== prev.job.detail || state.job.maxSegments !== prev.job.maxSegments) {
     renderJobDetail(state);
@@ -1899,6 +2041,7 @@ async function loadJobs() {
         selectedFolderId,
       };
     });
+    pruneJobTextCache();
     maybeUpdateActiveStream();
   } catch (error) {
     console.warn('Usando transcripciones de ejemplo', error);
@@ -1910,6 +2053,7 @@ async function loadJobs() {
       stats: SAMPLE_DATA.stats,
       selectedFolderId: prev.selectedFolderId ?? SAMPLE_DATA.folders[0]?.id ?? null,
     }));
+    pruneJobTextCache();
     maybeUpdateActiveStream();
   }
 }
@@ -1952,7 +2096,7 @@ async function loadJobDetail(jobId, { startPolling = true, suppressErrors = fals
     const cachedText = jobTextCache.get(jobIdStr) || '';
     const resolvedText = incomingText && incomingText.trim() ? incomingText : cachedText;
     if (incomingText && incomingText.trim()) {
-      jobTextCache.set(jobIdStr, incomingText);
+      rememberJobText(jobIdStr, incomingText);
     }
     const folderLookup = new Map(state.folders.map((folder) => [folder.path, folder]));
     let foldersForUpdate = state.folders;
@@ -2489,108 +2633,419 @@ function openJob(jobId) {
   goToRoute('job');
   loadJobDetail(jobId);
 }
-function appendLiveSegment(chunk) {
-  store.setState((prev) => {
-    const segments = [...prev.live.segments, chunk];
-    const trimmed = segments.slice(-prev.live.maxSegments);
-    return { ...prev, live: { ...prev.live, segments: trimmed } };
-  });
-}
-
-function updateLiveKpis() {
-  const segments = store.getState().live.segments;
-  const text = segments.join(' ');
-  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-  const minutes = Math.max(1, segments.length / 2);
+function renderLiveKpis(liveState) {
+  const latencyText = Number.isFinite(liveState.latencyMs) && liveState.latencyMs > 0
+    ? `${liveState.latencyMs} ms`
+    : '—';
+  const wpmText = Number.isFinite(liveState.wpm) && liveState.wpm > 0 ? String(liveState.wpm) : '0';
+  const droppedText = Number.isFinite(liveState.droppedChunks) ? String(liveState.droppedChunks) : '0';
   elements.live.kpis.forEach((node) => {
     const metric = node.dataset.liveKpi;
-    if (metric === 'wpm') node.textContent = Math.max(0, Math.round(words / minutes));
-    if (metric === 'latency') node.textContent = `${Math.floor(80 + Math.random() * 40)} ms`;
-    if (metric === 'dropped') node.textContent = Math.floor(Math.random() * 2);
+    if (metric === 'wpm') node.textContent = wpmText;
+    if (metric === 'latency') node.textContent = latencyText;
+    if (metric === 'dropped') node.textContent = droppedText;
   });
 }
 
-function stopLiveTimer() {
-  if (liveSession.timer) {
-    clearInterval(liveSession.timer);
-    liveSession.timer = null;
+function enqueueLiveChunk(blob) {
+  if (!blob || !blob.size || !liveSession.sessionId) return;
+  const index = liveSession.chunkIndex;
+  liveSession.chunkIndex += 1;
+  liveSession.chunkQueue.push({ blob, index, createdAt: Date.now() });
+  processLiveChunkQueue();
+}
+
+async function processLiveChunkQueue() {
+  if (liveSession.sending) return;
+  if (!liveSession.sessionId) {
+    liveSession.chunkQueue = [];
+    return;
+  }
+  const item = liveSession.chunkQueue.shift();
+  if (!item) return;
+  liveSession.sending = true;
+  const endpoint = `/api/transcriptions/live/sessions/${liveSession.sessionId}/chunk`;
+  try {
+    const formData = new FormData();
+    const filename = `chunk-${String(item.index).padStart(5, '0')}.webm`;
+    formData.append('chunk', item.blob, filename);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      let message = 'No se pudo enviar el fragmento en vivo.';
+      try {
+        const data = await response.json();
+        if (data?.detail) message = data.detail;
+      } catch (parseError) {
+        console.warn('No se pudo interpretar la respuesta del chunk en vivo', parseError);
+      }
+      throw new Error(message);
+    }
+    const payload = await response.json();
+    handleLiveChunkPayload(payload, Date.now() - item.createdAt);
+  } catch (error) {
+    console.error('Error al enviar fragmento en vivo', error);
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        droppedChunks: prev.live.droppedChunks + 1,
+        error: error?.message || 'No se pudo enviar el fragmento en vivo.',
+      },
+    }));
+  } finally {
+    liveSession.sending = false;
+    if (liveSession.chunkQueue.length) {
+      processLiveChunkQueue();
+    }
   }
 }
 
-function startLiveSession() {
-  if (store.getState().live.status === 'recording') return;
-  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'recording', segments: [] } }));
-  liveSession.cursor = 0;
-  stopLiveTimer();
-  liveSession.timer = setInterval(() => {
-    const chunk = SAMPLE_LIVE_SEGMENTS[liveSession.cursor % SAMPLE_LIVE_SEGMENTS.length];
-    liveSession.cursor += 1;
-    appendLiveSegment(chunk);
-    updateLiveKpis();
-  }, 1500);
+function waitForLiveQueueToFlush() {
+  return new Promise((resolve) => {
+    const poll = () => {
+      if (!liveSession.sending && liveSession.chunkQueue.length === 0) {
+        resolve();
+      } else {
+        window.setTimeout(poll, 120);
+      }
+    };
+    poll();
+  });
+}
+
+async function stopLiveRecorder() {
+  if (!liveSession.recorder) return;
+  const recorder = liveSession.recorder;
+  if (recorder.state === 'inactive') return;
+  await new Promise((resolve) => {
+    recorder.addEventListener('stop', () => resolve(), { once: true });
+    try {
+      recorder.stop();
+    } catch (error) {
+      console.warn('No se pudo detener el MediaRecorder', error);
+      resolve();
+    }
+  });
+}
+
+function handleLiveChunkPayload(payload, uploadLatencyMs) {
+  const segments = Array.isArray(payload?.segments) ? payload.segments : [];
+  const segmentTexts = segments
+    .map((segment) => (segment && typeof segment.text === 'string' ? segment.text.trim() : ''))
+    .filter(Boolean);
+  const aggregatedText = typeof payload?.text === 'string' ? payload.text : '';
+  const latencyFromRuntime = Number.isFinite(payload?.runtime_seconds)
+    ? Math.max(0, Math.round(payload.runtime_seconds * 1000))
+    : null;
+  const latencyMs = latencyFromRuntime ?? (Number.isFinite(uploadLatencyMs) ? Math.round(uploadLatencyMs) : null);
+  store.setState((prev) => {
+    const previous = prev.live;
+    const trimmed = segmentTexts.slice(-previous.maxSegments);
+    const combinedText = aggregatedText && aggregatedText.trim()
+      ? aggregatedText
+      : trimmed.length
+      ? trimmed.join(' ')
+      : previous.text;
+    const now = Date.now();
+    const startedAt = previous.startedAt || now;
+    const pausedMs = previous.totalPausedMs + (previous.pauseStartedAt ? now - previous.pauseStartedAt : 0);
+    const elapsedMs = Math.max(1000, now - startedAt - pausedMs);
+    const words = combinedText.trim() ? combinedText.trim().split(/\s+/).length : 0;
+    const computedWpm = Math.max(0, Math.round((words * 60000) / elapsedMs));
+    return {
+      ...prev,
+      live: {
+        ...previous,
+        segments: trimmed,
+        text: combinedText,
+        duration: payload?.duration ?? previous.duration,
+        runtimeSeconds: payload?.runtime_seconds ?? previous.runtimeSeconds,
+        language: payload?.language ?? previous.language,
+        model: payload?.model_size ?? previous.model,
+        beam: payload?.beam_size ?? previous.beam,
+        device: payload?.device_preference ?? previous.device,
+        lastChunkAt: now,
+        latencyMs: latencyMs ?? previous.latencyMs,
+        wpm: computedWpm,
+        error: null,
+      },
+    };
+  });
+}
+
+async function startLiveSession() {
+  const state = store.getState().live;
+  if (state.status === 'recording' || state.isFinalizing) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('Tu navegador no permite capturar audio. Usa Chrome, Edge o Firefox actualizados.');
+    return;
+  }
+  try {
+    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const language = elements.live.language?.value || null;
+    const modelValue = elements.live.model?.value || elements.upload.model?.value || DEFAULT_MODEL;
+    const modelConfig = getModelConfig(modelValue);
+    const beamRaw = elements.live.beam?.value || modelConfig.recommendedBeam;
+    const beamValue = Number(beamRaw);
+    const deviceValue = elements.live.device?.value || null;
+    const payload = {
+      language: language || undefined,
+      model_size: modelValue,
+      device_preference: deviceValue || undefined,
+      beam_size: Number.isFinite(beamValue) ? beamValue : undefined,
+    };
+    const response = await fetch('/api/transcriptions/live/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      const message = data?.detail || 'No se pudo iniciar la sesión en vivo.';
+      throw new Error(message);
+    }
+    const sessionInfo = await response.json();
+    const mimeType = pickLiveMimeType();
+    const options = mimeType ? { mimeType } : undefined;
+    const recorder = new MediaRecorder(audioStream, options);
+    liveSession.sessionId = sessionInfo.session_id;
+    liveSession.mediaStream = audioStream;
+    liveSession.recorder = recorder;
+    liveSession.chunkQueue = [];
+    liveSession.chunkIndex = 0;
+    liveSession.sending = false;
+    liveSession.finishing = false;
+
+    recorder.addEventListener('dataavailable', (event) => {
+      if (event.data && event.data.size) {
+        enqueueLiveChunk(event.data);
+      }
+    });
+    recorder.addEventListener('error', (event) => {
+      console.error('MediaRecorder error', event.error);
+      alert('Error al capturar audio en vivo. Se detendrá la sesión.');
+      finishLiveSession(true);
+    });
+
+    recorder.start(LIVE_CHUNK_INTERVAL_MS);
+
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        status: 'recording',
+        sessionId: sessionInfo.session_id,
+        language: sessionInfo.language ?? language,
+        model: sessionInfo.model_size ?? modelValue,
+        beam: sessionInfo.beam_size ?? (Number.isFinite(beamValue) ? beamValue : null),
+        device: sessionInfo.device_preference ?? deviceValue,
+        segments: [],
+        text: '',
+        duration: null,
+        runtimeSeconds: null,
+        startedAt: Date.now(),
+        pauseStartedAt: null,
+        totalPausedMs: 0,
+        lastChunkAt: null,
+        latencyMs: 0,
+        wpm: 0,
+        droppedChunks: 0,
+        error: null,
+        isFinalizing: false,
+      },
+    }));
+    renderLiveKpis(store.getState().live);
+  } catch (error) {
+    console.error('No se pudo iniciar la sesión en vivo', error);
+    alert(error?.message || 'No se pudo iniciar la sesión en vivo.');
+    if (liveSession.mediaStream) {
+      liveSession.mediaStream.getTracks().forEach((track) => track.stop());
+    }
+    resetLiveSessionLocalState();
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        status: 'idle',
+        sessionId: null,
+        error: error?.message || 'No se pudo iniciar la sesión en vivo.',
+      },
+    }));
+  }
+}
+
+function updatePausedMetrics() {
+  store.setState((prev) => {
+    const pauseStartedAt = prev.live.pauseStartedAt;
+    if (!pauseStartedAt) return prev;
+    const elapsed = Date.now() - pauseStartedAt;
+    if (elapsed <= 0) return prev;
+    return {
+      ...prev,
+      live: {
+        ...prev.live,
+        totalPausedMs: prev.live.totalPausedMs + elapsed,
+        pauseStartedAt: null,
+      },
+    };
+  });
 }
 
 function pauseLiveSession() {
-  if (store.getState().live.status !== 'recording') return;
-  stopLiveTimer();
-  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'paused' } }));
+  const state = store.getState().live;
+  if (state.status !== 'recording' || !liveSession.recorder) return;
+  if (typeof liveSession.recorder.pause === 'function' && liveSession.recorder.state === 'recording') {
+    liveSession.recorder.pause();
+  }
+  store.setState((prev) => ({
+    ...prev,
+    live: {
+      ...prev.live,
+      status: 'paused',
+      pauseStartedAt: Date.now(),
+    },
+  }));
 }
 
 function resumeLiveSession() {
-  if (store.getState().live.status !== 'paused') return;
-  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'recording' } }));
-  stopLiveTimer();
-  liveSession.timer = setInterval(() => {
-    const chunk = SAMPLE_LIVE_SEGMENTS[liveSession.cursor % SAMPLE_LIVE_SEGMENTS.length];
-    liveSession.cursor += 1;
-    appendLiveSegment(chunk);
-    updateLiveKpis();
-  }, 1500);
-}
-
-function finishLiveSession() {
-  if (store.getState().live.status === 'idle') return;
-  stopLiveTimer();
-  store.setState((prev) => ({ ...prev, live: { ...prev.live, status: 'completed' } }));
-  const segments = store.getState().live.segments;
-  if (!segments.length) return;
-  const text = segments.join('');
-  const folderInput = elements.live.folder.value.trim() || elements.upload.folder.value.trim() || 'General';
-  const folderId = ensureFolderPath(folderInput);
-  const now = new Date();
-  const jobs = [...store.getState().jobs];
-  const id = createId('job');
-  const modelConfig = getModelConfig(elements.live.model?.value || DEFAULT_MODEL);
-  const beamValue = Number(elements.live.beam?.value || modelConfig.recommendedBeam);
-  jobs.unshift({
-    id,
-    name: `Sesión en vivo ${now.toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })}`,
-    folderId,
-    status: 'completed',
-    durationSec: segments.length * 30,
-    language: elements.live.language.value || 'es',
-    model: elements.live.model.value,
-    beam: beamValue,
-    createdAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-  });
+  const state = store.getState().live;
+  if (state.status !== 'paused' || !liveSession.recorder) return;
+  updatePausedMetrics();
+  if (typeof liveSession.recorder.resume === 'function' && liveSession.recorder.state === 'paused') {
+    try {
+      liveSession.recorder.resume();
+    } catch (error) {
+      console.warn('No se pudo reanudar el MediaRecorder', error);
+    }
+  }
   store.setState((prev) => ({
     ...prev,
-    jobs,
-    recentJobs: computeRecent(jobs),
-    stats: prev.stats
-      ? {
-          ...prev.stats,
-          todayCount: prev.stats.todayCount + 1,
-          totalCount: prev.stats.totalCount + 1,
-          todayMinutes: prev.stats.todayMinutes + Math.round((segments.length * 30) / 60),
-          totalMinutes: prev.stats.totalMinutes + Math.round((segments.length * 30) / 60),
-          queue: Math.max(0, prev.stats.queue - 1),
-        }
-      : prev.stats,
+    live: {
+      ...prev.live,
+      status: 'recording',
+      pauseStartedAt: null,
+    },
   }));
-  SAMPLE_DATA.texts[id] = { jobId: id, text, segments: [...segments] };
-  loadJobDetail(id);
+}
+
+async function finalizeLiveSessionOnServer(sessionId) {
+  const folderInput = elements.live.folder?.value.trim();
+  const uploadFolder = elements.upload.folder?.value.trim();
+  const destination = folderInput || uploadFolder || 'General';
+  const state = store.getState().live;
+  const payload = {
+    destination_folder: destination,
+    language: state.language || undefined,
+    model_size: state.model || undefined,
+    device_preference: state.device || undefined,
+    beam_size: state.beam || undefined,
+  };
+  const response = await fetch(`/api/transcriptions/live/sessions/${sessionId}/finalize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    const message = data?.detail || 'No se pudo guardar la sesión en vivo.';
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+async function finishLiveSession(forceDiscard = false) {
+  const current = store.getState().live;
+  if (current.status === 'idle' || current.isFinalizing) return;
+  liveSession.finishing = true;
+  if (current.status === 'paused') {
+    updatePausedMetrics();
+  }
+  store.setState((prev) => ({
+    ...prev,
+    live: {
+      ...prev.live,
+      status: forceDiscard ? 'idle' : 'finalizing',
+      isFinalizing: !forceDiscard,
+    },
+  }));
+  try {
+    await stopLiveRecorder();
+    await waitForLiveQueueToFlush();
+    if (forceDiscard) {
+      await discardRemoteLiveSession(liveSession.sessionId);
+      resetLiveSessionLocalState();
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          status: 'idle',
+          sessionId: null,
+          isFinalizing: false,
+          segments: [],
+          text: '',
+          latencyMs: 0,
+          wpm: 0,
+          droppedChunks: 0,
+          duration: null,
+          runtimeSeconds: null,
+          startedAt: null,
+          pauseStartedAt: null,
+          totalPausedMs: 0,
+        },
+      }));
+      return;
+    }
+    const sessionId = liveSession.sessionId;
+    const result = await finalizeLiveSessionOnServer(sessionId);
+    resetLiveSessionLocalState();
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        status: 'completed',
+        sessionId: null,
+        model: result.model_size ?? prev.live.model,
+        device: result.device_preference ?? prev.live.device,
+        language: result.language ?? prev.live.language,
+        beam: result.beam_size ?? prev.live.beam,
+        duration: result.duration ?? prev.live.duration,
+        runtimeSeconds: result.runtime_seconds ?? prev.live.runtimeSeconds,
+        isFinalizing: false,
+      },
+    }));
+    await loadJobs();
+    if (result?.transcription_id) {
+      loadJobDetail(String(result.transcription_id), { suppressErrors: true });
+    }
+  } catch (error) {
+    console.error('No se pudo finalizar la sesión en vivo', error);
+    alert(error?.message || 'No se pudo finalizar la sesión en vivo.');
+    await discardRemoteLiveSession(liveSession.sessionId);
+    resetLiveSessionLocalState();
+    store.setState((prev) => ({
+      ...prev,
+      live: {
+        ...prev.live,
+        status: 'idle',
+        sessionId: null,
+        isFinalizing: false,
+        error: error?.message || 'No se pudo finalizar la sesión en vivo.',
+        segments: [],
+        text: '',
+        latencyMs: 0,
+        wpm: 0,
+        droppedChunks: prev.live.droppedChunks + 1,
+        duration: null,
+        runtimeSeconds: null,
+        startedAt: null,
+        pauseStartedAt: null,
+        totalPausedMs: 0,
+      },
+    }));
+  }
 }
 let searchTimer = null;
 function updateLibraryFilter(key, value) {

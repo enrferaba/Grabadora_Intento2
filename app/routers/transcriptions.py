@@ -113,6 +113,7 @@ class LiveSessionState:
     directory: Path
     audio_path: Path
     created_at: float = field(default_factory=time.time)
+    last_activity: float = field(default_factory=time.time)
     chunk_count: int = 0
     last_text: str = ""
     last_duration: Optional[float] = None
@@ -122,6 +123,18 @@ class LiveSessionState:
 
 
 LIVE_SESSIONS: Dict[str, LiveSessionState] = {}
+LIVE_SESSION_TTL_SECONDS = 3600
+
+
+def purge_expired_live_sessions() -> None:
+    now = time.time()
+    expired_ids = []
+    for session_id, state in list(LIVE_SESSIONS.items()):
+        last_seen = state.last_activity or state.created_at
+        if now - last_seen > LIVE_SESSION_TTL_SECONDS:
+            expired_ids.append(session_id)
+    for session_id in expired_ids:
+        _cleanup_live_session(session_id)
 
 
 def _get_session() -> Session:
@@ -165,6 +178,7 @@ def _resolve_device_choice(value: Optional[str]) -> str:
 
 
 def _require_live_session(session_id: str) -> LiveSessionState:
+    purge_expired_live_sessions()
     state = LIVE_SESSIONS.get(session_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Sesión en vivo no encontrada")
@@ -341,6 +355,7 @@ def _enqueue_transcription(
 
 @router.post("/live/sessions", response_model=LiveSessionCreateResponse, status_code=201)
 def create_live_session(payload: LiveSessionCreateRequest) -> LiveSessionCreateResponse:
+    purge_expired_live_sessions()
     session_id = secrets.token_urlsafe(12)
     resolved_model = _resolve_model_choice(payload.model_size)
     resolved_device = _resolve_device_choice(payload.device_preference)
@@ -367,6 +382,7 @@ def create_live_session(payload: LiveSessionCreateRequest) -> LiveSessionCreateR
 
 @router.post("/live/sessions/{session_id}/chunk", response_model=LiveChunkResponse)
 def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunkResponse:
+    purge_expired_live_sessions()
     state = _require_live_session(session_id)
     data = chunk.file.read()
     if not data:
@@ -429,6 +445,7 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
         state.last_duration = result.duration
         state.last_runtime = result.runtime_seconds
         state.language = result.language or state.language
+        state.last_activity = time.time()
     return LiveChunkResponse(
         session_id=session_id,
         text=state.last_text,
@@ -455,6 +472,7 @@ def finalize_live_session(
     with state.lock:
         if not state.audio_path.exists():
             raise HTTPException(status_code=400, detail="No se capturó audio en la sesión en vivo")
+        state.last_activity = time.time()
         resolved_model = _resolve_model_choice(payload.model_size or state.model_size)
         resolved_device = _resolve_device_choice(payload.device_preference or state.device)
         resolved_language = payload.language or state.language
