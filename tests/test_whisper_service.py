@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import time
 from typing import List, Optional
 from urllib.error import HTTPError, URLError
 
@@ -375,3 +376,97 @@ def test_faster_whisper_retries_without_vad(monkeypatch, tmp_path):
     assert result.text == "Hola"
     assert call_history == [True, False]
     assert any("reintentando sin VAD" in message for _, message, *_ in events)
+
+
+def test_request_model_preparation_tracks_progress(monkeypatch):
+    monkeypatch.setattr(whisper_service.settings, "enable_dummy_transcriber", True, raising=False)
+    whisper_service._transcriber_cache.clear()
+    whisper_service._model_progress.clear()
+    whisper_service._model_futures.clear()
+    info = whisper_service.request_model_preparation("tiny", "cpu")
+    deadline = time.time() + 5
+    while info.status != "ready" and time.time() < deadline:
+        time.sleep(0.05)
+        info = whisper_service.get_model_preparation_status("tiny", "cpu")
+    assert info.status == "ready"
+    assert info.progress == 100
+
+
+def test_model_preparation_falls_back_when_vad_requires_auth(monkeypatch):
+    created: List[object] = []
+
+    def failing_prepare(*args, **kwargs):
+        raise whisper_service.WhisperXVADUnavailableError("auth required")
+
+    class FakeFallback:
+        def __init__(self, model_size, device_preference):
+            self.model_size = model_size
+            self.device_preference = device_preference
+            self.prepared = False
+            created.append(self)
+
+        def prepare(self, *, progress_callback=None):
+            self.prepared = True
+            if progress_callback:
+                progress_callback(100, "fallback listo")
+
+    monkeypatch.setattr(whisper_service, "prepare_transcriber", failing_prepare, raising=False)
+    monkeypatch.setattr(whisper_service, "FasterWhisperTranscriber", FakeFallback, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "enable_dummy_transcriber", False, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_model_size", "tiny", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_device", "cpu", raising=False)
+
+    whisper_service._transcriber_cache.clear()
+    whisper_service._model_progress.clear()
+    whisper_service._model_futures.clear()
+
+    info = whisper_service.request_model_preparation("tiny", "cpu")
+    deadline = time.time() + 5
+    while info.status != "ready" and time.time() < deadline:
+        time.sleep(0.05)
+        info = whisper_service.get_model_preparation_status("tiny", "cpu")
+
+    assert info.status == "ready"
+    assert "Error" not in info.message
+    assert created and getattr(created[0], "prepared", False)
+
+
+def test_model_preparation_handles_legacy_hf_error_message(monkeypatch):
+    created: List[object] = []
+
+    def failing_prepare(*args, **kwargs):
+        raise RuntimeError(
+            "El modelo de VAD de WhisperX requiere autenticación en HuggingFace."
+        )
+
+    class FakeFallback:
+        def __init__(self, model_size, device_preference):
+            self.model_size = model_size
+            self.device_preference = device_preference
+            created.append(self)
+            self.prepared = False
+
+        def prepare(self, *, progress_callback=None):
+            self.prepared = True
+            if progress_callback:
+                progress_callback(100, "fallback listo")
+
+    monkeypatch.setattr(whisper_service, "prepare_transcriber", failing_prepare, raising=False)
+    monkeypatch.setattr(whisper_service, "FasterWhisperTranscriber", FakeFallback, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "enable_dummy_transcriber", False, raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_model_size", "tiny", raising=False)
+    monkeypatch.setattr(whisper_service.settings, "whisper_device", "cpu", raising=False)
+
+    whisper_service._transcriber_cache.clear()
+    whisper_service._model_progress.clear()
+    whisper_service._model_futures.clear()
+
+    info = whisper_service.request_model_preparation("tiny", "cpu")
+    deadline = time.time() + 5
+    while info.status != "ready" and time.time() < deadline:
+        time.sleep(0.05)
+        info = whisper_service.get_model_preparation_status("tiny", "cpu")
+
+    assert info.status == "ready"
+    assert "HuggingFace" not in info.message
+    assert created and getattr(created[0], "prepared", False)

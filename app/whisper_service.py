@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from inspect import signature
 from pathlib import Path
+from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 
 try:
@@ -33,6 +34,183 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ModelPreparationInfo:
+    status: str = "idle"
+    progress: int = 0
+    message: str = "Pendiente"
+    error: Optional[str] = None
+    updated_at: float = field(default_factory=time.time)
+
+
+_model_progress_lock = Lock()
+_model_progress: Dict[Tuple[str, str], ModelPreparationInfo] = {}
+_model_futures_lock = Lock()
+_model_futures: Dict[Tuple[str, str], Future] = {}
+_model_executor = ThreadPoolExecutor(max_workers=2)
+
+
+def _model_progress_key(model_size: Optional[str], device: Optional[str]) -> Tuple[str, str]:
+    normalized_model = (model_size or settings.whisper_model_size or "large-v2").strip()
+    if not normalized_model:
+        normalized_model = settings.whisper_model_size or "large-v2"
+    normalized_device = (device or settings.whisper_device or "cuda").lower()
+    return normalized_model, normalized_device
+
+
+def _copy_model_info(info: ModelPreparationInfo) -> ModelPreparationInfo:
+    return ModelPreparationInfo(
+        status=info.status,
+        progress=info.progress,
+        message=info.message,
+        error=info.error,
+        updated_at=info.updated_at,
+    )
+
+
+def _update_model_progress(
+    key: Tuple[str, str],
+    status: str,
+    progress: int,
+    message: str,
+    *,
+    error: Optional[str] = None,
+) -> ModelPreparationInfo:
+    clamped = max(0, min(int(progress), 100))
+    with _model_progress_lock:
+        current = _model_progress.get(key, ModelPreparationInfo())
+        current.status = status
+        current.progress = clamped
+        current.message = message
+        current.error = error
+        current.updated_at = time.time()
+        _model_progress[key] = current
+        return _copy_model_info(current)
+
+
+def get_model_preparation_status(model_size: Optional[str], device: Optional[str]) -> ModelPreparationInfo:
+    key = _model_progress_key(model_size, device)
+    with _model_progress_lock:
+        info = _model_progress.get(key)
+        if info is None:
+            info = ModelPreparationInfo()
+            _model_progress[key] = info
+        return _copy_model_info(info)
+
+
+def _progress_callback_factory(key: Tuple[str, str]) -> Callable[[int, str], None]:
+    def _callback(progress: int, message: str) -> None:
+        status = "ready" if progress >= 100 else "downloading"
+        _update_model_progress(key, status, progress, message)
+
+    return _callback
+
+
+def prepare_transcriber(
+    model_size: Optional[str] = None,
+    device_preference: Optional[str] = None,
+    *,
+    progress_callback: Optional[Callable[[int, str], None]] = None,
+) -> BaseTranscriber:
+    transcriber = get_transcriber(model_size, device_preference)
+    try:
+        transcriber.prepare(progress_callback=progress_callback)
+    except AttributeError:
+        # Backwards compatibility in case a custom transcriber does not implement prepare.
+        if progress_callback:
+            progress_callback(100, "Modelo listo para usar.")
+    return transcriber
+
+
+def _is_vad_auth_error(exc: Exception) -> bool:
+    message = (str(exc) or "").lower()
+    if not message:
+        return False
+    if "vad" not in message:
+        return False
+    auth_tokens = ("auth", "autentic", "token")
+    if not any(token in message for token in auth_tokens):
+        return False
+    if "huggingface" in message:
+        return True
+    return "whisperx" in message and "requires" in message
+
+
+def _prepare_model_task(model_size: str, device: str) -> None:
+    key = _model_progress_key(model_size, device)
+    callback = _progress_callback_factory(key)
+
+    def _prepare_fallback(exc: Exception) -> None:
+        logger.info(
+            "WhisperX no disponible para %s en %s; preparando fallback faster-whisper",
+            model_size,
+            device,
+        )
+        try:
+            fallback = FasterWhisperTranscriber(model_size, device)
+            fallback.prepare(progress_callback=callback)
+            _update_model_progress(
+                key,
+                "ready",
+                100,
+                f"Modelo {model_size} listo con faster-whisper (sin VAD).",
+            )
+        except Exception as fallback_exc:  # pragma: no cover - depende del runtime
+            logger.exception(
+                "No se pudo preparar el fallback faster-whisper tras fallo de WhisperX: %s",
+                fallback_exc,
+            )
+            _update_model_progress(
+                key,
+                "error",
+                0,
+                "No se pudo preparar el modelo de respaldo tras desactivar WhisperX.",
+                error=str(fallback_exc),
+            )
+
+    try:
+        callback(5, f"Comprobando caché de {model_size} ({device}).")
+        prepare_transcriber(model_size, device, progress_callback=callback)
+        _update_model_progress(
+            key,
+            "ready",
+            100,
+            f"Modelo {model_size} listo en {device}.",
+        )
+    except WhisperXVADUnavailableError as exc:
+        _prepare_fallback(exc)
+        return
+    except Exception as exc:  # pragma: no cover - dependerá del runtime
+        if _is_vad_auth_error(exc):
+            _prepare_fallback(exc)
+            return
+        logger.exception("No se pudo preparar el modelo %s (%s)", model_size, device)
+        _update_model_progress(
+            key,
+            "error",
+            0,
+            f"Error preparando {model_size}: {exc}",
+            error=str(exc),
+        )
+
+
+def request_model_preparation(model_size: Optional[str], device: Optional[str]) -> ModelPreparationInfo:
+    key = _model_progress_key(model_size, device)
+    info = get_model_preparation_status(model_size, device)
+    if info.status == "ready":
+        return info
+    with _model_futures_lock:
+        future = _model_futures.get(key)
+        if future is None or future.done():
+            resolved_model, resolved_device = key
+            _update_model_progress(
+                key,
+                "checking",
+                max(info.progress, 1),
+                f"Preparando {resolved_model} en {resolved_device}…",
+            )
+            _model_futures[key] = _model_executor.submit(_prepare_model_task, resolved_model, resolved_device)
+    return get_model_preparation_status(model_size, device)
 def _resolve_cpu_threads() -> int:
     configured = getattr(settings, "cpu_threads", None)
     if configured:
@@ -141,6 +319,14 @@ class BaseTranscriber:
     ) -> TranscriptionResult:
         raise NotImplementedError
 
+    def prepare(
+        self,
+        *,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> None:  # pragma: no cover - trivial default implementation
+        if progress_callback:
+            progress_callback(100, "Modelo listo para usar.")
+
 
 class DummyTranscriber(BaseTranscriber):
     def transcribe(
@@ -166,6 +352,14 @@ class DummyTranscriber(BaseTranscriber):
             segments=[SegmentResult(start=0, end=0, speaker="SPEAKER_00", text=dummy_text)],
             runtime_seconds=0.0,
         )
+
+    def prepare(
+        self,
+        *,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> None:  # pragma: no cover - trivial
+        if progress_callback:
+            progress_callback(100, "Transcriptor simulado listo.")
 
 
 class WhisperXVADUnavailableError(RuntimeError):
@@ -496,7 +690,7 @@ class WhisperXTranscriber(BaseTranscriber):
             setattr(vad_module, "VAD_SEGMENTATION_URL", current_url.replace("http://", "https://", 1))
         self._vad_patch_done = True
 
-    def _ensure_model(self, debug_callback=None):
+    def _ensure_model(self, debug_callback=None, progress_callback: Optional[Callable[[int, str], None]] = None):
         if self._disabled_reason:
             raise WhisperXVADUnavailableError(self._disabled_reason)
 
@@ -523,6 +717,8 @@ class WhisperXTranscriber(BaseTranscriber):
                     },
                     "info",
                 )
+            if progress_callback:
+                progress_callback(15, f"Descargando modelo {self.model_size} ({device}).")
             self._patch_default_asr_options()
             self._patch_vad_loader(debug_callback=debug_callback)
             try:
@@ -547,6 +743,8 @@ class WhisperXTranscriber(BaseTranscriber):
                         "warning",
                     )
                 raise
+            if progress_callback:
+                progress_callback(65, f"Modelo {self.model_size} cargado en {device}.")
             if (
                 getattr(settings, "whisper_enable_speaker_diarization", False)
                 or getattr(settings, "whisper_word_timestamps", False)
@@ -563,6 +761,8 @@ class WhisperXTranscriber(BaseTranscriber):
                             {"language": settings.whisper_language or "auto"},
                             "info",
                         )
+                    if progress_callback:
+                        progress_callback(80, "Alineación preparada.")
                 except Exception as exc:  # pragma: no cover - depende de runtime
                     logger.warning("No se pudo cargar align model: %s", exc)
                     self._align_model = None
@@ -597,6 +797,8 @@ class WhisperXTranscriber(BaseTranscriber):
                         {"token": bool(token)},
                         "info",
                     )
+                if progress_callback:
+                    progress_callback(90, "Diarización disponible.")
             except Exception as exc:  # pragma: no cover - red/network
                 logger.warning("Diarization deshabilitada: %s", exc)
                 self._diarize_pipeline = None
@@ -607,6 +809,8 @@ class WhisperXTranscriber(BaseTranscriber):
                         {"error": str(exc)},
                         "warning",
                     )
+        if self._model is not None and progress_callback:
+            progress_callback(100, f"WhisperX listo en {self._normalize_device(self.device_preference or settings.whisper_device)}.")
 
     def _estimate_duration(self, audio_path: Path) -> Optional[float]:
         try:
@@ -621,6 +825,21 @@ class WhisperXTranscriber(BaseTranscriber):
             except Exception as exc:  # pragma: no cover - depends on ffmpeg availability
                 logger.debug("Unable to estimate duration for %s: %s", audio_path, exc)
                 return None
+
+    def prepare(
+        self,
+        *,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> None:
+        with self._lock:
+            if self._model is not None:
+                if progress_callback:
+                    progress_callback(
+                        100,
+                        f"WhisperX listo en {self._normalize_device(self.device_preference or settings.whisper_device)}.",
+                    )
+                return
+            self._ensure_model(progress_callback=progress_callback)
 
     def transcribe(
         self,
@@ -909,8 +1128,14 @@ class FasterWhisperTranscriber(BaseTranscriber):
             devices.append("cpu")
         return devices
 
-    def _ensure_model(self, debug_callback=None) -> None:
+    def _ensure_model(
+        self,
+        debug_callback=None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> None:
         if self._model is not None:
+            if progress_callback:
+                progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
             return
 
         def emit(
@@ -945,6 +1170,9 @@ class FasterWhisperTranscriber(BaseTranscriber):
         num_workers = _resolve_fw_num_workers()
         loaded_device: Optional[str] = None
 
+        if progress_callback:
+            progress_callback(25, f"Cargando {self.model_size} ({initial_device}).")
+
         for device in self._candidate_devices(initial_device):
             for compute_type in self._candidate_compute_types(device):
                 forced_cuda = device == "cuda" and settings.whisper_force_cuda and not torch_available
@@ -973,6 +1201,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
                     loaded_device = device
                     if device == "cuda" and torch is not None:
                         torch.cuda.empty_cache()
+                    if progress_callback:
+                        progress_callback(85, f"Modelo {self.model_size} listo en {device}.")
                     break
                 except Exception as exc:  # pragma: no cover - depends on runtime environment
                     last_error = exc
@@ -1035,6 +1265,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 },
                 "warning",
             )
+        if self._model is not None and progress_callback:
+            progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
 
     def _estimate_duration(self, audio_path: Path) -> Optional[float]:
         try:
@@ -1049,6 +1281,18 @@ class FasterWhisperTranscriber(BaseTranscriber):
             except Exception as exc:
                 logger.debug("Unable to estimate duration for %s: %s", audio_path, exc)
                 return None
+
+    def prepare(
+        self,
+        *,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> None:
+        with self._lock:
+            if self._model is not None:
+                if progress_callback:
+                    progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
+                return
+            self._ensure_model(progress_callback=progress_callback)
 
     def transcribe(
         self,
