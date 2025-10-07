@@ -476,7 +476,7 @@
               <header class="panel__header">
                 <div>
                   <h2 class="panel__title" id="job-text-heading">Texto completo</h2>
-                  <p class="panel__subtitle">Streaming incremental con seguimiento automático.</p>
+                  <p class="panel__subtitle">Streaming incremental con progreso estimado en tiempo real.</p>
                 </div>
                 <div class="panel__actions">
                   <label class="field field--inline" for="job-tail-size">
@@ -491,6 +491,27 @@
                 </div>
               </header>
               <div class="job-text__body">
+                <div class="job-statusline" id="job-live-status" role="status" aria-live="polite">
+                  Selecciona una transcripción para ver el progreso.
+                </div>
+                <div class="job-progress" id="job-progress" hidden>
+                  <div class="job-progress__meta">
+                    <span id="job-progress-label">00:00 / 00:00</span>
+                    <span id="job-progress-eta">—</span>
+                  </div>
+                  <div
+                    class="job-progress__bar"
+                    id="job-progress-bar"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="0"
+                    aria-labelledby="job-progress-label"
+                    aria-describedby="job-progress-eta"
+                  >
+                    <span class="job-progress__fill" id="job-progress-fill"></span>
+                  </div>
+                </div>
                 <div class="live-tail job-tail" id="job-tail" data-tail>
                   <pre class="live-tail__text" id="job-text-content">Elige una transcripción para verla aquí.</pre>
                 </div>

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import mimetypes
 import secrets
 import shutil
 import time
@@ -65,13 +67,26 @@ ALLOWED_MEDIA_EXTENSIONS = {
 }
 ALLOWED_MEDIA_PREFIXES = ("audio/", "video/")
 
-MODEL_ALIASES = {
-    "large": "large-v3",
+SUPPORTED_MODEL_SIZES = {
+    "turbo": "turbo",
+    "tiny": "tiny",
+    "tiny.en": "tiny.en",
+    "base": "base",
+    "base.en": "base.en",
+    "small": "small",
+    "small.en": "small.en",
+    "medium": "medium",
+    "medium.en": "medium.en",
+    "large": "large",
+    "large-v1": "large-v1",
     "large-v2": "large-v2",
     "large-v3": "large-v3",
+}
+
+MODEL_ALIASES = {
     "large3": "large-v3",
-    "medium": "medium",
-    "small": "small",
+    "large_v3": "large-v3",
+    "largev3": "large-v3",
 }
 
 DEVICE_ALIASES = {
@@ -131,8 +146,15 @@ def _validate_upload_size(upload: UploadFile) -> None:
 def _resolve_model_choice(value: Optional[str]) -> str:
     if not value:
         return settings.whisper_model_size
-    choice = MODEL_ALIASES.get(value.lower())
-    return choice or settings.whisper_model_size
+    normalized = value.strip().lower()
+    direct = SUPPORTED_MODEL_SIZES.get(normalized)
+    if direct:
+        return direct
+    alias = MODEL_ALIASES.get(normalized)
+    if alias:
+        return alias
+    logger.warning("Modelo whisper desconocido %s, usando predeterminado", value)
+    return settings.whisper_model_size
 
 
 def _resolve_device_choice(value: Optional[str]) -> str:
@@ -615,6 +637,7 @@ def process_transcription(
                     partial = update_session.get(Transcription, transcription_id)
                     if partial is not None and (partial.text or "").strip() != partial_text:
                         partial.text = partial_text
+                        update_session.commit()
 
     append_debug_event(
         transcription_id,
@@ -629,6 +652,7 @@ def process_transcription(
     )
     try:
         stored_path: Optional[str] = None
+        existing_duration: Optional[float] = None
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
             if transcription is None:
@@ -639,6 +663,7 @@ def process_transcription(
             transcription.device_preference = resolved_device
             transcription.runtime_seconds = None
             stored_path = transcription.stored_path
+            existing_duration = transcription.duration
 
         assert stored_path is not None
         audio_path = Path(stored_path)
@@ -658,6 +683,29 @@ def process_transcription(
                 level="warning",
             )
             return
+
+        duration_hint: Optional[float] = existing_duration
+        if duration_hint is None:
+            try:
+                audio_info = AudioSegment.from_file(audio_path)
+                duration_hint = len(audio_info) / 1000.0
+            except Exception as exc:  # pragma: no cover - depende del runtime
+                logger.debug(
+                    "No se pudo estimar la duración preliminar para %s: %s",
+                    audio_path,
+                    exc,
+                )
+            else:
+                append_debug_event(
+                    transcription_id,
+                    "analyze.duration",
+                    "Duración estimada del audio",
+                    extra={"seconds": duration_hint},
+                )
+                with get_session() as update_session:
+                    partial = update_session.get(Transcription, transcription_id)
+                    if partial is not None and not partial.duration:
+                        partial.duration = duration_hint
 
         result = transcriber.transcribe(
             audio_path,
@@ -754,6 +802,53 @@ def list_transcriptions(
 def get_transcription(transcription_id: int, session: Session = Depends(_get_session)) -> TranscriptionDetail:
     transcription = _get_transcription_or_404(session, transcription_id)
     return TranscriptionDetail.from_orm(transcription)
+
+
+@router.get("/{transcription_id}/audio")
+def download_transcription_audio(
+    transcription_id: int,
+    session: Session = Depends(_get_session),
+) -> FileResponse:
+    transcription = _get_transcription_or_404(session, transcription_id)
+    audio_path = Path(transcription.stored_path)
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Audio original no disponible")
+    media_type, _ = mimetypes.guess_type(audio_path.name)
+    return FileResponse(
+        audio_path,
+        media_type=media_type or "application/octet-stream",
+        filename=audio_path.name,
+    )
+
+
+@router.get("/{transcription_id}/logs")
+def download_transcription_logs(
+    transcription_id: int,
+    session: Session = Depends(_get_session),
+) -> Response:
+    transcription = _get_transcription_or_404(session, transcription_id)
+    events = list(transcription.debug_events or [])
+    if not events:
+        content = "No hay eventos de depuración registrados aún.\n"
+    else:
+        lines: List[str] = []
+        for event in events:
+            timestamp = event.get("timestamp", "")
+            stage = event.get("stage", "")
+            level = event.get("level", "info")
+            message = event.get("message", "")
+            extra = event.get("extra")
+            lines.append(f"[{timestamp}] {level.upper()} · {stage}: {message}")
+            if extra:
+                formatted_extra = json.dumps(extra, ensure_ascii=False, sort_keys=True)
+                lines.append(f"    extra: {formatted_extra}")
+        content = "\n".join(lines) + "\n"
+    filename = f"transcription-{transcription_id}-logs.txt"
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{transcription_id}/download")
