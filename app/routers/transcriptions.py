@@ -67,13 +67,26 @@ ALLOWED_MEDIA_EXTENSIONS = {
 }
 ALLOWED_MEDIA_PREFIXES = ("audio/", "video/")
 
-MODEL_ALIASES = {
-    "large": "large-v3",
+SUPPORTED_MODEL_SIZES = {
+    "turbo": "turbo",
+    "tiny": "tiny",
+    "tiny.en": "tiny.en",
+    "base": "base",
+    "base.en": "base.en",
+    "small": "small",
+    "small.en": "small.en",
+    "medium": "medium",
+    "medium.en": "medium.en",
+    "large": "large",
+    "large-v1": "large-v1",
     "large-v2": "large-v2",
     "large-v3": "large-v3",
+}
+
+MODEL_ALIASES = {
     "large3": "large-v3",
-    "medium": "medium",
-    "small": "small",
+    "large_v3": "large-v3",
+    "largev3": "large-v3",
 }
 
 DEVICE_ALIASES = {
@@ -133,8 +146,15 @@ def _validate_upload_size(upload: UploadFile) -> None:
 def _resolve_model_choice(value: Optional[str]) -> str:
     if not value:
         return settings.whisper_model_size
-    choice = MODEL_ALIASES.get(value.lower())
-    return choice or settings.whisper_model_size
+    normalized = value.strip().lower()
+    direct = SUPPORTED_MODEL_SIZES.get(normalized)
+    if direct:
+        return direct
+    alias = MODEL_ALIASES.get(normalized)
+    if alias:
+        return alias
+    logger.warning("Modelo whisper desconocido %s, usando predeterminado", value)
+    return settings.whisper_model_size
 
 
 def _resolve_device_choice(value: Optional[str]) -> str:
@@ -617,6 +637,7 @@ def process_transcription(
                     partial = update_session.get(Transcription, transcription_id)
                     if partial is not None and (partial.text or "").strip() != partial_text:
                         partial.text = partial_text
+                        update_session.commit()
 
     append_debug_event(
         transcription_id,
