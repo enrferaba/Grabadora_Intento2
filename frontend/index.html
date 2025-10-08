@@ -412,6 +412,14 @@
                   <span class="live-kpis__value" data-live-kpi="latency">0 ms</span>
                 </div>
                 <div>
+                  <span class="live-kpis__label">Cola en vivo</span>
+                  <span
+                    class="live-kpis__value live-kpis__value--badge"
+                    data-live-kpi="pending"
+                    aria-live="polite"
+                  >0</span>
+                </div>
+                <div>
                   <span class="live-kpis__label">Chunks perdidos</span>
                   <span class="live-kpis__value" data-live-kpi="dropped">0</span>
                 </div>
@@ -430,6 +438,19 @@
                     <select id="live-beam" class="field__input" data-default-beam="2"></select>
                   </label>
                   <p class="advanced__hint" id="live-beam-hint"></p>
+                  <label class="field">
+                    <span class="field__label">Intervalo de envío</span>
+                    <select id="live-chunk-interval" class="field__input">
+                      <option value="500">0,5 s</option>
+                      <option value="750">0,75 s</option>
+                      <option value="1000" selected>1 s</option>
+                      <option value="1500">1,5 s</option>
+                      <option value="2000">2 s</option>
+                    </select>
+                  </label>
+                  <p class="advanced__hint">
+                    Ajusta cada cuánto se envían fragmentos al servidor para equilibrar latencia y fiabilidad.
+                  </p>
                 </div>
                 <p class="advanced__note">Beam controla cuántas hipótesis de texto explora el modelo. Más beam = más calidad, pero también más retardo.</p>
               </details>

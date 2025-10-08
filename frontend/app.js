@@ -4,6 +4,7 @@ const LOCAL_KEYS = {
   liveFollow: 'grabadora:live-follow',
   jobFollow: 'grabadora:job-follow',
   liveTailSize: 'grabadora:live-tail-size',
+  liveChunkInterval: 'grabadora:live-chunk-interval',
   jobTailSize: 'grabadora:job-tail-size',
   lastRoute: 'grabadora:last-route',
 };
@@ -137,6 +138,7 @@ const WHISPER_MODELS = [
 const BEAM_OPTIONS = [1, 2, 3, 4, 5, 8];
 const DEFAULT_MODEL = 'large-v3';
 const NUMERIC_ID_PATTERN = /^\d+$/;
+const DEFAULT_LIVE_CHUNK_INTERVAL_MS = 1000;
 
 const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
@@ -345,6 +347,7 @@ const elements = {
     follow: document.getElementById('live-follow'),
     returnBtn: document.getElementById('live-return'),
     tailSize: document.getElementById('live-tail-size'),
+    chunkInterval: document.getElementById('live-chunk-interval'),
     fontPlus: document.getElementById('live-font-plus'),
     fontMinus: document.getElementById('live-font-minus'),
     fullscreen: document.getElementById('live-fullscreen'),
@@ -425,6 +428,14 @@ const preferences = {
     }
   },
 };
+
+const initialLiveChunkInterval = (() => {
+  const stored = Number(preferences.get(LOCAL_KEYS.liveChunkInterval, NaN));
+  if (Number.isFinite(stored) && stored > 0) return stored;
+  const fromInput = Number(elements.live.chunkInterval?.value);
+  if (Number.isFinite(fromInput) && fromInput > 0) return fromInput;
+  return DEFAULT_LIVE_CHUNK_INTERVAL_MS;
+})();
 
 function getModelConfig(value) {
   const normalized = (value || '').toLowerCase();
@@ -1021,6 +1032,10 @@ const store = createStore({
     droppedChunks: 0,
     error: null,
     isFinalizing: false,
+    chunkIntervalMs: initialLiveChunkInterval,
+    pendingChunks: 0,
+    lastChunkEnqueuedAt: null,
+    lastChunkSentAt: null,
   },
   job: {
     detail: null,
@@ -1137,11 +1152,11 @@ const liveSession = {
   sending: false,
   chunkIndex: 0,
   finishing: false,
+  chunkIntervalMs: null,
+  mimeType: null,
 };
 
 let liveProgressTimer = null;
-
-const LIVE_CHUNK_INTERVAL_MS = 2000;
 const LIVE_CHUNK_MIME_TYPES = [
   'audio/webm;codecs=opus',
   'audio/ogg;codecs=opus',
@@ -1156,6 +1171,82 @@ let modelPrepOverlaySession = null;
 function pickLiveMimeType() {
   if (!window.MediaRecorder || !window.MediaRecorder.isTypeSupported) return null;
   return LIVE_CHUNK_MIME_TYPES.find((type) => window.MediaRecorder.isTypeSupported(type)) || null;
+}
+
+function handleLiveRecorderData(event) {
+  if (event?.data && event.data.size) {
+    enqueueLiveChunk(event.data);
+  }
+}
+
+function handleLiveRecorderError(event) {
+  console.error('MediaRecorder error', event.error);
+  alert('Error al capturar audio en vivo. Se detendrá la sesión.');
+  finishLiveSession(true);
+}
+
+function attachLiveRecorder(recorder) {
+  recorder.addEventListener('dataavailable', handleLiveRecorderData);
+  recorder.addEventListener('error', handleLiveRecorderError);
+}
+
+async function restartLiveRecorder(intervalMs, { keepPaused = false } = {}) {
+  if (!liveSession.mediaStream) return false;
+  const previousRecorder = liveSession.recorder;
+  if (previousRecorder && previousRecorder.state !== 'inactive') {
+    await new Promise((resolve) => {
+      const handleStop = () => {
+        previousRecorder.removeEventListener('stop', handleStop);
+        resolve();
+      };
+      previousRecorder.addEventListener('stop', handleStop, { once: true });
+      try {
+        previousRecorder.stop();
+      } catch (error) {
+        console.warn('No se pudo detener el MediaRecorder para reiniciar', error);
+        previousRecorder.removeEventListener('stop', handleStop);
+        resolve();
+      }
+    });
+  }
+  try {
+    const options = liveSession.mimeType ? { mimeType: liveSession.mimeType } : undefined;
+    const recorder = new MediaRecorder(liveSession.mediaStream, options);
+    attachLiveRecorder(recorder);
+    liveSession.recorder = recorder;
+    liveSession.chunkIntervalMs = intervalMs;
+    if (keepPaused) {
+      recorder.addEventListener(
+        'start',
+        () => {
+          if (typeof recorder.pause === 'function') {
+            try {
+              recorder.pause();
+            } catch (error) {
+              console.warn('No se pudo pausar el MediaRecorder tras reinicio', error);
+            }
+          }
+        },
+        { once: true },
+      );
+    }
+    recorder.start(intervalMs);
+    store.setState((prev) => {
+      if (prev.live.chunkIntervalMs === intervalMs) return prev;
+      return {
+        ...prev,
+        live: {
+          ...prev.live,
+          chunkIntervalMs: intervalMs,
+        },
+      };
+    });
+    return true;
+  } catch (error) {
+    console.error('No se pudo reiniciar el MediaRecorder', error);
+    alert('No se pudo aplicar el nuevo intervalo de fragmentos.');
+    return false;
+  }
 }
 
 function formatDeviceLabel(device) {
@@ -1339,6 +1430,9 @@ function resetLiveSessionLocalState() {
   liveSession.chunkIndex = 0;
   liveSession.finishing = false;
   liveSession.sessionId = null;
+  liveSession.chunkIntervalMs = null;
+  liveSession.mimeType = null;
+  updateLiveQueueMetrics({ lastChunkEnqueuedAt: null, lastChunkSentAt: null });
 }
 
 async function discardRemoteLiveSession(sessionId) {
@@ -1773,10 +1867,11 @@ function renderLiveTail(liveState) {
   }
   const hasText = typeof liveState.text === 'string' && liveState.text.trim();
   const fromSegments = Array.isArray(liveState.segments) && liveState.segments.length
-    ? liveState.segments.join('')
+    ? liveState.segments.join(' ')
     : '';
-  const content = hasText ? liveState.text : fromSegments || 'Conecta el micro para comenzar.';
-  tailControllers.live.render(content);
+  const rawContent = hasText ? liveState.text : fromSegments;
+  const trimmed = typeof rawContent === 'string' ? rawContent.trim() : '';
+  tailControllers.live.render(trimmed || 'Conecta el micro para comenzar.');
 }
 
 function computeLiveStatusMessage(liveState) {
@@ -1859,9 +1954,9 @@ function renderHomePanel(state) {
   const liveContent = live.text && live.text.trim()
     ? live.text
     : live.segments.length
-    ? live.segments.join('')
+    ? live.segments.join(' ')
     : 'Inicia una sesión para ver la transcripción en directo.';
-  tailControllers.home.render(liveContent);
+  tailControllers.home.render((liveContent || '').trim() || 'Inicia una sesión para ver la transcripción en directo.');
 }
 
 function updateHomeStatus(state) {
@@ -2377,7 +2472,8 @@ store.subscribe((state, prev) => {
   if (
     state.live.latencyMs !== prev.live.latencyMs ||
     state.live.wpm !== prev.live.wpm ||
-    state.live.droppedChunks !== prev.live.droppedChunks
+    state.live.droppedChunks !== prev.live.droppedChunks ||
+    state.live.pendingChunks !== prev.live.pendingChunks
   ) {
     renderLiveKpis(state.live);
   }
@@ -3109,11 +3205,49 @@ function renderLiveKpis(liveState) {
     : '—';
   const wpmText = Number.isFinite(liveState.wpm) && liveState.wpm > 0 ? String(liveState.wpm) : '0';
   const droppedText = Number.isFinite(liveState.droppedChunks) ? String(liveState.droppedChunks) : '0';
+  const pendingCount = Number.isFinite(liveState.pendingChunks) && liveState.pendingChunks >= 0
+    ? liveState.pendingChunks
+    : 0;
+  const pendingText = String(pendingCount);
   elements.live.kpis.forEach((node) => {
     const metric = node.dataset.liveKpi;
     if (metric === 'wpm') node.textContent = wpmText;
     if (metric === 'latency') node.textContent = latencyText;
     if (metric === 'dropped') node.textContent = droppedText;
+    if (metric === 'pending') {
+      node.textContent = pendingText;
+      node.classList.toggle('is-active', pendingCount > 0);
+      const labelUnit = pendingCount === 1 ? 'fragmento' : 'fragmentos';
+      const labelText = pendingCount > 0 ? `${pendingCount} ${labelUnit} en cola` : 'Sin fragmentos pendientes';
+      node.setAttribute('aria-label', labelText);
+      node.setAttribute('title', labelText);
+    }
+  });
+}
+
+function updateLiveQueueMetrics(overrides = {}) {
+  store.setState((prev) => {
+    const pendingChunks = Math.max(0, liveSession.chunkQueue.length + (liveSession.sending ? 1 : 0));
+    let changed = false;
+    const nextLive = { ...prev.live };
+    if (nextLive.pendingChunks !== pendingChunks) {
+      nextLive.pendingChunks = pendingChunks;
+      changed = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'lastChunkEnqueuedAt')) {
+      if (nextLive.lastChunkEnqueuedAt !== overrides.lastChunkEnqueuedAt) {
+        nextLive.lastChunkEnqueuedAt = overrides.lastChunkEnqueuedAt;
+        changed = true;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'lastChunkSentAt')) {
+      if (nextLive.lastChunkSentAt !== overrides.lastChunkSentAt) {
+        nextLive.lastChunkSentAt = overrides.lastChunkSentAt;
+        changed = true;
+      }
+    }
+    if (!changed) return prev;
+    return { ...prev, live: nextLive };
   });
 }
 
@@ -3121,7 +3255,9 @@ function enqueueLiveChunk(blob) {
   if (!blob || !blob.size || !liveSession.sessionId) return;
   const index = liveSession.chunkIndex;
   liveSession.chunkIndex += 1;
-  liveSession.chunkQueue.push({ blob, index, createdAt: Date.now() });
+  const createdAt = Date.now();
+  liveSession.chunkQueue.push({ blob, index, createdAt });
+  updateLiveQueueMetrics({ lastChunkEnqueuedAt: createdAt });
   processLiveChunkQueue();
 }
 
@@ -3129,11 +3265,16 @@ async function processLiveChunkQueue() {
   if (liveSession.sending) return;
   if (!liveSession.sessionId) {
     liveSession.chunkQueue = [];
+    updateLiveQueueMetrics();
     return;
   }
   const item = liveSession.chunkQueue.shift();
-  if (!item) return;
+  if (!item) {
+    updateLiveQueueMetrics();
+    return;
+  }
   liveSession.sending = true;
+  updateLiveQueueMetrics({ lastChunkSentAt: Date.now() });
   const endpoint = `/api/transcriptions/live/sessions/${liveSession.sessionId}/chunk`;
   try {
     const formData = new FormData();
@@ -3167,6 +3308,7 @@ async function processLiveChunkQueue() {
     }));
   } finally {
     liveSession.sending = false;
+    updateLiveQueueMetrics();
     if (liveSession.chunkQueue.length) {
       processLiveChunkQueue();
     }
@@ -3285,7 +3427,16 @@ async function startLiveSession() {
     const sessionInfo = await response.json();
     const mimeType = pickLiveMimeType();
     const options = mimeType ? { mimeType } : undefined;
+    const desiredInterval = Number(elements.live.chunkInterval?.value)
+      || store.getState().live.chunkIntervalMs
+      || initialLiveChunkInterval;
+    const chunkIntervalMs = Number.isFinite(desiredInterval) && desiredInterval > 0
+      ? desiredInterval
+      : DEFAULT_LIVE_CHUNK_INTERVAL_MS;
     const recorder = new MediaRecorder(audioStream, options);
+    if (elements.live.chunkInterval) {
+      elements.live.chunkInterval.value = String(chunkIntervalMs);
+    }
     liveSession.sessionId = sessionInfo.session_id;
     liveSession.mediaStream = audioStream;
     liveSession.recorder = recorder;
@@ -3293,19 +3444,13 @@ async function startLiveSession() {
     liveSession.chunkIndex = 0;
     liveSession.sending = false;
     liveSession.finishing = false;
+    liveSession.chunkIntervalMs = chunkIntervalMs;
+    liveSession.mimeType = mimeType || null;
 
-    recorder.addEventListener('dataavailable', (event) => {
-      if (event.data && event.data.size) {
-        enqueueLiveChunk(event.data);
-      }
-    });
-    recorder.addEventListener('error', (event) => {
-      console.error('MediaRecorder error', event.error);
-      alert('Error al capturar audio en vivo. Se detendrá la sesión.');
-      finishLiveSession(true);
-    });
-
-    recorder.start(LIVE_CHUNK_INTERVAL_MS);
+    preferences.set(LOCAL_KEYS.liveChunkInterval, chunkIntervalMs);
+    attachLiveRecorder(recorder);
+    recorder.start(chunkIntervalMs);
+    updateLiveQueueMetrics({ lastChunkEnqueuedAt: null, lastChunkSentAt: null });
 
     store.setState((prev) => ({
       ...prev,
@@ -3330,6 +3475,10 @@ async function startLiveSession() {
         droppedChunks: 0,
         error: null,
         isFinalizing: false,
+        chunkIntervalMs,
+        pendingChunks: 0,
+        lastChunkEnqueuedAt: null,
+        lastChunkSentAt: null,
       },
     }));
     renderLiveKpis(store.getState().live);
@@ -3385,13 +3534,26 @@ function pauseLiveSession() {
   }));
 }
 
-function resumeLiveSession() {
+async function resumeLiveSession() {
   const state = store.getState().live;
-  if (state.status !== 'paused' || !liveSession.recorder) return;
+  if (state.status !== 'paused') return;
   updatePausedMetrics();
-  if (typeof liveSession.recorder.resume === 'function' && liveSession.recorder.state === 'paused') {
+  const desiredInterval = Number(state.chunkIntervalMs) || DEFAULT_LIVE_CHUNK_INTERVAL_MS;
+  if (
+    liveSession.recorder &&
+    liveSession.sessionId &&
+    Number.isFinite(desiredInterval) &&
+    desiredInterval > 0 &&
+    desiredInterval !== liveSession.chunkIntervalMs
+  ) {
+    const restarted = await restartLiveRecorder(desiredInterval, { keepPaused: true });
+    if (!restarted) return;
+  }
+  const recorder = liveSession.recorder;
+  if (!recorder) return;
+  if (recorder && typeof recorder.resume === 'function' && recorder.state === 'paused') {
     try {
-      liveSession.recorder.resume();
+      recorder.resume();
     } catch (error) {
       console.warn('No se pudo reanudar el MediaRecorder', error);
     }
@@ -3646,6 +3808,43 @@ function setupLiveControls() {
   bind(elements.live.resume, 'click', resumeLiveSession);
   bind(elements.home.finish, 'click', finishLiveSession);
   bind(elements.live.finish, 'click', finishLiveSession);
+
+  if (elements.live.chunkInterval) {
+    const currentInterval = store.getState().live.chunkIntervalMs || initialLiveChunkInterval;
+    elements.live.chunkInterval.value = String(currentInterval);
+    elements.live.chunkInterval.addEventListener('change', async (event) => {
+      const raw = Number(event.target.value);
+      const value = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LIVE_CHUNK_INTERVAL_MS;
+      preferences.set(LOCAL_KEYS.liveChunkInterval, value);
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          chunkIntervalMs: value,
+        },
+      }));
+      const shouldRestart = Boolean(liveSession.recorder && liveSession.sessionId);
+      if (!shouldRestart) {
+        liveSession.chunkIntervalMs = value;
+        return;
+      }
+      if (value === liveSession.chunkIntervalMs) return;
+      const keepPaused = store.getState().live.status === 'paused';
+      const success = await restartLiveRecorder(value, { keepPaused });
+      if (!success) {
+        const fallback = liveSession.chunkIntervalMs || store.getState().live.chunkIntervalMs || DEFAULT_LIVE_CHUNK_INTERVAL_MS;
+        event.target.value = String(fallback);
+        store.setState((prev) => ({
+          ...prev,
+          live: {
+            ...prev.live,
+            chunkIntervalMs: fallback,
+          },
+        }));
+        preferences.set(LOCAL_KEYS.liveChunkInterval, fallback);
+      }
+    });
+  }
 
   if (elements.live.tailSize) {
     elements.live.tailSize.value = String(store.getState().live.maxSegments);
