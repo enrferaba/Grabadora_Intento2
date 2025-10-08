@@ -6,10 +6,11 @@ import mimetypes
 import secrets
 import shutil
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Dict, List, Optional, Set, Tuple
+from typing import Annotated, Deque, Dict, List, Optional, Set, Tuple
 
 from fastapi import (
     APIRouter,
@@ -120,6 +121,9 @@ LIVE_AUDIO_SAMPLE_WIDTH = 2
 LIVE_RING_DURATION_SECONDS = float(settings.live_window_seconds)
 LIVE_WINDOW_OVERLAP_SECONDS = float(settings.live_window_overlap_seconds)
 LIVE_SILENCE_RATIO_THRESHOLD = 0.30
+LIVE_REPEAT_WINDOW_SECONDS = max(0.0, float(settings.live_repeat_window_seconds))
+LIVE_REPEAT_MAX_DUPLICATES = max(0, int(settings.live_repeat_max_duplicates))
+LIVE_RECENT_TEXT_HISTORY = max(8, (LIVE_REPEAT_MAX_DUPLICATES or 1) * 4)
 
 
 class AudioRing:
@@ -215,6 +219,9 @@ class LiveSessionState:
     last_t_end: float = 0.0
     user_dictionary: Set[str] = field(default_factory=set)
     suspects: List[Tuple[float, float]] = field(default_factory=list)
+    recent_texts: Deque[Tuple[str, float]] = field(
+        default_factory=lambda: deque(maxlen=LIVE_RECENT_TEXT_HISTORY)
+    )
     lock: Lock = field(default_factory=Lock)
 
 
@@ -483,6 +490,8 @@ def _enqueue_transcription(
         subject=subject,
         output_folder=sanitized_folder,
         status=TranscriptionStatus.PROCESSING.value,
+        text="",
+        speakers=[],
     )
     session.add(transcription)
     session.flush()
@@ -581,7 +590,7 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
             state.last_activity = time.time()
             return LiveChunkResponse(
                 session_id=session_id,
-                text=state.last_text,
+                text=state.last_text or "",
                 duration=state.last_duration,
                 runtime_seconds=state.last_runtime,
                 chunk_count=state.chunk_count,
@@ -608,7 +617,7 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
             window_file.unlink(missing_ok=True)
             return LiveChunkResponse(
                 session_id=session_id,
-                text=state.last_text,
+                text=state.last_text or "",
                 duration=state.last_duration,
                 runtime_seconds=state.last_runtime,
                 chunk_count=state.chunk_count,
@@ -623,15 +632,16 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
             )
 
         transcriber = get_transcriber(state.model_size, state.device)
-        decode_options = {
+        decode_options_raw = {
             "batch_size": settings.whisper_batch_size,
             "temperature": 0.0,
             "condition_on_previous_text": False,
             "word_timestamps": False,
             "vad_filter": _should_enable_live_vad(segment),
-            "compression_ratio_threshold": None,
-            "log_prob_threshold": None,
+            "compression_ratio_threshold": settings.whisper_compression_ratio_threshold,
+            "log_prob_threshold": settings.whisper_log_prob_threshold,
         }
+        decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
         try:
             result = transcriber.transcribe(
                 window_path,
@@ -659,7 +669,29 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
                 continue
             absolute_start = window_offset + float(seg.start)
             absolute_end = window_offset + float(seg.end)
+            should_append = True
             if absolute_end <= state.last_t_end + epsilon:
+                should_append = False
+            else:
+                if state.segments:
+                    prev = state.segments[-1]
+                    if (
+                        prev.get("text") == text
+                        and abs(prev.get("start", 0.0) - absolute_start) < 0.5
+                        and abs(prev.get("end", 0.0) - absolute_end) < 0.5
+                    ):
+                        should_append = False
+                if should_append and LIVE_REPEAT_MAX_DUPLICATES > 0:
+                    repeat_count = sum(
+                        1
+                        for recent_text, recent_start in state.recent_texts
+                        if recent_text == text
+                        and absolute_start - recent_start <= LIVE_REPEAT_WINDOW_SECONDS
+                    )
+                    if repeat_count >= LIVE_REPEAT_MAX_DUPLICATES:
+                        should_append = False
+            state.last_t_end = max(state.last_t_end, absolute_end)
+            if not should_append:
                 continue
             normalized = {
                 "start": absolute_start,
@@ -668,24 +700,20 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
                 "text": text,
             }
             state.segments.append(normalized)
+            state.recent_texts.append((text, absolute_start))
             new_segments.append(normalized)
             appended_parts.append(text)
-            state.last_t_end = max(state.last_t_end, absolute_end)
 
         appended_text = " ".join(appended_parts).strip() or None
         if appended_text:
-            state.last_text = (
-                f"{state.last_text} {appended_text}".strip()
-                if state.last_text
-                else appended_text
-            )
+            state.last_text = " ".join(segment.get("text", "").strip() for segment in state.segments).strip()
         state.last_duration = max(state.last_duration or 0.0, window_end, state.last_t_end)
         state.last_runtime = result.runtime_seconds
         state.language = result.language or state.language
         state.last_activity = time.time()
     return LiveChunkResponse(
         session_id=session_id,
-        text=state.last_text,
+        text=state.last_text or "",
         duration=state.last_duration,
         runtime_seconds=state.last_runtime,
         chunk_count=state.chunk_count,
@@ -720,14 +748,16 @@ def finalize_live_session(
         beam_value = payload.beam_size or state.beam_size or settings.whisper_final_beam
         state.beam_size = beam_value
         normalized_audio = ensure_normalized_audio(state.audio_path)
-        decode_options = {
+        decode_options_raw = {
             "batch_size": settings.whisper_batch_size,
             "temperature": 0.0,
             "word_timestamps": settings.whisper_word_timestamps,
+            "condition_on_previous_text": settings.whisper_condition_on_previous_text,
             "vad_filter": settings.whisper_vad_mode,
-            "compression_ratio_threshold": None,
-            "log_prob_threshold": None,
+            "compression_ratio_threshold": settings.whisper_compression_ratio_threshold,
+            "log_prob_threshold": settings.whisper_log_prob_threshold,
         }
+        decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
         result = transcriber.transcribe(
             normalized_audio,
             resolved_language,
@@ -977,14 +1007,16 @@ def process_transcription(
 
         normalized_audio = ensure_normalized_audio(audio_path)
         effective_beam = beam_size or settings.whisper_final_beam
-        decode_options = {
+        decode_options_raw = {
             "batch_size": settings.whisper_batch_size,
             "temperature": 0.0,
             "word_timestamps": settings.whisper_word_timestamps,
+            "condition_on_previous_text": settings.whisper_condition_on_previous_text,
             "vad_filter": settings.whisper_vad_mode,
-            "compression_ratio_threshold": None,
-            "log_prob_threshold": None,
+            "compression_ratio_threshold": settings.whisper_compression_ratio_threshold,
+            "log_prob_threshold": settings.whisper_log_prob_threshold,
         }
+        decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
         result = transcriber.transcribe(
             normalized_audio,
             language or transcription.language,

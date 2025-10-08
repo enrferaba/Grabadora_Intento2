@@ -754,6 +754,18 @@ class WhisperXTranscriber(BaseTranscriber):
         self._vad_patch_done = True
 
     def _ensure_model(self, debug_callback=None, progress_callback: Optional[Callable[[int, str], None]] = None):
+        progress_key = _model_progress_key(self.model_size, self.device_preference)
+        tracker = _progress_callback_factory(progress_key)
+        if progress_callback is None:
+            progress_callback = tracker
+        else:
+            user_callback = progress_callback
+
+            def combined(progress: int, message: str) -> None:
+                tracker(progress, message)
+                user_callback(progress, message)
+
+            progress_callback = combined
         if self._disabled_reason:
             raise WhisperXVADUnavailableError(self._disabled_reason)
 
@@ -798,6 +810,13 @@ class WhisperXTranscriber(BaseTranscriber):
                     self._disabled_reason = (
                         "WhisperX no está disponible porque el modelo de VAD requiere autenticación."
                     )
+                _update_model_progress(
+                    progress_key,
+                    "error",
+                    0,
+                    self._disabled_reason or "WhisperX no disponible",
+                    error=self._disabled_reason,
+                )
                 if debug_callback:
                     debug_callback(
                         "load-model",
@@ -1066,6 +1085,14 @@ class WhisperXTranscriber(BaseTranscriber):
             speaker = segment.get("speaker", "SPEAKER_00")
             start = float(segment.get("start", 0))
             end = float(segment.get("end", 0))
+            if segment_results:
+                prev_segment = segment_results[-1]
+                if (
+                    prev_segment.text.strip() == text
+                    and abs(prev_segment.start - start) < 0.5
+                    and abs(prev_segment.end - end) < 0.5
+                ):
+                    continue
             collected_text.append(text)
             segment_results.append(
                 SegmentResult(start=start, end=end, speaker=speaker, text=text)
@@ -1299,6 +1326,18 @@ class FasterWhisperTranscriber(BaseTranscriber):
         debug_callback=None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
     ) -> None:
+        progress_key = _model_progress_key(self.model_size, self.device_preference)
+        tracker = _progress_callback_factory(progress_key)
+        if progress_callback is None:
+            progress_callback = tracker
+        else:
+            user_callback = progress_callback
+
+            def combined(progress: int, message: str) -> None:
+                tracker(progress, message)
+                user_callback(progress, message)
+
+            progress_callback = combined
         if self._model is not None:
             if progress_callback:
                 progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
@@ -1419,6 +1458,13 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 },
                 "error",
             )
+            _update_model_progress(
+                progress_key,
+                "error",
+                0,
+                f"Fallo cargando {self.model_size}",
+                error=str(last_error) if last_error else None,
+            )
             if last_error is not None:
                 raise last_error
             raise RuntimeError("Unable to load faster-whisper model with available configurations")
@@ -1506,10 +1552,14 @@ class FasterWhisperTranscriber(BaseTranscriber):
         resolved_beam = beam_size or options.pop("beam_size", settings.whisper_final_beam or 1)
         resolved_beam = max(1, int(resolved_beam))
         options.setdefault("temperature", 0.0)
-        options.setdefault("condition_on_previous_text", True)
+        options.setdefault("condition_on_previous_text", settings.whisper_condition_on_previous_text)
         options.setdefault("word_timestamps", settings.whisper_word_timestamps)
-        options.setdefault("compression_ratio_threshold", None)
-        options.setdefault("log_prob_threshold", None)
+        compression_ratio = settings.whisper_compression_ratio_threshold
+        if compression_ratio is not None:
+            options.setdefault("compression_ratio_threshold", float(compression_ratio))
+        log_prob_threshold = settings.whisper_log_prob_threshold
+        if log_prob_threshold is not None:
+            options.setdefault("log_prob_threshold", float(log_prob_threshold))
         language_override = options.pop("language", None)
         resolved_language = language_override or language or settings.whisper_language
         vad_pref = options.pop("vad_filter", None)
@@ -1661,6 +1711,14 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 continue
             start = float(getattr(segment, "start", 0.0))
             end = float(getattr(segment, "end", 0.0))
+            if segment_results:
+                prev_segment = segment_results[-1]
+                if (
+                    prev_segment.text.strip() == text
+                    and abs(prev_segment.start - start) < 0.5
+                    and abs(prev_segment.end - end) < 0.5
+                ):
+                    continue
             collected_text.append(text)
             segment_results.append(
                 SegmentResult(
