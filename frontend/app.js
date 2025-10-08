@@ -139,6 +139,9 @@ const BEAM_OPTIONS = [1, 2, 3, 4, 5, 8];
 const DEFAULT_MODEL = 'large-v3';
 const NUMERIC_ID_PATTERN = /^\d+$/;
 const DEFAULT_LIVE_CHUNK_INTERVAL_MS = 1000;
+const LIVE_CHUNK_MAX_RETRIES = 3;
+const LIVE_CHUNK_RETRY_BASE_DELAY_MS = 250;
+const LIVE_CHUNK_RETRY_MAX_DELAY_MS = 4000;
 
 const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
@@ -352,6 +355,7 @@ const elements = {
     fontMinus: document.getElementById('live-font-minus'),
     fullscreen: document.getElementById('live-fullscreen'),
     kpis: document.querySelectorAll('[data-live-kpi]'),
+    error: document.getElementById('live-error-message'),
     beam: document.getElementById('live-beam'),
     beamHint: document.getElementById('live-beam-hint'),
     progress: document.getElementById('live-progress'),
@@ -727,6 +731,7 @@ function setupModelSelectors() {
   renderLiveStatus(initialLiveState);
   renderLiveKpis(initialLiveState);
   renderLiveProgress(initialLiveState);
+  renderLiveError(initialLiveState);
 }
 
 function currentTheme() {
@@ -1865,13 +1870,13 @@ function renderLiveTail(liveState) {
     tailControllers.live.render('Conecta el micro para comenzar.');
     return;
   }
-  const hasText = typeof liveState.text === 'string' && liveState.text.trim();
-  const fromSegments = Array.isArray(liveState.segments) && liveState.segments.length
+  const trimmedText = typeof liveState.text === 'string' ? liveState.text.trim() : '';
+  const segmentsJoined = Array.isArray(liveState.segments) && liveState.segments.length
     ? liveState.segments.join(' ')
     : '';
-  const rawContent = hasText ? liveState.text : fromSegments;
-  const trimmed = typeof rawContent === 'string' ? rawContent.trim() : '';
-  tailControllers.live.render(trimmed || 'Conecta el micro para comenzar.');
+  const trimmedSegments = typeof segmentsJoined === 'string' ? segmentsJoined.trim() : '';
+  const content = trimmedText || trimmedSegments;
+  tailControllers.live.render(content || 'Conecta el micro para comenzar.');
 }
 
 function computeLiveStatusMessage(liveState) {
@@ -1951,16 +1956,21 @@ function renderHomePanel(state) {
     }
     return;
   }
-  const liveContent = live.text && live.text.trim()
-    ? live.text
-    : live.segments.length
+  const liveText = typeof live.text === 'string' ? live.text.trim() : '';
+  const liveSegments = Array.isArray(live.segments) && live.segments.length
     ? live.segments.join(' ')
-    : 'Inicia una sesión para ver la transcripción en directo.';
-  tailControllers.home.render((liveContent || '').trim() || 'Inicia una sesión para ver la transcripción en directo.');
+    : '';
+  const liveContent = (liveText || liveSegments).trim();
+  tailControllers.home.render(liveContent || 'Inicia una sesión para ver la transcripción en directo.');
 }
 
 function updateHomeStatus(state) {
   if (!elements.home.status) return;
+  const liveError = typeof state.live?.error === 'string' ? state.live.error.trim() : '';
+  if (liveError) {
+    elements.home.status.textContent = `⚠️ ${liveError}`;
+    return;
+  }
   const stream = state.stream;
   if (stream?.jobId) {
     let message = '';
@@ -2465,7 +2475,8 @@ store.subscribe((state, prev) => {
     state.stream !== prev.stream ||
     state.live.status !== prev.live.status ||
     state.live.isFinalizing !== prev.live.isFinalizing ||
-    state.live.text !== prev.live.text
+    state.live.text !== prev.live.text ||
+    state.live.error !== prev.live.error
   ) {
     updateHomeStatus(state);
   }
@@ -2476,6 +2487,9 @@ store.subscribe((state, prev) => {
     state.live.pendingChunks !== prev.live.pendingChunks
   ) {
     renderLiveKpis(state.live);
+  }
+  if (state.live.error !== prev.live.error) {
+    renderLiveError(state.live);
   }
   if (state.job.detail !== prev.job.detail || state.job.maxSegments !== prev.job.maxSegments) {
     renderJobDetail(state);
@@ -3225,6 +3239,19 @@ function renderLiveKpis(liveState) {
   });
 }
 
+function renderLiveError(liveState) {
+  const message = typeof liveState?.error === 'string' ? liveState.error.trim() : '';
+  const target = elements.live.error;
+  if (!target) return;
+  if (message) {
+    target.textContent = message;
+    target.hidden = false;
+  } else {
+    target.textContent = '';
+    target.hidden = true;
+  }
+}
+
 function updateLiveQueueMetrics(overrides = {}) {
   store.setState((prev) => {
     const pendingChunks = Math.max(0, liveSession.chunkQueue.length + (liveSession.sending ? 1 : 0));
@@ -3256,7 +3283,7 @@ function enqueueLiveChunk(blob) {
   const index = liveSession.chunkIndex;
   liveSession.chunkIndex += 1;
   const createdAt = Date.now();
-  liveSession.chunkQueue.push({ blob, index, createdAt });
+  liveSession.chunkQueue.push({ blob, index, createdAt, attempts: 0 });
   updateLiveQueueMetrics({ lastChunkEnqueuedAt: createdAt });
   processLiveChunkQueue();
 }
@@ -3274,7 +3301,7 @@ async function processLiveChunkQueue() {
     return;
   }
   liveSession.sending = true;
-  updateLiveQueueMetrics({ lastChunkSentAt: Date.now() });
+  updateLiveQueueMetrics();
   const endpoint = `/api/transcriptions/live/sessions/${liveSession.sessionId}/chunk`;
   try {
     const formData = new FormData();
@@ -3295,17 +3322,35 @@ async function processLiveChunkQueue() {
       throw new Error(message);
     }
     const payload = await response.json();
+    updateLiveQueueMetrics({ lastChunkSentAt: Date.now() });
     handleLiveChunkPayload(payload, Date.now() - item.createdAt);
   } catch (error) {
     console.error('Error al enviar fragmento en vivo', error);
-    store.setState((prev) => ({
-      ...prev,
-      live: {
-        ...prev.live,
-        droppedChunks: prev.live.droppedChunks + 1,
-        error: error?.message || 'No se pudo enviar el fragmento en vivo.',
-      },
-    }));
+    const attempts = (item.attempts || 0) + 1;
+    const message = error?.message || 'No se pudo enviar el fragmento en vivo.';
+    if (attempts <= LIVE_CHUNK_MAX_RETRIES && liveSession.sessionId) {
+      item.attempts = attempts;
+      liveSession.chunkQueue.unshift(item);
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          error: `${message} Reintentando (${attempts}/${LIVE_CHUNK_MAX_RETRIES})…`,
+        },
+      }));
+      const backoff = Math.min(LIVE_CHUNK_RETRY_BASE_DELAY_MS * attempts * attempts, LIVE_CHUNK_RETRY_MAX_DELAY_MS);
+      await delay(backoff);
+    } else {
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          droppedChunks: prev.live.droppedChunks + 1,
+          error: message,
+        },
+      }));
+      updateLiveQueueMetrics({ lastChunkSentAt: Date.now() });
+    }
   } finally {
     liveSession.sending = false;
     updateLiveQueueMetrics();

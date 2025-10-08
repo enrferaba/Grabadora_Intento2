@@ -1217,6 +1217,17 @@ body.has-modal {
   color: var(--primary-strong);
 }
 
+.live-alert {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(229, 72, 77, 0.18);
+  background: rgba(229, 72, 77, 0.08);
+  color: var(--danger);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
 html.dark .live-kpis__value--badge {
   background: rgba(255, 255, 255, 0.08);
 }
@@ -1224,6 +1235,12 @@ html.dark .live-kpis__value--badge {
 html.dark .live-kpis__value--badge.is-active {
   background: var(--primary);
   color: #fff;
+}
+
+html.dark .live-alert {
+  border-color: rgba(240, 98, 114, 0.32);
+  background: rgba(240, 98, 114, 0.16);
+  color: #ffd1d7;
 }
 
 .job-grid {
