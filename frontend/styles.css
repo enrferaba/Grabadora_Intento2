@@ -417,6 +417,12 @@ html.dark .job-progress {
   transition: width 0.4s ease;
 }
 
+.job-progress__fill.is-indeterminate,
+.live-progress__fill.is-indeterminate {
+  animation: progress-stripes 1.2s linear infinite;
+  background-size: 200% 100%;
+}
+
 .live-panel__status-area {
   display: flex;
   flex-direction: column;
@@ -472,6 +478,15 @@ html.dark .live-progress {
   width: 0%;
   background: linear-gradient(90deg, var(--primary), var(--primary-strong));
   transition: width 0.4s ease;
+}
+
+@keyframes progress-stripes {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: -200% 50%;
+  }
 }
 
 .live-progress__status {

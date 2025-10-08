@@ -731,6 +731,7 @@ function setupModelSelectors() {
   renderLiveStatus(initialLiveState);
   renderLiveKpis(initialLiveState);
   renderLiveProgress(initialLiveState);
+  renderHomeProgress(store.getState());
   renderLiveError(initialLiveState);
 }
 
@@ -1981,8 +1982,9 @@ function updateHomeStatus(state) {
     if (jobForProgress) {
       const info = computeJobProgressState(jobForProgress, debugEvents);
       if (info?.statusText) {
-        message = info.statusText;
-        if (info.etaText && info.percent != null && info.percent < 1) {
+        const percentValue = info.percent != null ? Math.round(info.percent * 100) : null;
+        message = percentValue != null ? `${percentValue}% · ${info.statusText}` : info.statusText;
+        if (info.etaText && (info.percent == null || info.percent < 1)) {
           message += ` · ${info.etaText}`;
         }
       }
@@ -2032,27 +2034,7 @@ function renderLiveStatus(liveState) {
   if (elements.live.finish) elements.live.finish.disabled = isIdle || isFinalizing;
 }
 
-function renderLiveProgress(liveState) {
-  const widgets = [
-    {
-      container: elements.home.progress,
-      label: elements.home.progressLabel,
-      rate: elements.home.progressRate,
-      fill: elements.home.progressFill,
-      bar: elements.home.progressBar,
-      percent: elements.home.progressPercent,
-      remaining: elements.home.progressRemaining,
-    },
-    {
-      container: elements.live.progress,
-      label: elements.live.progressLabel,
-      rate: elements.live.progressRate,
-      fill: elements.live.progressFill,
-      bar: elements.live.progressBar,
-      percent: elements.live.progressPercent,
-      remaining: elements.live.progressRemaining,
-    },
-  ];
+function computeLiveProgressMetrics(liveState) {
   const status = liveState?.status || 'idle';
   const processedSeconds = Number.isFinite(liveState?.duration)
     ? Math.max(0, liveState.duration)
@@ -2073,51 +2055,145 @@ function renderLiveProgress(liveState) {
   if (elapsedMs < 0) elapsedMs = 0;
   const elapsedSeconds = elapsedMs / 1000;
   const shouldShow = ['recording', 'paused', 'finalizing'].includes(status) || processedSeconds > 0;
-  widgets.forEach((widget) => {
-    if (!widget?.container) return;
-    if (!shouldShow) {
-      widget.container.hidden = true;
-      if (widget.fill) widget.fill.style.width = '0%';
-      widget.bar?.setAttribute('aria-valuenow', '0');
-      if (widget.percent) widget.percent.textContent = '0%';
-      if (widget.label) widget.label.textContent = '00:00 procesados';
-      if (widget.rate) widget.rate.textContent = 'Esperando audio…';
-      if (widget.remaining) widget.remaining.textContent = 'Restante —';
-      return;
+  if (!shouldShow) {
+    return { shouldShow: false, status };
+  }
+  const processed = processedSeconds > 0 ? processedSeconds : elapsedSeconds;
+  const ratio = elapsedSeconds > 0 ? Math.min(1, processed / elapsedSeconds) : processed > 0 ? 1 : 0;
+  const percentValue = Math.round(ratio * 100);
+  let rateText = '';
+  if (status === 'paused') {
+    rateText = 'Grabación en pausa';
+  } else if (status === 'finalizing') {
+    rateText = 'Guardando sesión…';
+  } else if (status === 'completed') {
+    rateText = 'Sesión finalizada';
+  } else if (elapsedSeconds <= 0 && processedSeconds <= 0) {
+    rateText = 'Esperando audio…';
+  } else if (ratio >= 1) {
+    rateText = 'Al día en tiempo real';
+  } else {
+    const lag = Math.max(0, elapsedSeconds - processed);
+    rateText = lag > 1 ? `Retraso ${formatClock(lag)}` : 'Procesando…';
+  }
+  const remainingText = ratio >= 1
+    ? 'Sin retraso pendiente'
+    : `Restante ${formatClock(Math.max(0, elapsedSeconds - processed))}`;
+  return {
+    shouldShow: true,
+    status,
+    percentValue,
+    label: `${formatClock(processed)} procesados`,
+    rateText,
+    remainingText,
+    ratio,
+    processedSeconds,
+    elapsedSeconds,
+  };
+}
+
+function renderLiveProgress(liveState) {
+  const widget = {
+    container: elements.live.progress,
+    label: elements.live.progressLabel,
+    rate: elements.live.progressRate,
+    fill: elements.live.progressFill,
+    bar: elements.live.progressBar,
+    percent: elements.live.progressPercent,
+    remaining: elements.live.progressRemaining,
+  };
+  if (!widget.container) return;
+  const metrics = computeLiveProgressMetrics(liveState);
+  if (!metrics.shouldShow) {
+    widget.container.hidden = true;
+    if (widget.fill) {
+      widget.fill.style.width = '0%';
+      widget.fill.classList.remove('is-indeterminate');
     }
+    widget.bar?.setAttribute('aria-valuenow', '0');
+    if (widget.percent) widget.percent.textContent = '0%';
+    if (widget.label) widget.label.textContent = '00:00 procesados';
+    if (widget.rate) widget.rate.textContent = 'Esperando audio…';
+    if (widget.remaining) widget.remaining.textContent = 'Restante —';
+    return;
+  }
+  widget.container.hidden = false;
+  if (widget.fill) {
+    widget.fill.style.width = `${metrics.percentValue}%`;
+    widget.fill.classList.remove('is-indeterminate');
+  }
+  widget.bar?.setAttribute('aria-valuenow', String(metrics.percentValue));
+  if (widget.percent) widget.percent.textContent = `${metrics.percentValue}%`;
+  if (widget.label) widget.label.textContent = metrics.label;
+  if (widget.rate) widget.rate.textContent = metrics.rateText;
+  if (widget.remaining) widget.remaining.textContent = metrics.remainingText;
+}
+
+function renderHomeProgress(state) {
+  const widget = {
+    container: elements.home.progress,
+    label: elements.home.progressLabel,
+    rate: elements.home.progressRate,
+    fill: elements.home.progressFill,
+    bar: elements.home.progressBar,
+    percent: elements.home.progressPercent,
+    remaining: elements.home.progressRemaining,
+  };
+  if (!widget.container) return;
+
+  const stream = state.stream;
+  if (stream?.jobId) {
+    const jobIdStr = String(stream.jobId);
+    const debugEvents = Array.isArray(stream.debugEvents) ? stream.debugEvents : [];
+    const detailedJob = state.job.detail?.job && String(state.job.detail.job.id) === jobIdStr
+      ? state.job.detail.job
+      : null;
+    const listJob = state.jobs.find((job) => String(job.id) === jobIdStr) || null;
+    const job = detailedJob || listJob;
+    const info = job ? computeJobProgressState(job, debugEvents) : null;
+    const percentValue = info && info.showBar && info.percent != null
+      ? Math.max(0, Math.min(100, Math.round(info.percent * 100)))
+      : null;
     widget.container.hidden = false;
-    const processed = processedSeconds > 0 ? processedSeconds : elapsedSeconds;
-    const ratio = elapsedSeconds > 0 ? Math.min(1, processed / elapsedSeconds) : processed > 0 ? 1 : 0;
-    const percentValue = Math.round(ratio * 100);
-    if (widget.label) widget.label.textContent = `${formatClock(processed)} procesados`;
-    if (widget.percent) widget.percent.textContent = `${percentValue}%`;
-    if (widget.fill) widget.fill.style.width = `${percentValue}%`;
-    widget.bar?.setAttribute('aria-valuenow', String(percentValue));
-    let rateText = '';
-    if (status === 'paused') {
-      rateText = 'Grabación en pausa';
-    } else if (status === 'finalizing') {
-      rateText = 'Guardando sesión…';
-    } else if (status === 'completed') {
-      rateText = 'Sesión finalizada';
-    } else if (elapsedSeconds <= 0 && processedSeconds <= 0) {
-      rateText = 'Esperando audio…';
-    } else if (ratio >= 1) {
-      rateText = 'Al día en tiempo real';
-    } else {
-      const lag = Math.max(0, elapsedSeconds - processed);
-      rateText = lag > 1 ? `Retraso ${formatClock(lag)}` : 'Procesando…';
+    if (widget.fill) {
+      widget.fill.style.width = percentValue != null ? `${percentValue}%` : '28%';
+      widget.fill.classList.toggle('is-indeterminate', percentValue == null);
     }
-    if (widget.rate) widget.rate.textContent = rateText;
-    if (widget.remaining) {
-      if (ratio >= 1) {
-        widget.remaining.textContent = 'Sin retraso pendiente';
-      } else {
-        const remainingSeconds = Math.max(0, elapsedSeconds - processed);
-        widget.remaining.textContent = `Restante ${formatClock(remainingSeconds)}`;
-      }
+    widget.bar?.setAttribute('aria-valuenow', String(percentValue != null ? percentValue : 0));
+    if (widget.percent) widget.percent.textContent = percentValue != null ? `${percentValue}%` : '—';
+    const fallbackLabel = stream.jobName ? `Transcribiendo ${stream.jobName}` : 'Transcribiendo…';
+    if (widget.label) widget.label.textContent = info?.label || fallbackLabel;
+    const statusText = info?.statusText || computeStreamStatusMessage(stream) || fallbackLabel;
+    if (widget.rate) widget.rate.textContent = statusText;
+    if (widget.remaining) widget.remaining.textContent = info?.etaText || 'Calculando tiempo restante…';
+    return;
+  }
+
+  const metrics = computeLiveProgressMetrics(state.live);
+  if (!metrics.shouldShow) {
+    widget.container.hidden = true;
+    if (widget.fill) {
+      widget.fill.style.width = '0%';
+      widget.fill.classList.remove('is-indeterminate');
     }
-  });
+    widget.bar?.setAttribute('aria-valuenow', '0');
+    if (widget.percent) widget.percent.textContent = '0%';
+    if (widget.label) widget.label.textContent = '00:00 procesados';
+    if (widget.rate) widget.rate.textContent = 'Esperando audio…';
+    if (widget.remaining) widget.remaining.textContent = 'Restante —';
+    return;
+  }
+
+  widget.container.hidden = false;
+  if (widget.fill) {
+    widget.fill.style.width = `${metrics.percentValue}%`;
+    widget.fill.classList.remove('is-indeterminate');
+  }
+  widget.bar?.setAttribute('aria-valuenow', String(metrics.percentValue));
+  if (widget.percent) widget.percent.textContent = `${metrics.percentValue}%`;
+  if (widget.label) widget.label.textContent = metrics.label;
+  if (widget.rate) widget.rate.textContent = metrics.rateText;
+  if (widget.remaining) widget.remaining.textContent = metrics.remainingText;
 }
 
 function buildSegmentsFromEvents(events) {
@@ -2463,6 +2539,19 @@ store.subscribe((state, prev) => {
     state.live.text !== prev.live.text
   ) {
     renderLiveProgress(state.live);
+  }
+  if (
+    state.stream !== prev.stream ||
+    state.live.duration !== prev.live.duration ||
+    state.live.runtimeSeconds !== prev.live.runtimeSeconds ||
+    state.live.startedAt !== prev.live.startedAt ||
+    state.live.pauseStartedAt !== prev.live.pauseStartedAt ||
+    state.live.totalPausedMs !== prev.live.totalPausedMs ||
+    state.live.status !== prev.live.status ||
+    state.jobs !== prev.jobs ||
+    state.job.detail !== prev.job.detail
+  ) {
+    renderHomeProgress(state);
   }
   if (
     state.stream !== prev.stream ||
@@ -3998,10 +4087,14 @@ function setupDiagnostics() {
 function setupLiveProgressTicker() {
   if (liveProgressTimer) return;
   liveProgressTimer = window.setInterval(() => {
-    const liveState = store.getState().live;
+    const state = store.getState();
+    const liveState = state.live;
     if (!liveState) return;
     if (['recording', 'paused', 'finalizing'].includes(liveState.status)) {
       renderLiveProgress(liveState);
+      if (!state.stream?.jobId) {
+        renderHomeProgress(state);
+      }
     }
   }, 1000);
 }
