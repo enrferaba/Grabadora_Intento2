@@ -417,6 +417,12 @@ html.dark .job-progress {
   transition: width 0.4s ease;
 }
 
+.job-progress__fill.is-indeterminate,
+.live-progress__fill.is-indeterminate {
+  animation: progress-stripes 1.2s linear infinite;
+  background-size: 200% 100%;
+}
+
 .live-panel__status-area {
   display: flex;
   flex-direction: column;
@@ -472,6 +478,32 @@ html.dark .live-progress {
   width: 0%;
   background: linear-gradient(90deg, var(--primary), var(--primary-strong));
   transition: width 0.4s ease;
+}
+
+.live-progress__fill.is-recording {
+  animation: live-progress-pulse 1.4s ease-in-out infinite;
+  transform-origin: left center;
+}
+
+@keyframes progress-stripes {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: -200% 50%;
+  }
+}
+
+@keyframes live-progress-pulse {
+  0% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.7;
+  }
 }
 
 .live-progress__status {
@@ -1199,6 +1231,48 @@ body.has-modal {
 .live-kpis__value {
   font-size: 1.2rem;
   font-weight: 600;
+}
+
+.live-kpis__value--badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.5rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.live-kpis__value--badge.is-active {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.live-alert {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(229, 72, 77, 0.18);
+  background: rgba(229, 72, 77, 0.08);
+  color: var(--danger);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+html.dark .live-kpis__value--badge {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html.dark .live-kpis__value--badge.is-active {
+  background: var(--primary);
+  color: #fff;
+}
+
+html.dark .live-alert {
+  border-color: rgba(240, 98, 114, 0.32);
+  background: rgba(240, 98, 114, 0.16);
+  color: #ffd1d7;
 }
 
 .job-grid {

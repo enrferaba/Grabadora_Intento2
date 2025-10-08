@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     whisper_enable_speaker_diarization: bool = True
     whisper_parallel_pipelines: int = 1
     whisper_word_timestamps: bool = False
-    whisper_condition_on_previous_text: bool = False
+    whisper_condition_on_previous_text: bool = True
     whisper_compression_ratio_threshold: Optional[float] = 2.4
     whisper_log_prob_threshold: Optional[float] = -1.0
     whisper_vad_repo_id: str = "pyannote/segmentation"
