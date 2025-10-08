@@ -140,6 +140,8 @@ def ensure_normalized_audio(source: Path) -> Path:
         "16000",
         "-sample_fmt",
         "s16",
+        "-f",
+        "wav",
         str(tmp_path),
     ]
     try:
