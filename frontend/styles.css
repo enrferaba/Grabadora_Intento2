@@ -1201,6 +1201,31 @@ body.has-modal {
   font-weight: 600;
 }
 
+.live-kpis__value--badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.5rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.live-kpis__value--badge.is-active {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+html.dark .live-kpis__value--badge {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html.dark .live-kpis__value--badge.is-active {
+  background: var(--primary);
+  color: #fff;
+}
+
 .job-grid {
   display: grid;
   gap: 2rem;
