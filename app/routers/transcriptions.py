@@ -6,10 +6,11 @@ import mimetypes
 import secrets
 import shutil
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Dict, List, Optional
+from typing import Annotated, Deque, Dict, List, Optional, Set, Tuple
 
 from fastapi import (
     APIRouter,
@@ -47,9 +48,11 @@ from ..schemas import (
 from ..utils.debug import append_debug_event
 from ..utils.storage import (
     compute_txt_path,
+    ensure_normalized_audio,
     ensure_storage_subdir,
     sanitize_folder_name,
     save_upload_file,
+    write_atomic_text,
 )
 from ..whisper_service import (
     get_model_preparation_status,
@@ -59,6 +62,7 @@ from ..whisper_service import (
 )
 from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
+from pydub.silence import detect_nonsilent
 
 ALLOWED_MEDIA_EXTENSIONS = {
     ".aac",
@@ -114,6 +118,84 @@ LIVE_SESSIONS_ROOT.mkdir(parents=True, exist_ok=True)
 LIVE_AUDIO_SAMPLE_RATE = 16_000
 LIVE_AUDIO_CHANNELS = 1
 LIVE_AUDIO_SAMPLE_WIDTH = 2
+LIVE_RING_DURATION_SECONDS = float(settings.live_window_seconds)
+LIVE_WINDOW_OVERLAP_SECONDS = float(settings.live_window_overlap_seconds)
+LIVE_SILENCE_RATIO_THRESHOLD = 0.30
+LIVE_REPEAT_WINDOW_SECONDS = max(0.0, float(settings.live_repeat_window_seconds))
+LIVE_REPEAT_MAX_DUPLICATES = max(0, int(settings.live_repeat_max_duplicates))
+LIVE_RECENT_TEXT_HISTORY = max(8, (LIVE_REPEAT_MAX_DUPLICATES or 1) * 4)
+
+
+class AudioRing:
+    """Keep a rolling buffer of the most recent audio for live transcription."""
+
+    def __init__(self, max_duration: float) -> None:
+        self.max_duration = max(1.0, float(max_duration))
+        self._audio = (
+            AudioSegment.silent(duration=0, frame_rate=LIVE_AUDIO_SAMPLE_RATE)
+            .set_channels(LIVE_AUDIO_CHANNELS)
+            .set_sample_width(LIVE_AUDIO_SAMPLE_WIDTH)
+        )
+        self._total_duration = 0.0
+
+    def append(self, segment: AudioSegment) -> None:
+        if len(segment) <= 0:
+            return
+        self._total_duration += len(segment) / 1000.0
+        combined = self._audio + segment
+        max_ms = int(self.max_duration * 1000)
+        if len(combined) > max_ms:
+            combined = combined[-max_ms:]
+        self._audio = combined
+
+    @property
+    def duration(self) -> float:
+        return len(self._audio) / 1000.0
+
+    @property
+    def start(self) -> float:
+        return max(0.0, self._total_duration - self.duration)
+
+    @property
+    def end(self) -> float:
+        return self.start + self.duration
+
+    def export_window(self, start_time: float, destination: Path) -> Tuple[Path, float, float]:
+        if len(self._audio) <= 0:
+            raise ValueError("No hay audio en el búfer para exportar")
+        actual_start = max(start_time, self.start)
+        offset_ms = int(max(0.0, (actual_start - self.start) * 1000))
+        window = self._audio[offset_ms:]
+        if len(window) <= 0:
+            raise ValueError("La ventana solicitada no contiene audio")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        window.export(destination, format="wav")
+        return destination, actual_start, self.end
+
+
+def _estimate_silence_ratio(segment: AudioSegment) -> float:
+    if len(segment) <= 0:
+        return 1.0
+    try:
+        base_threshold = segment.dBFS
+    except Exception:
+        base_threshold = -60.0
+    if not isinstance(base_threshold, (float, int)) or base_threshold == float("-inf"):
+        base_threshold = -60.0
+    threshold = base_threshold - 16
+    windows = detect_nonsilent(segment, min_silence_len=200, silence_thresh=threshold)
+    nonsilent_ms = sum(end - start for start, end in windows)
+    ratio = 1.0 - (nonsilent_ms / len(segment))
+    return min(1.0, max(0.0, ratio))
+
+
+def _should_enable_live_vad(segment: AudioSegment) -> bool:
+    mode = (settings.whisper_vad_mode or "auto").strip().lower()
+    if mode in {"off", "false", "0"}:
+        return False
+    if mode in {"on", "true", "1"}:
+        return True
+    return _estimate_silence_ratio(segment) >= LIVE_SILENCE_RATIO_THRESHOLD
 
 
 @dataclass
@@ -133,6 +215,13 @@ class LiveSessionState:
     last_duration: Optional[float] = None
     last_runtime: Optional[float] = None
     segments: List[dict] = field(default_factory=list)
+    ring: AudioRing = field(default_factory=lambda: AudioRing(LIVE_RING_DURATION_SECONDS))
+    last_t_end: float = 0.0
+    user_dictionary: Set[str] = field(default_factory=set)
+    suspects: List[Tuple[float, float]] = field(default_factory=list)
+    recent_texts: Deque[Tuple[str, float]] = field(
+        default_factory=lambda: deque(maxlen=LIVE_RECENT_TEXT_HISTORY)
+    )
     lock: Lock = field(default_factory=Lock)
 
 
@@ -401,6 +490,8 @@ def _enqueue_transcription(
         subject=subject,
         output_folder=sanitized_folder,
         status=TranscriptionStatus.PROCESSING.value,
+        text="",
+        speakers=[],
     )
     session.add(transcription)
     session.flush()
@@ -499,7 +590,7 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
             state.last_activity = time.time()
             return LiveChunkResponse(
                 session_id=session_id,
-                text=state.last_text,
+                text=state.last_text or "",
                 duration=state.last_duration,
                 runtime_seconds=state.last_runtime,
                 chunk_count=state.chunk_count,
@@ -512,12 +603,51 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
                 new_text=None,
                 dropped_chunks=state.dropped_chunks,
             )
+        state.ring.append(segment)
+        window_file = state.directory / "window.wav"
+        try:
+            window_start = max(0.0, state.last_t_end - LIVE_WINDOW_OVERLAP_SECONDS)
+            window_path, window_offset, window_end = state.ring.export_window(
+                window_start, window_file
+            )
+        except ValueError:
+            state.chunk_count = index + 1
+            state.dropped_chunks += 1
+            state.last_activity = time.time()
+            window_file.unlink(missing_ok=True)
+            return LiveChunkResponse(
+                session_id=session_id,
+                text=state.last_text or "",
+                duration=state.last_duration,
+                runtime_seconds=state.last_runtime,
+                chunk_count=state.chunk_count,
+                model_size=state.model_size,
+                device_preference=state.device,
+                language=state.language,
+                beam_size=state.beam_size,
+                segments=list(state.segments),
+                new_segments=[],
+                new_text=None,
+                dropped_chunks=state.dropped_chunks,
+            )
+
         transcriber = get_transcriber(state.model_size, state.device)
+        decode_options_raw = {
+            "batch_size": settings.whisper_batch_size,
+            "temperature": 0.0,
+            "condition_on_previous_text": False,
+            "word_timestamps": False,
+            "vad_filter": _should_enable_live_vad(segment),
+            "compression_ratio_threshold": settings.whisper_compression_ratio_threshold,
+            "log_prob_threshold": settings.whisper_log_prob_threshold,
+        }
+        decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
         try:
             result = transcriber.transcribe(
-                state.audio_path,
+                window_path,
                 state.language,
-                beam_size=state.beam_size,
+                beam_size=state.beam_size or settings.whisper_live_beam,
+                decode_options=decode_options,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -526,41 +656,64 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
                 status_code=500,
                 detail=f"Error al transcribir el fragmento: {exc}",
             ) from exc
+        finally:
+            window_file.unlink(missing_ok=True)
+
         state.chunk_count = index + 1
-        serialized_segments = serialize_segments(result.segments)
-        previous_segments = state.segments
-        new_segments = serialized_segments[len(previous_segments) :]
-        state.segments = serialized_segments
-        aggregated_text = (result.text or "").strip()
-        if not aggregated_text and serialized_segments:
-            aggregated_text = " ".join(
-                segment.get("text", "").strip()
-                for segment in serialized_segments
-                if segment.get("text")
-            ).strip()
-        previous_text = state.last_text or ""
-        state.last_text = aggregated_text or previous_text
-        appended_text: Optional[str] = None
-        if new_segments:
-            appended_text = " ".join(
-                segment.get("text", "").strip()
-                for segment in new_segments
-                if segment.get("text")
-            ).strip() or None
-        elif state.last_text and state.last_text != previous_text:
-            if previous_text and state.last_text.startswith(previous_text):
-                appended_text = state.last_text[len(previous_text) :].strip() or None
+        appended_parts: List[str] = []
+        new_segments: List[dict] = []
+        epsilon = 1e-3
+        for seg in result.segments:
+            text = (seg.text or "").strip()
+            if not text:
+                continue
+            absolute_start = window_offset + float(seg.start)
+            absolute_end = window_offset + float(seg.end)
+            should_append = True
+            if absolute_end <= state.last_t_end + epsilon:
+                should_append = False
             else:
-                appended_text = state.last_text
-        elif not previous_text:
-            appended_text = state.last_text or None
-        state.last_duration = result.duration
+                if state.segments:
+                    prev = state.segments[-1]
+                    if (
+                        prev.get("text") == text
+                        and abs(prev.get("start", 0.0) - absolute_start) < 0.5
+                        and abs(prev.get("end", 0.0) - absolute_end) < 0.5
+                    ):
+                        should_append = False
+                if should_append and LIVE_REPEAT_MAX_DUPLICATES > 0:
+                    repeat_count = sum(
+                        1
+                        for recent_text, recent_start in state.recent_texts
+                        if recent_text == text
+                        and absolute_start - recent_start <= LIVE_REPEAT_WINDOW_SECONDS
+                    )
+                    if repeat_count >= LIVE_REPEAT_MAX_DUPLICATES:
+                        should_append = False
+            state.last_t_end = max(state.last_t_end, absolute_end)
+            if not should_append:
+                continue
+            normalized = {
+                "start": absolute_start,
+                "end": absolute_end,
+                "speaker": seg.speaker,
+                "text": text,
+            }
+            state.segments.append(normalized)
+            state.recent_texts.append((text, absolute_start))
+            new_segments.append(normalized)
+            appended_parts.append(text)
+
+        appended_text = " ".join(appended_parts).strip() or None
+        if appended_text:
+            state.last_text = " ".join(segment.get("text", "").strip() for segment in state.segments).strip()
+        state.last_duration = max(state.last_duration or 0.0, window_end, state.last_t_end)
         state.last_runtime = result.runtime_seconds
         state.language = result.language or state.language
         state.last_activity = time.time()
     return LiveChunkResponse(
         session_id=session_id,
-        text=state.last_text,
+        text=state.last_text or "",
         duration=state.last_duration,
         runtime_seconds=state.last_runtime,
         chunk_count=state.chunk_count,
@@ -569,7 +722,7 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
         language=state.language,
         beam_size=state.beam_size,
         segments=list(state.segments),
-        new_segments=list(new_segments),
+        new_segments=new_segments,
         new_text=appended_text,
         dropped_chunks=state.dropped_chunks,
     )
@@ -592,10 +745,24 @@ def finalize_live_session(
         if payload.beam_size is not None:
             state.beam_size = payload.beam_size
         transcriber = get_transcriber(resolved_model, resolved_device)
+        beam_value = payload.beam_size or state.beam_size or settings.whisper_final_beam
+        state.beam_size = beam_value
+        normalized_audio = ensure_normalized_audio(state.audio_path)
+        decode_options_raw = {
+            "batch_size": settings.whisper_batch_size,
+            "temperature": 0.0,
+            "word_timestamps": settings.whisper_word_timestamps,
+            "condition_on_previous_text": settings.whisper_condition_on_previous_text,
+            "vad_filter": settings.whisper_vad_mode,
+            "compression_ratio_threshold": settings.whisper_compression_ratio_threshold,
+            "log_prob_threshold": settings.whisper_log_prob_threshold,
+        }
+        decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
         result = transcriber.transcribe(
-            state.audio_path,
+            normalized_audio,
             resolved_language,
-            beam_size=payload.beam_size or state.beam_size,
+            beam_size=beam_value,
+            decode_options=decode_options,
         )
         sanitized_folder = sanitize_folder_name(payload.destination_folder or "en-vivo")
         final_filename = payload.filename or f"live-session-{session_id}.wav"
@@ -607,7 +774,7 @@ def finalize_live_session(
             stored_path=str(target_audio_path),
             language=result.language or resolved_language,
             model_size=resolved_model,
-            beam_size=payload.beam_size or state.beam_size,
+            beam_size=beam_value,
             device_preference=resolved_device,
             subject=payload.subject,
             output_folder=sanitized_folder,
@@ -625,7 +792,7 @@ def finalize_live_session(
             ensure_unique=True,
         )
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        transcript_path.write_text(transcription.to_txt(), encoding="utf-8")
+        write_atomic_text(transcript_path, transcription.to_txt())
         transcription.transcript_path = str(transcript_path)
         session.commit()
         append_debug_event(
@@ -635,7 +802,7 @@ def finalize_live_session(
             extra={
                 "chunks": state.chunk_count,
                 "live_session": session_id,
-                "beam_size": payload.beam_size or state.beam_size,
+                "beam_size": beam_value,
             },
         )
         response = LiveFinalizeResponse(
@@ -649,7 +816,7 @@ def finalize_live_session(
             model_size=resolved_model,
             device_preference=resolved_device,
             language=result.language or resolved_language,
-            beam_size=payload.beam_size or state.beam_size,
+            beam_size=beam_value,
         )
     _cleanup_live_session(session_id)
     return response
@@ -838,10 +1005,23 @@ def process_transcription(
                     if partial is not None and not partial.duration:
                         partial.duration = duration_hint
 
+        normalized_audio = ensure_normalized_audio(audio_path)
+        effective_beam = beam_size or settings.whisper_final_beam
+        decode_options_raw = {
+            "batch_size": settings.whisper_batch_size,
+            "temperature": 0.0,
+            "word_timestamps": settings.whisper_word_timestamps,
+            "condition_on_previous_text": settings.whisper_condition_on_previous_text,
+            "vad_filter": settings.whisper_vad_mode,
+            "compression_ratio_threshold": settings.whisper_compression_ratio_threshold,
+            "log_prob_threshold": settings.whisper_log_prob_threshold,
+        }
+        decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
         result = transcriber.transcribe(
-            audio_path,
+            normalized_audio,
             language or transcription.language,
-            beam_size=beam_size,
+            beam_size=effective_beam,
+            decode_options=decode_options,
             debug_callback=debug_callback,
         )
         completion_extra = {
@@ -857,7 +1037,7 @@ def process_transcription(
             transcription.text = result.text
             transcription.language = result.language or language
             transcription.model_size = resolved_model
-            transcription.beam_size = beam_size
+            transcription.beam_size = effective_beam
             transcription.device_preference = resolved_device
             transcription.duration = result.duration
             transcription.runtime_seconds = result.runtime_seconds
@@ -875,7 +1055,7 @@ def process_transcription(
                 )
             )
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(transcription.to_txt(), encoding="utf-8")
+            write_atomic_text(target_path, transcription.to_txt())
             transcription.transcript_path = str(target_path)
 
         append_debug_event(

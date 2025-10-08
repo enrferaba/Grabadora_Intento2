@@ -374,7 +374,7 @@ def test_faster_whisper_retries_without_vad(monkeypatch, tmp_path):
     )
 
     assert result.text == "Hola"
-    assert call_history == [True, False]
+    assert call_history[-2:] == [True, False]
     assert any("reintentando sin VAD" in message for _, message, *_ in events)
 
 

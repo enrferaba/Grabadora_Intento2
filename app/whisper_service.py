@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import tempfile
 import time
+import wave
+from array import array
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from inspect import signature
 from pathlib import Path
-from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 
 try:
@@ -32,6 +36,38 @@ from .config import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS: Set[str] = {
+    "language",
+    "task",
+    "beam_size",
+    "best_of",
+    "patience",
+    "length_penalty",
+    "suppress_blank",
+    "suppress_tokens",
+    "without_timestamps",
+    "temperature",
+    "temperature_increment_on_fallback",
+    "compression_ratio_threshold",
+    "log_prob_threshold",
+    "no_speech_threshold",
+    "condition_on_previous_text",
+    "initial_prompt",
+    "prefix",
+    "hotwords",
+    "hotwords_sensitivity",
+    "word_timestamps",
+    "vad_filter",
+    "vad_parameters",
+    "clip_timestamps",
+    "hallucination_silence_threshold",
+    "repetition_penalty",
+    "num_parallel_decoders",
+    "max_initial_timestamp",
+    "beam_search_margin",
+}
 
 
 @dataclass
@@ -134,6 +170,29 @@ def _is_vad_auth_error(exc: Exception) -> bool:
     if "huggingface" in message:
         return True
     return "whisperx" in message and "requires" in message
+
+
+def _default_vad_enabled() -> bool:
+    mode = (settings.whisper_vad_mode or "auto").strip().lower()
+    if mode in {"off", "false", "0"}:
+        return False
+    if mode in {"on", "true", "1"}:
+        return True
+    return True
+
+
+def _normalize_vad_option(value: Any) -> bool:
+    if value is None:
+        return _default_vad_enabled()
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "auto":
+            return _default_vad_enabled()
+        if normalized in {"on", "true", "1"}:
+            return True
+        if normalized in {"off", "false", "0"}:
+            return False
+    return bool(value)
 
 
 def _prepare_model_task(model_size: str, device: str) -> None:
@@ -315,6 +374,8 @@ class BaseTranscriber:
         audio_path: Path,
         language: Optional[str] = None,
         beam_size: Optional[int] = None,
+        *,
+        decode_options: Optional[Dict[str, Any]] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         raise NotImplementedError
@@ -334,6 +395,8 @@ class DummyTranscriber(BaseTranscriber):
         audio_path: Path,
         language: Optional[str] = None,
         beam_size: Optional[int] = None,
+        *,
+        decode_options: Optional[Dict[str, Any]] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:  # pragma: no cover - trivial
         logger.warning("Using DummyTranscriber, install whisperx to enable real transcription")
@@ -691,6 +754,18 @@ class WhisperXTranscriber(BaseTranscriber):
         self._vad_patch_done = True
 
     def _ensure_model(self, debug_callback=None, progress_callback: Optional[Callable[[int, str], None]] = None):
+        progress_key = _model_progress_key(self.model_size, self.device_preference)
+        tracker = _progress_callback_factory(progress_key)
+        if progress_callback is None:
+            progress_callback = tracker
+        else:
+            user_callback = progress_callback
+
+            def combined(progress: int, message: str) -> None:
+                tracker(progress, message)
+                user_callback(progress, message)
+
+            progress_callback = combined
         if self._disabled_reason:
             raise WhisperXVADUnavailableError(self._disabled_reason)
 
@@ -735,6 +810,13 @@ class WhisperXTranscriber(BaseTranscriber):
                     self._disabled_reason = (
                         "WhisperX no está disponible porque el modelo de VAD requiere autenticación."
                     )
+                _update_model_progress(
+                    progress_key,
+                    "error",
+                    0,
+                    self._disabled_reason or "WhisperX no disponible",
+                    error=self._disabled_reason,
+                )
                 if debug_callback:
                     debug_callback(
                         "load-model",
@@ -846,6 +928,8 @@ class WhisperXTranscriber(BaseTranscriber):
         audio_path: Path,
         language: Optional[str] = None,
         beam_size: Optional[int] = None,
+        *,
+        decode_options: Optional[Dict[str, Any]] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         def emit(stage: str, message: str, extra: Optional[Dict[str, object]] = None, level: str = "info") -> None:
@@ -871,6 +955,7 @@ class WhisperXTranscriber(BaseTranscriber):
                 audio_path,
                 language=language,
                 beam_size=beam_size,
+                decode_options=decode_options,
                 debug_callback=debug_callback,
             )
 
@@ -925,6 +1010,7 @@ class WhisperXTranscriber(BaseTranscriber):
                 audio_path,
                 language=language,
                 beam_size=beam_size,
+                decode_options=decode_options,
                 debug_callback=debug_callback,
             )
         runtime = time.perf_counter() - start
@@ -999,6 +1085,14 @@ class WhisperXTranscriber(BaseTranscriber):
             speaker = segment.get("speaker", "SPEAKER_00")
             start = float(segment.get("start", 0))
             end = float(segment.get("end", 0))
+            if segment_results:
+                prev_segment = segment_results[-1]
+                if (
+                    prev_segment.text.strip() == text
+                    and abs(prev_segment.start - start) < 0.5
+                    and abs(prev_segment.end - end) < 0.5
+                ):
+                    continue
             collected_text.append(text)
             segment_results.append(
                 SegmentResult(start=start, end=end, speaker=speaker, text=text)
@@ -1047,7 +1141,7 @@ class WhisperXTranscriber(BaseTranscriber):
         return self._fallback_transcriber
 
 
-_transcriber_cache: dict[tuple[str, str], BaseTranscriber] = {}
+_transcriber_cache: Dict[Tuple[str, str, str], BaseTranscriber] = {}
 _transcriber_lock = Lock()
 
 
@@ -1055,20 +1149,35 @@ def get_transcriber(
     model_size: Optional[str] = None,
     device_preference: Optional[str] = None,
 ) -> BaseTranscriber:
-    if settings.enable_dummy_transcriber or whisperx is None:
-        key = ("dummy", "dummy")
+    resolved_model = model_size or settings.whisper_model_size
+    resolved_device = (device_preference or settings.whisper_device or "cuda").lower()
+
+    backend: str
+    if settings.enable_dummy_transcriber:
+        backend = "dummy"
     else:
-        resolved_model = model_size or settings.whisper_model_size
-        resolved_device = (device_preference or settings.whisper_device or "cuda").lower()
-        key = (resolved_model, resolved_device)
+        prefer_faster = settings.whisper_use_faster or whisperx is None
+        has_faster = FasterWhisperModel is not None
+        if prefer_faster and has_faster:
+            backend = "faster"
+        elif whisperx is not None:
+            backend = "whisperx"
+        elif has_faster:
+            backend = "faster"
+        else:
+            backend = "dummy"
+
+    key = (backend, resolved_model, resolved_device)
 
     with _transcriber_lock:
         transcriber = _transcriber_cache.get(key)
         if transcriber is None:
-            if settings.enable_dummy_transcriber or whisperx is None:
+            if backend == "dummy":
                 transcriber = DummyTranscriber()
+            elif backend == "faster":
+                transcriber = FasterWhisperTranscriber(resolved_model, resolved_device)
             else:
-                transcriber = WhisperXTranscriber(key[0], key[1])
+                transcriber = WhisperXTranscriber(resolved_model, resolved_device)
             _transcriber_cache[key] = transcriber
     return transcriber
 
@@ -1095,6 +1204,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
         self.device_preference = device_preference
         self._model: Optional[FasterWhisperModel] = None  # type: ignore[type-arg]
         self._lock = Lock()
+        self._warmed_up = False
+        self._supported_kwargs: Optional[Set[str]] = None
 
     def _resolve_device(self) -> str:
         preferred = (self.device_preference or settings.whisper_device or "cpu").lower()
@@ -1138,11 +1249,95 @@ class FasterWhisperTranscriber(BaseTranscriber):
             devices.append("cpu")
         return devices
 
+    @staticmethod
+    def _write_silence_wav(path: Path, duration: float = 0.5, sample_rate: int = 16_000) -> None:
+        frames = max(1, int(duration * sample_rate))
+        silence = array("h", [0] * frames)
+        with wave.open(str(path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(sample_rate)
+            handle.writeframes(silence.tobytes())
+
+    def _warmup(
+        self,
+        emit: Callable[[str, str, Optional[Dict[str, object]], str], None],
+    ) -> None:
+        if self._model is None or self._warmed_up:
+            return
+        temp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                temp_path = Path(tmp.name)
+            self._write_silence_wav(temp_path)
+            self._model.transcribe(  # type: ignore[attr-defined]
+                str(temp_path),
+                language=settings.whisper_language or "en",
+                beam_size=1,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                vad_filter=False,
+                word_timestamps=False,
+                compression_ratio_threshold=None,
+                log_prob_threshold=None,
+            )
+            self._warmed_up = True
+            emit(
+                "warmup.completed",
+                "Warmup de faster-whisper completado",
+                {"seconds": 0.5},
+                "debug",
+            )
+        except Exception as exc:  # pragma: no cover - best effort warmup
+            emit(
+                "warmup.skipped",
+                "No se pudo realizar el warmup opcional",
+                {"error": str(exc)},
+                "debug",
+            )
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+    def _get_supported_transcribe_kwargs(self) -> Set[str]:
+        if self._supported_kwargs is not None:
+            return self._supported_kwargs
+        if self._model is None:
+            self._supported_kwargs = set(DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS)
+            return self._supported_kwargs
+        try:
+            sig = signature(self._model.transcribe)
+        except (TypeError, ValueError):  # pragma: no cover - depends on runtime
+            self._supported_kwargs = set(DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS)
+            return self._supported_kwargs
+        allowed: Set[str] = set()
+        for name, param in sig.parameters.items():
+            if param.kind in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY):
+                allowed.add(name)
+        allowed.discard("audio")
+        allowed.discard("self")
+        if not allowed:
+            allowed = set(DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS)
+        self._supported_kwargs = allowed
+        return self._supported_kwargs
+
     def _ensure_model(
         self,
         debug_callback=None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
     ) -> None:
+        progress_key = _model_progress_key(self.model_size, self.device_preference)
+        tracker = _progress_callback_factory(progress_key)
+        if progress_callback is None:
+            progress_callback = tracker
+        else:
+            user_callback = progress_callback
+
+            def combined(progress: int, message: str) -> None:
+                tracker(progress, message)
+                user_callback(progress, message)
+
+            progress_callback = combined
         if self._model is not None:
             if progress_callback:
                 progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
@@ -1182,6 +1377,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
 
         if progress_callback:
             progress_callback(25, f"Cargando {self.model_size} ({initial_device}).")
+
+        self._warmed_up = False
 
         for device in self._candidate_devices(initial_device):
             for compute_type in self._candidate_compute_types(device):
@@ -1261,6 +1458,13 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 },
                 "error",
             )
+            _update_model_progress(
+                progress_key,
+                "error",
+                0,
+                f"Fallo cargando {self.model_size}",
+                error=str(last_error) if last_error else None,
+            )
             if last_error is not None:
                 raise last_error
             raise RuntimeError("Unable to load faster-whisper model with available configurations")
@@ -1275,8 +1479,10 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 },
                 "warning",
             )
-        if self._model is not None and progress_callback:
-            progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
+        if self._model is not None:
+            self._warmup(emit)
+            if progress_callback:
+                progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
 
     def _estimate_duration(self, audio_path: Path) -> Optional[float]:
         try:
@@ -1309,6 +1515,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
         audio_path: Path,
         language: Optional[str] = None,
         beam_size: Optional[int] = None,
+        *,
+        decode_options: Optional[Dict[str, Any]] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         def emit(stage: str, message: str, extra: Optional[Dict[str, object]] = None, level: str = "info") -> None:
@@ -1325,41 +1533,151 @@ class FasterWhisperTranscriber(BaseTranscriber):
             if detected:
                 language = detected
 
-        attempts = [True, False]
+        options: Dict[str, Any] = dict(decode_options or {})
+        batch_hint_raw = options.pop("batch_size", None)
+        batch_hint: Optional[int]
+        if batch_hint_raw is None:
+            batch_hint = None
+        else:
+            try:
+                batch_hint = max(1, int(batch_hint_raw))
+            except (TypeError, ValueError):
+                emit(
+                    "transcribe.option",
+                    "Valor batch_size inválido ignorado para faster-whisper",
+                    {"provided": batch_hint_raw},
+                    "warning",
+                )
+                batch_hint = None
+        resolved_beam = beam_size or options.pop("beam_size", settings.whisper_final_beam or 1)
+        resolved_beam = max(1, int(resolved_beam))
+        options.setdefault("temperature", 0.0)
+        options.setdefault("condition_on_previous_text", settings.whisper_condition_on_previous_text)
+        options.setdefault("word_timestamps", settings.whisper_word_timestamps)
+        compression_ratio = settings.whisper_compression_ratio_threshold
+        if compression_ratio is not None:
+            options.setdefault("compression_ratio_threshold", float(compression_ratio))
+        log_prob_threshold = settings.whisper_log_prob_threshold
+        if log_prob_threshold is not None:
+            options.setdefault("log_prob_threshold", float(log_prob_threshold))
+        language_override = options.pop("language", None)
+        resolved_language = language_override or language or settings.whisper_language
+        vad_pref = options.pop("vad_filter", None)
+        base_vad = _normalize_vad_option(vad_pref)
+
+        supported_kwargs = self._get_supported_transcribe_kwargs()
+        unsupported_options: Dict[str, Any] = {}
+
+        def _supports(name: str) -> bool:
+            return name in supported_kwargs
+
+        filtered_options: Dict[str, Any] = {}
+        for key, value in options.items():
+            if _supports(key):
+                filtered_options[key] = value
+            else:
+                unsupported_options.setdefault(key, value)
+
+        applied_batch_size: Optional[int] = None
+        if batch_hint is not None:
+            if _supports("batch_size"):
+                filtered_options.setdefault("batch_size", batch_hint)
+                applied_batch_size = filtered_options.get("batch_size")
+            else:
+                unsupported_options.setdefault("batch_size", batch_hint)
+        else:
+            applied_batch_size = filtered_options.get("batch_size")
+
+        call_kwargs_base: Dict[str, Any] = {}
+        if resolved_language:
+            if _supports("language"):
+                call_kwargs_base["language"] = resolved_language
+            else:
+                unsupported_options.setdefault("language", resolved_language)
+        if _supports("beam_size"):
+            call_kwargs_base["beam_size"] = resolved_beam
+        else:
+            unsupported_options.setdefault("beam_size", resolved_beam)
+
+        supports_vad = _supports("vad_filter")
+        initial_vad_requested = bool(base_vad and supports_vad)
+        if initial_vad_requested:
+            attempts: List[bool] = [True, False]
+        else:
+            attempts = [False]
+            if base_vad and not supports_vad:
+                unsupported_options.setdefault("vad_filter", base_vad)
+
         last_error: Optional[BaseException] = None
         runtime = 0.0
         segments = None
         info = None
 
         for use_vad in attempts:
-            try:
-                start = time.perf_counter()
-                segments, info = self._model.transcribe(  # type: ignore[attr-defined]
-                    str(audio_path),
-                    language=language or settings.whisper_language,
-                    beam_size=beam_size or 5,
-                    vad_filter=use_vad,
-                )
-                runtime = time.perf_counter() - start
-                if not use_vad:
-                    emit(
-                        "transcribe.retry",
-                        "Reintento completado sin filtro VAD",
-                        {"runtime_seconds": runtime},
-                        "warning",
+            while True:
+                try:
+                    call_kwargs = dict(call_kwargs_base)
+                    call_kwargs.update(filtered_options)
+                    if supports_vad:
+                        call_kwargs["vad_filter"] = use_vad
+                    start = time.perf_counter()
+                    segments, info = self._model.transcribe(  # type: ignore[attr-defined]
+                        str(audio_path),
+                        **call_kwargs,
                     )
-                break
-            except (HTTPError, URLError) as exc:
-                last_error = exc
-                if use_vad:
-                    emit(
-                        "transcribe.retry",
-                        "Fallo al aplicar VAD remoto, reintentando sin VAD",
-                        {"error": str(exc)},
-                        "warning",
-                    )
+                    runtime = time.perf_counter() - start
+                    if initial_vad_requested and not use_vad:
+                        emit(
+                            "transcribe.retry",
+                            "Reintento completado sin filtro VAD",
+                            {"runtime_seconds": runtime},
+                            "warning",
+                        )
+                    break
+                except (HTTPError, URLError) as exc:
+                    last_error = exc
+                    if supports_vad and use_vad:
+                        emit(
+                            "transcribe.retry",
+                            "Fallo al aplicar VAD remoto, reintentando sin VAD",
+                            {"error": str(exc)},
+                            "warning",
+                        )
+                        break
+                    raise
+                except TypeError as exc:
+                    message = str(exc)
+                    match = re.search(r"unexpected keyword argument '([^']+)'", message)
+                    if not match:
+                        raise
+                    bad_key = match.group(1)
+                    removed = False
+                    if bad_key in filtered_options:
+                        removed = True
+                        removed_value = filtered_options.pop(bad_key)
+                        unsupported_options.setdefault(bad_key, removed_value)
+                        if bad_key == "batch_size":
+                            applied_batch_size = None
+                    if bad_key in call_kwargs_base:
+                        removed = True
+                        unsupported_options.setdefault(bad_key, call_kwargs_base.pop(bad_key))
+                    if supports_vad and bad_key == "vad_filter":
+                        removed = True
+                        unsupported_options.setdefault("vad_filter", use_vad)
+                        supports_vad = False
+                        initial_vad_requested = False
+                    if bad_key in supported_kwargs:
+                        supported_kwargs.discard(bad_key)
+                        self._supported_kwargs = supported_kwargs
+                    if not removed:
+                        raise
+                    # retry the same attempt with the offending option removed
                     continue
-                raise
+            if segments is not None or (supports_vad and use_vad):
+                if segments is not None:
+                    break
+                # if we broke due to VAD failure we try next attempt without VAD
+                continue
 
         if segments is None or info is None:
             assert last_error is not None
@@ -1368,8 +1686,22 @@ class FasterWhisperTranscriber(BaseTranscriber):
         emit(
             "transcribe.completed",
             "Transcripción con faster-whisper completada",
-            {"runtime_seconds": runtime, "beam_size": beam_size or 5},
+            {
+                "runtime_seconds": runtime,
+                "beam_size": resolved_beam,
+                "batch_size_hint": batch_hint,
+                "applied_batch_size": applied_batch_size,
+                "vad_filter": initial_vad_requested,
+            },
         )
+
+        if unsupported_options:
+            emit(
+                "transcribe.option",
+                "Algunas opciones no son compatibles con esta versión de faster-whisper",
+                {"ignored": unsupported_options},
+                "debug",
+            )
 
         segment_results: List[SegmentResult] = []
         collected_text: List[str] = []
@@ -1379,6 +1711,14 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 continue
             start = float(getattr(segment, "start", 0.0))
             end = float(getattr(segment, "end", 0.0))
+            if segment_results:
+                prev_segment = segment_results[-1]
+                if (
+                    prev_segment.text.strip() == text
+                    and abs(prev_segment.start - start) < 0.5
+                    and abs(prev_segment.end - end) < 0.5
+                ):
+                    continue
             collected_text.append(text)
             segment_results.append(
                 SegmentResult(

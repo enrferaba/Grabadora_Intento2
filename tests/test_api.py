@@ -103,6 +103,7 @@ def test_env(tmp_path_factory: pytest.TempPathFactory):
     os.environ["SYNC_DATABASE_URL"] = f"sqlite:///{db_path}"
     os.environ["STORAGE_DIR"] = str(tmp_dir / "uploads")
     os.environ["TRANSCRIPTS_DIR"] = str(tmp_dir / "transcripts")
+    os.environ["AUDIO_CACHE_DIR"] = str(tmp_dir / "audio-cache")
     os.environ["ENABLE_DUMMY_TRANSCRIBER"] = "true"
     os.environ["WHISPER_DEVICE"] = "cpu"
     # Refresca ajustes ya cargados por otros tests (pydantic Settings es singleton)
@@ -112,6 +113,8 @@ def test_env(tmp_path_factory: pytest.TempPathFactory):
     config.settings.enable_dummy_transcriber = True
     config.settings.whisper_device = "cpu"
     config.settings.whisper_model_size = "large-v2"
+    config.settings.audio_cache_dir = tmp_dir / "audio-cache"
+    config.settings.audio_cache_dir.mkdir(parents=True, exist_ok=True)
     whisper_service._transcriber_cache.clear()
     return tmp_dir
 

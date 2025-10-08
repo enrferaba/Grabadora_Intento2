@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     storage_dir: Path = Path("data/uploads")
     transcripts_dir: Path = Path("data/transcripts")
     models_cache_dir: Path = Path("data/models")
+    audio_cache_dir: Path = Path("data/audio_cache")
 
     whisper_model_size: str = "large-v3"
     whisper_device: str = "cuda"
@@ -31,11 +32,22 @@ class Settings(BaseSettings):
     whisper_batch_size: int = 16
     whisper_language: Optional[str] = None
     whisper_use_faster: bool = True
+    whisper_live_beam: int = 1
+    whisper_final_beam: int = 5
+    whisper_vad_mode: str = "auto"
     whisper_enable_speaker_diarization: bool = True
     whisper_parallel_pipelines: int = 1
     whisper_word_timestamps: bool = False
+    whisper_condition_on_previous_text: bool = False
+    whisper_compression_ratio_threshold: Optional[float] = 2.4
+    whisper_log_prob_threshold: Optional[float] = -1.0
     whisper_vad_repo_id: str = "pyannote/segmentation"
     whisper_vad_filename: str = "pytorch_model.bin"
+
+    live_window_seconds: float = 60.0
+    live_window_overlap_seconds: float = 2.0
+    live_repeat_window_seconds: float = 12.0
+    live_repeat_max_duplicates: int = 3
 
     enable_dummy_transcriber: bool = False
 
@@ -59,6 +71,7 @@ def get_settings() -> Settings:
     Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.transcripts_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.models_cache_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.audio_cache_dir).mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=settings.log_level)
     return settings
 
