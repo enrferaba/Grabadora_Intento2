@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 import time
 import wave
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 from inspect import signature
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 
 try:
@@ -35,6 +36,38 @@ from .config import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS: Set[str] = {
+    "language",
+    "task",
+    "beam_size",
+    "best_of",
+    "patience",
+    "length_penalty",
+    "suppress_blank",
+    "suppress_tokens",
+    "without_timestamps",
+    "temperature",
+    "temperature_increment_on_fallback",
+    "compression_ratio_threshold",
+    "log_prob_threshold",
+    "no_speech_threshold",
+    "condition_on_previous_text",
+    "initial_prompt",
+    "prefix",
+    "hotwords",
+    "hotwords_sensitivity",
+    "word_timestamps",
+    "vad_filter",
+    "vad_parameters",
+    "clip_timestamps",
+    "hallucination_silence_threshold",
+    "repetition_penalty",
+    "num_parallel_decoders",
+    "max_initial_timestamp",
+    "beam_search_margin",
+}
 
 
 @dataclass
@@ -1145,6 +1178,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
         self._model: Optional[FasterWhisperModel] = None  # type: ignore[type-arg]
         self._lock = Lock()
         self._warmed_up = False
+        self._supported_kwargs: Optional[Set[str]] = None
 
     def _resolve_device(self) -> str:
         preferred = (self.device_preference or settings.whisper_device or "cpu").lower()
@@ -1237,6 +1271,28 @@ class FasterWhisperTranscriber(BaseTranscriber):
         finally:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
+
+    def _get_supported_transcribe_kwargs(self) -> Set[str]:
+        if self._supported_kwargs is not None:
+            return self._supported_kwargs
+        if self._model is None:
+            self._supported_kwargs = set(DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS)
+            return self._supported_kwargs
+        try:
+            sig = signature(self._model.transcribe)
+        except (TypeError, ValueError):  # pragma: no cover - depends on runtime
+            self._supported_kwargs = set(DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS)
+            return self._supported_kwargs
+        allowed: Set[str] = set()
+        for name, param in sig.parameters.items():
+            if param.kind in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY):
+                allowed.add(name)
+        allowed.discard("audio")
+        allowed.discard("self")
+        if not allowed:
+            allowed = set(DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS)
+        self._supported_kwargs = allowed
+        return self._supported_kwargs
 
     def _ensure_model(
         self,
@@ -1459,9 +1515,48 @@ class FasterWhisperTranscriber(BaseTranscriber):
         vad_pref = options.pop("vad_filter", None)
         base_vad = _normalize_vad_option(vad_pref)
 
-        attempts = [base_vad] if base_vad else [False]
-        if base_vad:
-            attempts.append(False)
+        supported_kwargs = self._get_supported_transcribe_kwargs()
+        unsupported_options: Dict[str, Any] = {}
+
+        def _supports(name: str) -> bool:
+            return name in supported_kwargs
+
+        filtered_options: Dict[str, Any] = {}
+        for key, value in options.items():
+            if _supports(key):
+                filtered_options[key] = value
+            else:
+                unsupported_options.setdefault(key, value)
+
+        applied_batch_size: Optional[int] = None
+        if batch_hint is not None:
+            if _supports("batch_size"):
+                filtered_options.setdefault("batch_size", batch_hint)
+                applied_batch_size = filtered_options.get("batch_size")
+            else:
+                unsupported_options.setdefault("batch_size", batch_hint)
+        else:
+            applied_batch_size = filtered_options.get("batch_size")
+
+        call_kwargs_base: Dict[str, Any] = {}
+        if resolved_language:
+            if _supports("language"):
+                call_kwargs_base["language"] = resolved_language
+            else:
+                unsupported_options.setdefault("language", resolved_language)
+        if _supports("beam_size"):
+            call_kwargs_base["beam_size"] = resolved_beam
+        else:
+            unsupported_options.setdefault("beam_size", resolved_beam)
+
+        supports_vad = _supports("vad_filter")
+        initial_vad_requested = bool(base_vad and supports_vad)
+        if initial_vad_requested:
+            attempts: List[bool] = [True, False]
+        else:
+            attempts = [False]
+            if base_vad and not supports_vad:
+                unsupported_options.setdefault("vad_filter", base_vad)
 
         last_error: Optional[BaseException] = None
         runtime = 0.0
@@ -1469,35 +1564,70 @@ class FasterWhisperTranscriber(BaseTranscriber):
         info = None
 
         for use_vad in attempts:
-            try:
-                start = time.perf_counter()
-                segments, info = self._model.transcribe(  # type: ignore[attr-defined]
-                    str(audio_path),
-                    language=resolved_language,
-                    beam_size=resolved_beam,
-                    vad_filter=use_vad,
-                    **options,
-                )
-                runtime = time.perf_counter() - start
-                if attempts[0] and not use_vad:
-                    emit(
-                        "transcribe.retry",
-                        "Reintento completado sin filtro VAD",
-                        {"runtime_seconds": runtime},
-                        "warning",
+            while True:
+                try:
+                    call_kwargs = dict(call_kwargs_base)
+                    call_kwargs.update(filtered_options)
+                    if supports_vad:
+                        call_kwargs["vad_filter"] = use_vad
+                    start = time.perf_counter()
+                    segments, info = self._model.transcribe(  # type: ignore[attr-defined]
+                        str(audio_path),
+                        **call_kwargs,
                     )
-                break
-            except (HTTPError, URLError) as exc:
-                last_error = exc
-                if use_vad:
-                    emit(
-                        "transcribe.retry",
-                        "Fallo al aplicar VAD remoto, reintentando sin VAD",
-                        {"error": str(exc)},
-                        "warning",
-                    )
+                    runtime = time.perf_counter() - start
+                    if initial_vad_requested and not use_vad:
+                        emit(
+                            "transcribe.retry",
+                            "Reintento completado sin filtro VAD",
+                            {"runtime_seconds": runtime},
+                            "warning",
+                        )
+                    break
+                except (HTTPError, URLError) as exc:
+                    last_error = exc
+                    if supports_vad and use_vad:
+                        emit(
+                            "transcribe.retry",
+                            "Fallo al aplicar VAD remoto, reintentando sin VAD",
+                            {"error": str(exc)},
+                            "warning",
+                        )
+                        break
+                    raise
+                except TypeError as exc:
+                    message = str(exc)
+                    match = re.search(r"unexpected keyword argument '([^']+)'", message)
+                    if not match:
+                        raise
+                    bad_key = match.group(1)
+                    removed = False
+                    if bad_key in filtered_options:
+                        removed = True
+                        removed_value = filtered_options.pop(bad_key)
+                        unsupported_options.setdefault(bad_key, removed_value)
+                        if bad_key == "batch_size":
+                            applied_batch_size = None
+                    if bad_key in call_kwargs_base:
+                        removed = True
+                        unsupported_options.setdefault(bad_key, call_kwargs_base.pop(bad_key))
+                    if supports_vad and bad_key == "vad_filter":
+                        removed = True
+                        unsupported_options.setdefault("vad_filter", use_vad)
+                        supports_vad = False
+                        initial_vad_requested = False
+                    if bad_key in supported_kwargs:
+                        supported_kwargs.discard(bad_key)
+                        self._supported_kwargs = supported_kwargs
+                    if not removed:
+                        raise
+                    # retry the same attempt with the offending option removed
                     continue
-                raise
+            if segments is not None or (supports_vad and use_vad):
+                if segments is not None:
+                    break
+                # if we broke due to VAD failure we try next attempt without VAD
+                continue
 
         if segments is None or info is None:
             assert last_error is not None
@@ -1510,9 +1640,18 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 "runtime_seconds": runtime,
                 "beam_size": resolved_beam,
                 "batch_size_hint": batch_hint,
-                "vad_filter": bool(attempts[0]),
+                "applied_batch_size": applied_batch_size,
+                "vad_filter": initial_vad_requested,
             },
         )
+
+        if unsupported_options:
+            emit(
+                "transcribe.option",
+                "Algunas opciones no son compatibles con esta versión de faster-whisper",
+                {"ignored": unsupported_options},
+                "debug",
+            )
 
         segment_results: List[SegmentResult] = []
         collected_text: List[str] = []
