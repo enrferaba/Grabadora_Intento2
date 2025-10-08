@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import time
+import wave
+from array import array
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from inspect import signature
 from pathlib import Path
-from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 
 try:
@@ -134,6 +137,29 @@ def _is_vad_auth_error(exc: Exception) -> bool:
     if "huggingface" in message:
         return True
     return "whisperx" in message and "requires" in message
+
+
+def _default_vad_enabled() -> bool:
+    mode = (settings.whisper_vad_mode or "auto").strip().lower()
+    if mode in {"off", "false", "0"}:
+        return False
+    if mode in {"on", "true", "1"}:
+        return True
+    return True
+
+
+def _normalize_vad_option(value: Any) -> bool:
+    if value is None:
+        return _default_vad_enabled()
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "auto":
+            return _default_vad_enabled()
+        if normalized in {"on", "true", "1"}:
+            return True
+        if normalized in {"off", "false", "0"}:
+            return False
+    return bool(value)
 
 
 def _prepare_model_task(model_size: str, device: str) -> None:
@@ -315,6 +341,8 @@ class BaseTranscriber:
         audio_path: Path,
         language: Optional[str] = None,
         beam_size: Optional[int] = None,
+        *,
+        decode_options: Optional[Dict[str, Any]] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         raise NotImplementedError
@@ -334,6 +362,8 @@ class DummyTranscriber(BaseTranscriber):
         audio_path: Path,
         language: Optional[str] = None,
         beam_size: Optional[int] = None,
+        *,
+        decode_options: Optional[Dict[str, Any]] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:  # pragma: no cover - trivial
         logger.warning("Using DummyTranscriber, install whisperx to enable real transcription")
@@ -846,6 +876,8 @@ class WhisperXTranscriber(BaseTranscriber):
         audio_path: Path,
         language: Optional[str] = None,
         beam_size: Optional[int] = None,
+        *,
+        decode_options: Optional[Dict[str, Any]] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         def emit(stage: str, message: str, extra: Optional[Dict[str, object]] = None, level: str = "info") -> None:
@@ -871,6 +903,7 @@ class WhisperXTranscriber(BaseTranscriber):
                 audio_path,
                 language=language,
                 beam_size=beam_size,
+                decode_options=decode_options,
                 debug_callback=debug_callback,
             )
 
@@ -925,6 +958,7 @@ class WhisperXTranscriber(BaseTranscriber):
                 audio_path,
                 language=language,
                 beam_size=beam_size,
+                decode_options=decode_options,
                 debug_callback=debug_callback,
             )
         runtime = time.perf_counter() - start
@@ -1047,7 +1081,7 @@ class WhisperXTranscriber(BaseTranscriber):
         return self._fallback_transcriber
 
 
-_transcriber_cache: dict[tuple[str, str], BaseTranscriber] = {}
+_transcriber_cache: Dict[Tuple[str, str, str], BaseTranscriber] = {}
 _transcriber_lock = Lock()
 
 
@@ -1055,20 +1089,35 @@ def get_transcriber(
     model_size: Optional[str] = None,
     device_preference: Optional[str] = None,
 ) -> BaseTranscriber:
-    if settings.enable_dummy_transcriber or whisperx is None:
-        key = ("dummy", "dummy")
+    resolved_model = model_size or settings.whisper_model_size
+    resolved_device = (device_preference or settings.whisper_device or "cuda").lower()
+
+    backend: str
+    if settings.enable_dummy_transcriber:
+        backend = "dummy"
     else:
-        resolved_model = model_size or settings.whisper_model_size
-        resolved_device = (device_preference or settings.whisper_device or "cuda").lower()
-        key = (resolved_model, resolved_device)
+        prefer_faster = settings.whisper_use_faster or whisperx is None
+        has_faster = FasterWhisperModel is not None
+        if prefer_faster and has_faster:
+            backend = "faster"
+        elif whisperx is not None:
+            backend = "whisperx"
+        elif has_faster:
+            backend = "faster"
+        else:
+            backend = "dummy"
+
+    key = (backend, resolved_model, resolved_device)
 
     with _transcriber_lock:
         transcriber = _transcriber_cache.get(key)
         if transcriber is None:
-            if settings.enable_dummy_transcriber or whisperx is None:
+            if backend == "dummy":
                 transcriber = DummyTranscriber()
+            elif backend == "faster":
+                transcriber = FasterWhisperTranscriber(resolved_model, resolved_device)
             else:
-                transcriber = WhisperXTranscriber(key[0], key[1])
+                transcriber = WhisperXTranscriber(resolved_model, resolved_device)
             _transcriber_cache[key] = transcriber
     return transcriber
 
@@ -1095,6 +1144,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
         self.device_preference = device_preference
         self._model: Optional[FasterWhisperModel] = None  # type: ignore[type-arg]
         self._lock = Lock()
+        self._warmed_up = False
 
     def _resolve_device(self) -> str:
         preferred = (self.device_preference or settings.whisper_device or "cpu").lower()
@@ -1137,6 +1187,57 @@ class FasterWhisperTranscriber(BaseTranscriber):
         if initial_device == "cuda" and not settings.whisper_force_cuda:
             devices.append("cpu")
         return devices
+
+    @staticmethod
+    def _write_silence_wav(path: Path, duration: float = 0.5, sample_rate: int = 16_000) -> None:
+        frames = max(1, int(duration * sample_rate))
+        silence = array("h", [0] * frames)
+        with wave.open(str(path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(sample_rate)
+            handle.writeframes(silence.tobytes())
+
+    def _warmup(
+        self,
+        emit: Callable[[str, str, Optional[Dict[str, object]], str], None],
+    ) -> None:
+        if self._model is None or self._warmed_up:
+            return
+        temp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                temp_path = Path(tmp.name)
+            self._write_silence_wav(temp_path)
+            self._model.transcribe(  # type: ignore[attr-defined]
+                str(temp_path),
+                language=settings.whisper_language or "en",
+                beam_size=1,
+                batch_size=1,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                vad_filter=False,
+                word_timestamps=False,
+                compression_ratio_threshold=None,
+                log_prob_threshold=None,
+            )
+            self._warmed_up = True
+            emit(
+                "warmup.completed",
+                "Warmup de faster-whisper completado",
+                {"seconds": 0.5},
+                "debug",
+            )
+        except Exception as exc:  # pragma: no cover - best effort warmup
+            emit(
+                "warmup.skipped",
+                "No se pudo realizar el warmup opcional",
+                {"error": str(exc)},
+                "debug",
+            )
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
 
     def _ensure_model(
         self,
@@ -1182,6 +1283,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
 
         if progress_callback:
             progress_callback(25, f"Cargando {self.model_size} ({initial_device}).")
+
+        self._warmed_up = False
 
         for device in self._candidate_devices(initial_device):
             for compute_type in self._candidate_compute_types(device):
@@ -1275,8 +1378,10 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 },
                 "warning",
             )
-        if self._model is not None and progress_callback:
-            progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
+        if self._model is not None:
+            self._warmup(emit)
+            if progress_callback:
+                progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
 
     def _estimate_duration(self, audio_path: Path) -> Optional[float]:
         try:
@@ -1309,6 +1414,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
         audio_path: Path,
         language: Optional[str] = None,
         beam_size: Optional[int] = None,
+        *,
+        decode_options: Optional[Dict[str, Any]] = None,
         debug_callback: Optional[Callable[[str, str, Optional[Dict[str, object]], str], None]] = None,
     ) -> TranscriptionResult:
         def emit(stage: str, message: str, extra: Optional[Dict[str, object]] = None, level: str = "info") -> None:
@@ -1325,7 +1432,24 @@ class FasterWhisperTranscriber(BaseTranscriber):
             if detected:
                 language = detected
 
-        attempts = [True, False]
+        options: Dict[str, Any] = dict(decode_options or {})
+        batch_size = int(options.pop("batch_size", settings.whisper_batch_size or 1)) or 1
+        resolved_beam = beam_size or options.pop("beam_size", settings.whisper_final_beam or 1)
+        resolved_beam = max(1, int(resolved_beam))
+        options.setdefault("temperature", 0.0)
+        options.setdefault("condition_on_previous_text", True)
+        options.setdefault("word_timestamps", settings.whisper_word_timestamps)
+        options.setdefault("compression_ratio_threshold", None)
+        options.setdefault("log_prob_threshold", None)
+        language_override = options.pop("language", None)
+        resolved_language = language_override or language or settings.whisper_language
+        vad_pref = options.pop("vad_filter", None)
+        base_vad = _normalize_vad_option(vad_pref)
+
+        attempts = [base_vad] if base_vad else [False]
+        if base_vad:
+            attempts.append(False)
+
         last_error: Optional[BaseException] = None
         runtime = 0.0
         segments = None
@@ -1336,12 +1460,14 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 start = time.perf_counter()
                 segments, info = self._model.transcribe(  # type: ignore[attr-defined]
                     str(audio_path),
-                    language=language or settings.whisper_language,
-                    beam_size=beam_size or 5,
+                    language=resolved_language,
+                    beam_size=resolved_beam,
+                    batch_size=batch_size,
                     vad_filter=use_vad,
+                    **options,
                 )
                 runtime = time.perf_counter() - start
-                if not use_vad:
+                if attempts[0] and not use_vad:
                     emit(
                         "transcribe.retry",
                         "Reintento completado sin filtro VAD",
@@ -1368,7 +1494,12 @@ class FasterWhisperTranscriber(BaseTranscriber):
         emit(
             "transcribe.completed",
             "Transcripción con faster-whisper completada",
-            {"runtime_seconds": runtime, "beam_size": beam_size or 5},
+            {
+                "runtime_seconds": runtime,
+                "beam_size": resolved_beam,
+                "batch_size": batch_size,
+                "vad_filter": bool(attempts[0]),
+            },
         )
 
         segment_results: List[SegmentResult] = []
