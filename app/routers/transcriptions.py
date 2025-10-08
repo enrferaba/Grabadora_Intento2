@@ -60,6 +60,7 @@ from ..utils.storage import (
 from ..whisper_service import (
     get_model_preparation_status,
     get_transcriber,
+    is_cuda_runtime_available,
     request_model_preparation,
     serialize_segments,
 )
@@ -109,6 +110,7 @@ DEVICE_ALIASES = {
     "gpu": "cuda",
     "cuda": "cuda",
     "cpu": "cpu",
+    "auto": "auto",
 }
 
 logger = logging.getLogger(__name__)
@@ -277,10 +279,22 @@ def _resolve_model_choice(value: Optional[str]) -> str:
 
 
 def _resolve_device_choice(value: Optional[str]) -> str:
-    if not value:
-        return settings.whisper_device or "cuda"
-    resolved = DEVICE_ALIASES.get(value.lower())
-    return resolved or settings.whisper_device or "cuda"
+    preferred = (value or settings.whisper_device or "cuda").strip().lower()
+    resolved = DEVICE_ALIASES.get(preferred, preferred)
+    cuda_available = settings.whisper_force_cuda or is_cuda_runtime_available()
+
+    if resolved == "auto":
+        return "cuda" if cuda_available else "cpu"
+
+    if resolved == "cuda" and not cuda_available:
+        logger.warning("CUDA solicitado pero no disponible; se usará CPU.")
+        return "cpu"
+
+    if resolved in {"cuda", "cpu"}:
+        return resolved
+
+    logger.warning("Dispositivo %s no reconocido; se usará %s", value, "GPU" if cuda_available else "CPU")
+    return "cuda" if cuda_available else "cpu"
 
 
 def _model_status_to_schema(
