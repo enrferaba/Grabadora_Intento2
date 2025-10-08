@@ -1213,7 +1213,6 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 str(temp_path),
                 language=settings.whisper_language or "en",
                 beam_size=1,
-                batch_size=1,
                 temperature=0.0,
                 condition_on_previous_text=False,
                 vad_filter=False,
@@ -1433,7 +1432,21 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 language = detected
 
         options: Dict[str, Any] = dict(decode_options or {})
-        batch_size = int(options.pop("batch_size", settings.whisper_batch_size or 1)) or 1
+        batch_hint_raw = options.pop("batch_size", None)
+        batch_hint: Optional[int]
+        if batch_hint_raw is None:
+            batch_hint = None
+        else:
+            try:
+                batch_hint = max(1, int(batch_hint_raw))
+            except (TypeError, ValueError):
+                emit(
+                    "transcribe.option",
+                    "Valor batch_size inválido ignorado para faster-whisper",
+                    {"provided": batch_hint_raw},
+                    "warning",
+                )
+                batch_hint = None
         resolved_beam = beam_size or options.pop("beam_size", settings.whisper_final_beam or 1)
         resolved_beam = max(1, int(resolved_beam))
         options.setdefault("temperature", 0.0)
@@ -1462,7 +1475,6 @@ class FasterWhisperTranscriber(BaseTranscriber):
                     str(audio_path),
                     language=resolved_language,
                     beam_size=resolved_beam,
-                    batch_size=batch_size,
                     vad_filter=use_vad,
                     **options,
                 )
@@ -1497,7 +1509,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
             {
                 "runtime_seconds": runtime,
                 "beam_size": resolved_beam,
-                "batch_size": batch_size,
+                "batch_size_hint": batch_hint,
                 "vad_filter": bool(attempts[0]),
             },
         )
