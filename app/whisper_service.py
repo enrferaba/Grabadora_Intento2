@@ -6,6 +6,7 @@ import re
 import tempfile
 import time
 import wave
+import warnings
 from array import array
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -30,12 +31,56 @@ try:  # pragma: no cover - faster_whisper is an optional dependency in CI
 except Exception:  # pragma: no cover - handled gracefully in runtime
     FasterWhisperModel = None  # type: ignore
 
+try:  # pragma: no cover - optional dependency when GPU acceleration is available
+    import ctranslate2  # type: ignore
+except Exception:  # pragma: no cover - runtime environments without GPU support
+    ctranslate2 = None  # type: ignore
+
 from pydub import AudioSegment
 
 from .config import settings
 
 
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_DISABLE_XET_WARNING", "1")
+warnings.filterwarnings(
+    "ignore",
+    message=r"Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed\.",
+    module="huggingface_hub.file_download",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"`huggingface_hub` cache-system uses symlinks by default",
+    module="huggingface_hub.file_download",
+)
+
 logger = logging.getLogger(__name__)
+for _name in ("huggingface_hub", "huggingface_hub.file_download"):
+    logging.getLogger(_name).setLevel(logging.ERROR)
+
+
+def _torch_cuda_available() -> bool:
+    if torch is None:  # pragma: no cover - depends on optional dependency
+        return False
+    try:
+        return bool(torch.cuda.is_available())
+    except Exception:  # pragma: no cover - defensive, torch can raise on misconfiguration
+        return False
+
+
+def _ctranslate_cuda_available() -> bool:
+    if ctranslate2 is None:  # pragma: no cover - optional dependency
+        return False
+    try:
+        return bool(ctranslate2.get_cuda_device_count() > 0)
+    except Exception:  # pragma: no cover - defensive, CTranslate2 can raise
+        return False
+
+
+def is_cuda_runtime_available() -> bool:
+    """Return True when either torch or CTranslate2 can access a CUDA device."""
+
+    return _torch_cuda_available() or _ctranslate_cuda_available()
 
 
 DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS: Set[str] = {
@@ -470,10 +515,14 @@ class WhisperXTranscriber(BaseTranscriber):
             return "cpu"
         if settings.whisper_force_cuda:
             return "cuda"
-        if torch is not None and torch.cuda.is_available():
+        if is_cuda_runtime_available():
             return "cuda"
         logger.warning(
-            "CUDA solicitado pero no disponible; se usará CPU. Configure WHISPER_FORCE_CUDA=true para forzar GPU si su entorno lo soporta."
+            "CUDA solicitado pero no disponible; se usará CPU. Configure WHISPER_FORCE_CUDA=true para forzar GPU si su entorno lo soporta.",
+            extra={
+                "torch_cuda": _torch_cuda_available(),
+                "ctranslate2_cuda": _ctranslate_cuda_available(),
+            },
         )
         return "cpu"
 
@@ -511,7 +560,7 @@ class WhisperXTranscriber(BaseTranscriber):
             "compression_ratio_threshold": 2.4,
             "log_prob_threshold": -1.0,
             "no_speech_threshold": 0.6,
-            "condition_on_previous_text": False,
+            "condition_on_previous_text": settings.whisper_condition_on_previous_text,
             "prompt_reset_on_temperature": 0.5,
             "initial_prompt": None,
             "prefix": None,
@@ -772,9 +821,8 @@ class WhisperXTranscriber(BaseTranscriber):
         if self._model is None:
             preferred = self.device_preference or settings.whisper_device
             device = self._normalize_device(preferred)
-            forced_cuda = device == "cuda" and not (
-                torch is not None and torch.cuda.is_available()
-            ) and settings.whisper_force_cuda
+            runtime_cuda_available = is_cuda_runtime_available()
+            forced_cuda = device == "cuda" and settings.whisper_force_cuda and not runtime_cuda_available
             compute_type = self._compute_type_for_device(device)
             if forced_cuda:
                 logger.info("Forzando carga de whisperx %s en CUDA", self.model_size)
@@ -789,6 +837,8 @@ class WhisperXTranscriber(BaseTranscriber):
                         "device": device,
                         "compute_type": compute_type,
                         "forced_cuda": forced_cuda,
+                        "torch_cuda": _torch_cuda_available(),
+                        "ctranslate2_cuda": _ctranslate_cuda_available(),
                     },
                     "info",
                 )
@@ -969,7 +1019,8 @@ class WhisperXTranscriber(BaseTranscriber):
                 "CUDA no está disponible para WhisperX; se usará CPU",
                 {
                     "requested": self.device_preference or settings.whisper_device or "auto",
-                    "torch_cuda": bool(torch and torch.cuda.is_available()),
+                    "torch_cuda": _torch_cuda_available(),
+                    "ctranslate2_cuda": _ctranslate_cuda_available(),
                 },
                 "warning",
             )
@@ -1212,8 +1263,16 @@ class FasterWhisperTranscriber(BaseTranscriber):
         if preferred in {"cuda", "gpu"}:
             if settings.whisper_force_cuda:
                 return "cuda"
-            if torch is not None and torch.cuda.is_available():
+            if is_cuda_runtime_available():
                 return "cuda"
+            logger.warning(
+                "CUDA solicitado pero no disponible para faster-whisper; se usará CPU.",
+                extra={
+                    "requested": preferred,
+                    "torch_cuda": _torch_cuda_available(),
+                    "ctranslate2_cuda": _ctranslate_cuda_available(),
+                },
+            )
         return "cpu"
 
     def _current_device(self) -> str:
@@ -1275,7 +1334,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 language=settings.whisper_language or "en",
                 beam_size=1,
                 temperature=0.0,
-                condition_on_previous_text=False,
+                condition_on_previous_text=settings.whisper_condition_on_previous_text,
                 vad_filter=False,
                 word_timestamps=False,
                 compression_ratio_threshold=None,
@@ -1355,7 +1414,9 @@ class FasterWhisperTranscriber(BaseTranscriber):
         requested_label = self.device_preference or settings.whisper_device or "auto"
         preferred = requested_label.lower()
         want_cuda = preferred in {"cuda", "gpu"}
-        torch_available = bool(torch and torch.cuda.is_available())
+        torch_available = _torch_cuda_available()
+        ctranslate_available = _ctranslate_cuda_available()
+        runtime_cuda_available = torch_available or ctranslate_available
 
         initial_device = self._resolve_device()
         if want_cuda and initial_device != "cuda":
@@ -1365,6 +1426,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 {
                     "requested": requested_label,
                     "torch_cuda": torch_available,
+                    "ctranslate2_cuda": ctranslate_available,
                     "force_cuda": bool(settings.whisper_force_cuda),
                 },
                 "warning",
@@ -1382,7 +1444,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
 
         for device in self._candidate_devices(initial_device):
             for compute_type in self._candidate_compute_types(device):
-                forced_cuda = device == "cuda" and settings.whisper_force_cuda and not torch_available
+                forced_cuda = device == "cuda" and settings.whisper_force_cuda and not runtime_cuda_available
                 emit(
                     "load-model",
                     "Cargando modelo faster-whisper de respaldo",
@@ -1393,6 +1455,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
                         "cpu_threads": cpu_threads,
                         "num_workers": num_workers,
                         "forced_cuda": forced_cuda,
+                        "torch_cuda": torch_available,
+                        "ctranslate2_cuda": ctranslate_available,
                     },
                     "info",
                 )
@@ -1454,6 +1518,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
                     "model": self.model_size,
                     "requested": requested_label,
                     "torch_cuda": torch_available,
+                    "ctranslate2_cuda": ctranslate_available,
                     "error": str(last_error) if last_error else None,
                 },
                 "error",
@@ -1476,6 +1541,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 {
                     "requested": requested_label,
                     "torch_cuda": torch_available,
+                    "ctranslate2_cuda": ctranslate_available,
                 },
                 "warning",
             )
