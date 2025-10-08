@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
 import secrets
 import shutil
+import struct
 import time
+import wave
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -435,18 +438,40 @@ def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> Optional[Aud
         # No hay audio nuevo; mantenemos el acumulado existente.
         return segment
 
-    if state.audio_path.exists():
+    frames = segment.raw_data
+
+    if len(frames) <= 0:
+        return segment
+
+    state.audio_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not state.audio_path.exists():
         try:
-            base = AudioSegment.from_file(state.audio_path, format="wav")
-            base = _normalize_audio_segment(base)
-            combined = base + segment
+            with wave.open(str(state.audio_path), "wb") as wav_file:
+                wav_file.setnchannels(LIVE_AUDIO_CHANNELS)
+                wav_file.setsampwidth(LIVE_AUDIO_SAMPLE_WIDTH)
+                wav_file.setframerate(LIVE_AUDIO_SAMPLE_RATE)
+                wav_file.writeframes(frames)
         except Exception as exc:  # pragma: no cover - depende del runtime
-            raise RuntimeError(f"No se pudo unir el audio acumulado: {exc}") from exc
-    else:
-        combined = segment
+            raise RuntimeError(f"No se pudo guardar el audio acumulado: {exc}") from exc
+        return segment
 
     try:
-        combined.export(state.audio_path, format="wav")
+        with open(state.audio_path, "r+b") as wav_file:
+            wav_file.seek(40)
+            data_size_bytes = wav_file.read(4)
+            if len(data_size_bytes) != 4:
+                raise RuntimeError("Encabezado WAV inválido")
+            current_data_size = struct.unpack("<I", data_size_bytes)[0]
+            new_data_size = current_data_size + len(frames)
+
+            wav_file.seek(0, os.SEEK_END)
+            wav_file.write(frames)
+
+            wav_file.seek(4)
+            wav_file.write(struct.pack("<I", 36 + new_data_size))
+            wav_file.seek(40)
+            wav_file.write(struct.pack("<I", new_data_size))
     except Exception as exc:  # pragma: no cover - depende del runtime
         raise RuntimeError(f"No se pudo guardar el audio acumulado: {exc}") from exc
     return segment
