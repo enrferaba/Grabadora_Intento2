@@ -83,30 +83,6 @@ def is_cuda_runtime_available() -> bool:
     return _torch_cuda_available() or _ctranslate_cuda_available()
 
 
-def _torch_cuda_available() -> bool:
-    if torch is None:  # pragma: no cover - depends on optional dependency
-        return False
-    try:
-        return bool(torch.cuda.is_available())
-    except Exception:  # pragma: no cover - defensive, torch can raise on misconfiguration
-        return False
-
-
-def _ctranslate_cuda_available() -> bool:
-    if ctranslate2 is None:  # pragma: no cover - optional dependency
-        return False
-    try:
-        return bool(ctranslate2.get_cuda_device_count() > 0)
-    except Exception:  # pragma: no cover - defensive, CTranslate2 can raise
-        return False
-
-
-def is_cuda_runtime_available() -> bool:
-    """Return True when either torch or CTranslate2 can access a CUDA device."""
-
-    return _torch_cuda_available() or _ctranslate_cuda_available()
-
-
 DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS: Set[str] = {
     "language",
     "task",
