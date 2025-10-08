@@ -4,6 +4,7 @@ const LOCAL_KEYS = {
   liveFollow: 'grabadora:live-follow',
   jobFollow: 'grabadora:job-follow',
   liveTailSize: 'grabadora:live-tail-size',
+  liveChunkInterval: 'grabadora:live-chunk-interval',
   jobTailSize: 'grabadora:job-tail-size',
   lastRoute: 'grabadora:last-route',
 };
@@ -137,6 +138,10 @@ const WHISPER_MODELS = [
 const BEAM_OPTIONS = [1, 2, 3, 4, 5, 8];
 const DEFAULT_MODEL = 'large-v3';
 const NUMERIC_ID_PATTERN = /^\d+$/;
+const DEFAULT_LIVE_CHUNK_INTERVAL_MS = 1000;
+const LIVE_CHUNK_MAX_RETRIES = 3;
+const LIVE_CHUNK_RETRY_BASE_DELAY_MS = 250;
+const LIVE_CHUNK_RETRY_MAX_DELAY_MS = 4000;
 
 const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
@@ -345,10 +350,12 @@ const elements = {
     follow: document.getElementById('live-follow'),
     returnBtn: document.getElementById('live-return'),
     tailSize: document.getElementById('live-tail-size'),
+    chunkInterval: document.getElementById('live-chunk-interval'),
     fontPlus: document.getElementById('live-font-plus'),
     fontMinus: document.getElementById('live-font-minus'),
     fullscreen: document.getElementById('live-fullscreen'),
     kpis: document.querySelectorAll('[data-live-kpi]'),
+    error: document.getElementById('live-error-message'),
     beam: document.getElementById('live-beam'),
     beamHint: document.getElementById('live-beam-hint'),
     progress: document.getElementById('live-progress'),
@@ -425,6 +432,16 @@ const preferences = {
     }
   },
 };
+
+const initialLiveChunkInterval = (() => {
+  const stored = Number(preferences.get(LOCAL_KEYS.liveChunkInterval, NaN));
+  if (Number.isFinite(stored) && stored > 0) return stored;
+  const fromInput = Number(elements.live.chunkInterval?.value);
+  if (Number.isFinite(fromInput) && fromInput > 0) return fromInput;
+  return DEFAULT_LIVE_CHUNK_INTERVAL_MS;
+})();
+
+const modelSelectorContexts = [];
 
 function getModelConfig(value) {
   const normalized = (value || '').toLowerCase();
@@ -632,8 +649,8 @@ function updateBeamRecommendation(context, { forceValue = false } = {}) {
       context.beam.value = String(config.recommendedBeam);
     }
   }
-  if (context.device && !context.device.dataset.deviceLocked) {
-    context.device.value = config.preferredDevice;
+  if (context.device) {
+    applyDeviceSuggestion(context, { force: forceValue });
   }
 }
 
@@ -659,6 +676,9 @@ function setupModelSelectors() {
 
   contexts.forEach((context) => {
     if (!context.model) return;
+    if (!modelSelectorContexts.includes(context)) {
+      modelSelectorContexts.push(context);
+    }
     populateModelSelect(context.model, context.defaultModel);
     populateBeamSelect(context.beam, context.defaultBeam);
     if (context.beam) {
@@ -671,6 +691,13 @@ function setupModelSelectors() {
             renderLiveStatus(liveState);
           }
         }
+      });
+    }
+    if (context.device) {
+      context.device.dataset.deviceDirty = context.device.dataset.deviceDirty || 'false';
+      context.device.addEventListener('change', () => {
+        context.device.dataset.deviceDirty = 'true';
+        context.device.dataset.deviceLocked = 'true';
       });
     }
     context.model.addEventListener('change', () => {
@@ -706,16 +733,12 @@ function setupModelSelectors() {
     }
   }
 
-  if (elements.live.device) {
-    elements.live.device.addEventListener('change', () => {
-      elements.live.device.dataset.deviceLocked = 'true';
-    });
-  }
-
   const initialLiveState = store.getState().live;
   renderLiveStatus(initialLiveState);
   renderLiveKpis(initialLiveState);
   renderLiveProgress(initialLiveState);
+  renderHomeProgress(store.getState());
+  renderLiveError(initialLiveState);
 }
 
 function currentTheme() {
@@ -1021,6 +1044,10 @@ const store = createStore({
     droppedChunks: 0,
     error: null,
     isFinalizing: false,
+    chunkIntervalMs: initialLiveChunkInterval,
+    pendingChunks: 0,
+    lastChunkEnqueuedAt: null,
+    lastChunkSentAt: null,
   },
   job: {
     detail: null,
@@ -1037,6 +1064,40 @@ const store = createStore({
     updatedAt: null,
   },
 });
+
+function runtimePrefersGpu() {
+  const mode = (store.getState().stats?.mode || '').toLowerCase();
+  if (!mode) return true;
+  if (mode.includes('gpu')) return true;
+  if (mode.includes('cpu')) return false;
+  return true;
+}
+
+function defaultDeviceForModel(modelValue) {
+  if (runtimePrefersGpu()) {
+    return 'gpu';
+  }
+  const config = getModelConfig(modelValue);
+  return normalizeDevicePreference(config?.preferredDevice, 'cpu');
+}
+
+function applyDeviceSuggestion(context, { force = false } = {}) {
+  if (!context?.device || !context.model) return;
+  const dirty = context.device.dataset.deviceDirty === 'true';
+  if (dirty && !force) return;
+  const suggested = defaultDeviceForModel(context.model.value || DEFAULT_MODEL);
+  if (context.device.value !== suggested) {
+    context.device.value = suggested;
+  }
+  context.device.dataset.deviceDirty = 'false';
+  context.device.dataset.deviceLocked = 'false';
+}
+
+function refreshDevicePreferenceSuggestions(options = {}) {
+  modelSelectorContexts.forEach((context) => {
+    applyDeviceSuggestion(context, options);
+  });
+}
 
 function createTailController({ scroller, text, followToggle, returnButton, preferenceKey }) {
   const sentinel = document.createElement('span');
@@ -1137,11 +1198,11 @@ const liveSession = {
   sending: false,
   chunkIndex: 0,
   finishing: false,
+  chunkIntervalMs: null,
+  mimeType: null,
 };
 
 let liveProgressTimer = null;
-
-const LIVE_CHUNK_INTERVAL_MS = 2000;
 const LIVE_CHUNK_MIME_TYPES = [
   'audio/webm;codecs=opus',
   'audio/ogg;codecs=opus',
@@ -1158,6 +1219,82 @@ function pickLiveMimeType() {
   return LIVE_CHUNK_MIME_TYPES.find((type) => window.MediaRecorder.isTypeSupported(type)) || null;
 }
 
+function handleLiveRecorderData(event) {
+  if (event?.data && event.data.size) {
+    enqueueLiveChunk(event.data);
+  }
+}
+
+function handleLiveRecorderError(event) {
+  console.error('MediaRecorder error', event.error);
+  alert('Error al capturar audio en vivo. Se detendrá la sesión.');
+  finishLiveSession(true);
+}
+
+function attachLiveRecorder(recorder) {
+  recorder.addEventListener('dataavailable', handleLiveRecorderData);
+  recorder.addEventListener('error', handleLiveRecorderError);
+}
+
+async function restartLiveRecorder(intervalMs, { keepPaused = false } = {}) {
+  if (!liveSession.mediaStream) return false;
+  const previousRecorder = liveSession.recorder;
+  if (previousRecorder && previousRecorder.state !== 'inactive') {
+    await new Promise((resolve) => {
+      const handleStop = () => {
+        previousRecorder.removeEventListener('stop', handleStop);
+        resolve();
+      };
+      previousRecorder.addEventListener('stop', handleStop, { once: true });
+      try {
+        previousRecorder.stop();
+      } catch (error) {
+        console.warn('No se pudo detener el MediaRecorder para reiniciar', error);
+        previousRecorder.removeEventListener('stop', handleStop);
+        resolve();
+      }
+    });
+  }
+  try {
+    const options = liveSession.mimeType ? { mimeType: liveSession.mimeType } : undefined;
+    const recorder = new MediaRecorder(liveSession.mediaStream, options);
+    attachLiveRecorder(recorder);
+    liveSession.recorder = recorder;
+    liveSession.chunkIntervalMs = intervalMs;
+    if (keepPaused) {
+      recorder.addEventListener(
+        'start',
+        () => {
+          if (typeof recorder.pause === 'function') {
+            try {
+              recorder.pause();
+            } catch (error) {
+              console.warn('No se pudo pausar el MediaRecorder tras reinicio', error);
+            }
+          }
+        },
+        { once: true },
+      );
+    }
+    recorder.start(intervalMs);
+    store.setState((prev) => {
+      if (prev.live.chunkIntervalMs === intervalMs) return prev;
+      return {
+        ...prev,
+        live: {
+          ...prev.live,
+          chunkIntervalMs: intervalMs,
+        },
+      };
+    });
+    return true;
+  } catch (error) {
+    console.error('No se pudo reiniciar el MediaRecorder', error);
+    alert('No se pudo aplicar el nuevo intervalo de fragmentos.');
+    return false;
+  }
+}
+
 function formatDeviceLabel(device) {
   const normalized = (device || '').toLowerCase();
   if (normalized === 'cuda' || normalized === 'gpu') return 'GPU';
@@ -1169,13 +1306,40 @@ function normalizeDevicePreference(deviceValue, fallbackDevice = 'gpu') {
   const normalized = deviceValue.toLowerCase();
   if (normalized === 'cuda' || normalized === 'gpu') return 'gpu';
   if (normalized === 'cpu') return 'cpu';
+  if (normalized === 'auto') return fallbackDevice;
   return fallbackDevice;
 }
 
 function resolveDevicePreference(modelValue, requestedDevice) {
+  const explicit = (requestedDevice || '').trim();
+  if (explicit) {
+    const normalizedExplicit = normalizeDevicePreference(explicit, runtimePrefersGpu() ? 'gpu' : 'cpu');
+    if (normalizedExplicit === 'cpu' || normalizedExplicit === 'gpu') {
+      return normalizedExplicit;
+    }
+  }
+  if (runtimePrefersGpu()) {
+    return 'gpu';
+  }
   const config = getModelConfig(modelValue);
-  const fallback = config?.preferredDevice || 'gpu';
-  return normalizeDevicePreference(requestedDevice, fallback);
+  const recommended = normalizeDevicePreference(config?.preferredDevice, 'cpu');
+  return recommended === 'gpu' ? 'gpu' : 'cpu';
+}
+
+function resolveEffectiveDevice(requestedDevice, prepStatus) {
+  const fallbackBase = runtimePrefersGpu() ? 'gpu' : 'cpu';
+  const requestedNormalized = normalizeDevicePreference(requestedDevice, fallbackBase);
+  if (!prepStatus) return requestedNormalized;
+  let effective = normalizeDevicePreference(prepStatus.effective_device, requestedNormalized);
+  if (prepStatus.effective_device == null && prepStatus.message) {
+    const lower = prepStatus.message.toLowerCase();
+    if (lower.includes('cpu')) {
+      effective = 'cpu';
+    } else if (lower.includes('gpu') || lower.includes('cuda')) {
+      effective = 'gpu';
+    }
+  }
+  return effective;
 }
 
 function delay(ms) {
@@ -1281,14 +1445,16 @@ async function ensureModelReady(modelValue, devicePreference, contextMessage) {
   const normalizedDevice = resolveDevicePreference(model, devicePreference);
   const context = contextMessage || 'iniciar la transcripción';
   let overlaySession = null;
+  let finalStatus = null;
   try {
     const initial = await requestModelPreparation(model, normalizedDevice);
+    finalStatus = initial;
     if (initial.status === 'error') {
       throw new Error(initial.message || 'No se pudo preparar el modelo.');
     }
     if (initial.status === 'ready') {
       hideModelPrepOverlay();
-      return true;
+      return initial;
     }
     overlaySession = showModelPrepOverlay(model, normalizedDevice, `Preparando el modelo para ${context}.`);
     updateModelPrepOverlay(initial);
@@ -1303,11 +1469,13 @@ async function ensureModelReady(modelValue, devicePreference, contextMessage) {
         throw new Error('Descarga cancelada por el usuario.');
       }
       status = await fetchModelPreparationStatus(model, normalizedDevice);
+       finalStatus = status;
       updateModelPrepOverlay(status);
-      if (status.status === 'ready') {
+      const progress = Number.isFinite(status?.progress) ? Number(status.progress) : 0;
+      if (status.status === 'ready' || (progress >= 100 && status.status !== 'error')) {
         hideModelPrepOverlay(overlaySession);
         overlaySession = null;
-        return true;
+        return status;
       }
       if (status.status === 'error') {
         throw new Error(status.message || 'No se pudo preparar el modelo.');
@@ -1319,6 +1487,7 @@ async function ensureModelReady(modelValue, devicePreference, contextMessage) {
       hideModelPrepOverlay(overlaySession);
     }
   }
+  return finalStatus;
 }
 
 function resetLiveSessionLocalState() {
@@ -1339,6 +1508,9 @@ function resetLiveSessionLocalState() {
   liveSession.chunkIndex = 0;
   liveSession.finishing = false;
   liveSession.sessionId = null;
+  liveSession.chunkIntervalMs = null;
+  liveSession.mimeType = null;
+  updateLiveQueueMetrics({ lastChunkEnqueuedAt: null, lastChunkSentAt: null });
 }
 
 async function discardRemoteLiveSession(sessionId) {
@@ -1508,6 +1680,7 @@ function renderStats(stats) {
   elements.stats.queue.textContent = stats.queue ?? 0;
   elements.stats.mode.textContent = stats.mode ?? '—';
   elements.stats.model.textContent = stats.model ?? '—';
+  refreshDevicePreferenceSuggestions();
 }
 
 function renderRecent(jobs) {
@@ -1771,12 +1944,13 @@ function renderLiveTail(liveState) {
     tailControllers.live.render('Conecta el micro para comenzar.');
     return;
   }
-  const hasText = typeof liveState.text === 'string' && liveState.text.trim();
-  const fromSegments = Array.isArray(liveState.segments) && liveState.segments.length
-    ? liveState.segments.join('')
+  const trimmedText = typeof liveState.text === 'string' ? liveState.text.trim() : '';
+  const segmentsJoined = Array.isArray(liveState.segments) && liveState.segments.length
+    ? liveState.segments.join(' ')
     : '';
-  const content = hasText ? liveState.text : fromSegments || 'Conecta el micro para comenzar.';
-  tailControllers.live.render(content);
+  const trimmedSegments = typeof segmentsJoined === 'string' ? segmentsJoined.trim() : '';
+  const content = trimmedText || trimmedSegments;
+  tailControllers.live.render(content || 'Conecta el micro para comenzar.');
 }
 
 function computeLiveStatusMessage(liveState) {
@@ -1856,16 +2030,21 @@ function renderHomePanel(state) {
     }
     return;
   }
-  const liveContent = live.text && live.text.trim()
-    ? live.text
-    : live.segments.length
-    ? live.segments.join('')
-    : 'Inicia una sesión para ver la transcripción en directo.';
-  tailControllers.home.render(liveContent);
+  const liveText = typeof live.text === 'string' ? live.text.trim() : '';
+  const liveSegments = Array.isArray(live.segments) && live.segments.length
+    ? live.segments.join(' ')
+    : '';
+  const liveContent = (liveText || liveSegments).trim();
+  tailControllers.home.render(liveContent || 'Inicia una sesión para ver la transcripción en directo.');
 }
 
 function updateHomeStatus(state) {
   if (!elements.home.status) return;
+  const liveError = typeof state.live?.error === 'string' ? state.live.error.trim() : '';
+  if (liveError) {
+    elements.home.status.textContent = `⚠️ ${liveError}`;
+    return;
+  }
   const stream = state.stream;
   if (stream?.jobId) {
     let message = '';
@@ -1876,8 +2055,9 @@ function updateHomeStatus(state) {
     if (jobForProgress) {
       const info = computeJobProgressState(jobForProgress, debugEvents);
       if (info?.statusText) {
-        message = info.statusText;
-        if (info.etaText && info.percent != null && info.percent < 1) {
+        const percentValue = info.percent != null ? Math.round(info.percent * 100) : null;
+        message = percentValue != null ? `${percentValue}% · ${info.statusText}` : info.statusText;
+        if (info.etaText && (info.percent == null || info.percent < 1)) {
           message += ` · ${info.etaText}`;
         }
       }
@@ -1927,27 +2107,7 @@ function renderLiveStatus(liveState) {
   if (elements.live.finish) elements.live.finish.disabled = isIdle || isFinalizing;
 }
 
-function renderLiveProgress(liveState) {
-  const widgets = [
-    {
-      container: elements.home.progress,
-      label: elements.home.progressLabel,
-      rate: elements.home.progressRate,
-      fill: elements.home.progressFill,
-      bar: elements.home.progressBar,
-      percent: elements.home.progressPercent,
-      remaining: elements.home.progressRemaining,
-    },
-    {
-      container: elements.live.progress,
-      label: elements.live.progressLabel,
-      rate: elements.live.progressRate,
-      fill: elements.live.progressFill,
-      bar: elements.live.progressBar,
-      percent: elements.live.progressPercent,
-      remaining: elements.live.progressRemaining,
-    },
-  ];
+function computeLiveProgressMetrics(liveState) {
   const status = liveState?.status || 'idle';
   const processedSeconds = Number.isFinite(liveState?.duration)
     ? Math.max(0, liveState.duration)
@@ -1966,53 +2126,162 @@ function renderLiveProgress(liveState) {
     }
   }
   if (elapsedMs < 0) elapsedMs = 0;
-  const elapsedSeconds = elapsedMs / 1000;
-  const shouldShow = ['recording', 'paused', 'finalizing'].includes(status) || processedSeconds > 0;
-  widgets.forEach((widget) => {
-    if (!widget?.container) return;
-    if (!shouldShow) {
-      widget.container.hidden = true;
-      if (widget.fill) widget.fill.style.width = '0%';
-      widget.bar?.setAttribute('aria-valuenow', '0');
-      if (widget.percent) widget.percent.textContent = '0%';
-      if (widget.label) widget.label.textContent = '00:00 procesados';
-      if (widget.rate) widget.rate.textContent = 'Esperando audio…';
-      if (widget.remaining) widget.remaining.textContent = 'Restante —';
-      return;
+  const elapsedSeconds = Math.max(0, elapsedMs / 1000);
+  const hasAudio = elapsedSeconds > 0 || processedSeconds > 0;
+  const shouldShow = ['recording', 'paused', 'finalizing'].includes(status) || hasAudio;
+  if (!shouldShow) {
+    return { shouldShow: false, status };
+  }
+  const effectiveElapsed = Math.max(elapsedSeconds, processedSeconds);
+  const ratio = effectiveElapsed > 0 ? Math.min(1, processedSeconds / effectiveElapsed) : 0;
+  const percentValue = Math.round(ratio * 100);
+  const lagSeconds = Math.max(0, elapsedSeconds - processedSeconds);
+  let rateText = '';
+  if (status === 'paused') {
+    rateText = 'Grabación en pausa';
+  } else if (status === 'finalizing') {
+    rateText = 'Guardando sesión…';
+  } else if (status === 'completed') {
+    rateText = 'Sesión finalizada';
+  } else if (!hasAudio) {
+    rateText = 'Esperando audio…';
+  } else if (lagSeconds <= 1) {
+    rateText = 'Procesando en vivo';
+  } else {
+    rateText = `Retraso ${formatClock(lagSeconds)}`;
+  }
+  const remainingText = !hasAudio
+    ? 'Restante —'
+    : lagSeconds <= 1
+    ? 'Sin retraso pendiente'
+    : `Restante ${formatClock(lagSeconds)}`;
+  const label = processedSeconds > 0
+    ? `${formatClock(processedSeconds)} procesados`
+    : hasAudio
+    ? 'Procesando en vivo…'
+    : '00:00 procesados';
+  return {
+    shouldShow: true,
+    status,
+    percentValue,
+    label,
+    rateText,
+    remainingText,
+    ratio,
+    processedSeconds,
+    elapsedSeconds,
+    lagSeconds,
+    isActive: status === 'recording' && hasAudio,
+  };
+}
+
+function renderLiveProgress(liveState) {
+  const widget = {
+    container: elements.live.progress,
+    label: elements.live.progressLabel,
+    rate: elements.live.progressRate,
+    fill: elements.live.progressFill,
+    bar: elements.live.progressBar,
+    percent: elements.live.progressPercent,
+    remaining: elements.live.progressRemaining,
+  };
+  if (!widget.container) return;
+  const metrics = computeLiveProgressMetrics(liveState);
+  if (!metrics.shouldShow) {
+    widget.container.hidden = true;
+    if (widget.fill) {
+      widget.fill.style.width = '0%';
+      widget.fill.classList.remove('is-indeterminate');
+      widget.fill.classList.remove('is-recording');
     }
+    widget.bar?.setAttribute('aria-valuenow', '0');
+    if (widget.percent) widget.percent.textContent = '0%';
+    if (widget.label) widget.label.textContent = '00:00 procesados';
+    if (widget.rate) widget.rate.textContent = 'Esperando audio…';
+    if (widget.remaining) widget.remaining.textContent = 'Restante —';
+    return;
+  }
+  widget.container.hidden = false;
+  if (widget.fill) {
+    widget.fill.style.width = `${metrics.percentValue}%`;
+    widget.fill.classList.remove('is-indeterminate');
+    widget.fill.classList.toggle('is-recording', metrics.isActive && metrics.percentValue < 100);
+  }
+  widget.bar?.setAttribute('aria-valuenow', String(metrics.percentValue));
+  if (widget.percent) widget.percent.textContent = `${metrics.percentValue}%`;
+  if (widget.label) widget.label.textContent = metrics.label;
+  if (widget.rate) widget.rate.textContent = metrics.rateText;
+  if (widget.remaining) widget.remaining.textContent = metrics.remainingText;
+}
+
+function renderHomeProgress(state) {
+  const widget = {
+    container: elements.home.progress,
+    label: elements.home.progressLabel,
+    rate: elements.home.progressRate,
+    fill: elements.home.progressFill,
+    bar: elements.home.progressBar,
+    percent: elements.home.progressPercent,
+    remaining: elements.home.progressRemaining,
+  };
+  if (!widget.container) return;
+
+  const stream = state.stream;
+  if (stream?.jobId) {
+    const jobIdStr = String(stream.jobId);
+    const debugEvents = Array.isArray(stream.debugEvents) ? stream.debugEvents : [];
+    const detailedJob = state.job.detail?.job && String(state.job.detail.job.id) === jobIdStr
+      ? state.job.detail.job
+      : null;
+    const listJob = state.jobs.find((job) => String(job.id) === jobIdStr) || null;
+    const job = detailedJob || listJob;
+    const info = job ? computeJobProgressState(job, debugEvents) : null;
+    const percentValue = info && info.showBar && info.percent != null
+      ? Math.max(0, Math.min(100, Math.round(info.percent * 100)))
+      : null;
     widget.container.hidden = false;
-    const processed = processedSeconds > 0 ? processedSeconds : elapsedSeconds;
-    const ratio = elapsedSeconds > 0 ? Math.min(1, processed / elapsedSeconds) : processed > 0 ? 1 : 0;
-    const percentValue = Math.round(ratio * 100);
-    if (widget.label) widget.label.textContent = `${formatClock(processed)} procesados`;
-    if (widget.percent) widget.percent.textContent = `${percentValue}%`;
-    if (widget.fill) widget.fill.style.width = `${percentValue}%`;
-    widget.bar?.setAttribute('aria-valuenow', String(percentValue));
-    let rateText = '';
-    if (status === 'paused') {
-      rateText = 'Grabación en pausa';
-    } else if (status === 'finalizing') {
-      rateText = 'Guardando sesión…';
-    } else if (status === 'completed') {
-      rateText = 'Sesión finalizada';
-    } else if (elapsedSeconds <= 0 && processedSeconds <= 0) {
-      rateText = 'Esperando audio…';
-    } else if (ratio >= 1) {
-      rateText = 'Al día en tiempo real';
-    } else {
-      const lag = Math.max(0, elapsedSeconds - processed);
-      rateText = lag > 1 ? `Retraso ${formatClock(lag)}` : 'Procesando…';
+    if (widget.fill) {
+      widget.fill.style.width = percentValue != null ? `${percentValue}%` : '28%';
+      widget.fill.classList.toggle('is-indeterminate', percentValue == null);
+      widget.fill.classList.remove('is-recording');
     }
-    if (widget.rate) widget.rate.textContent = rateText;
-    if (widget.remaining) {
-      if (ratio >= 1) {
-        widget.remaining.textContent = 'Sin retraso pendiente';
-      } else {
-        const remainingSeconds = Math.max(0, elapsedSeconds - processed);
-        widget.remaining.textContent = `Restante ${formatClock(remainingSeconds)}`;
-      }
+    widget.bar?.setAttribute('aria-valuenow', String(percentValue != null ? percentValue : 0));
+    if (widget.percent) widget.percent.textContent = percentValue != null ? `${percentValue}%` : '—';
+    const fallbackLabel = stream.jobName ? `Transcribiendo ${stream.jobName}` : 'Transcribiendo…';
+    if (widget.label) widget.label.textContent = info?.label || fallbackLabel;
+    const statusText = info?.statusText || computeStreamStatusMessage(stream) || fallbackLabel;
+    if (widget.rate) widget.rate.textContent = statusText;
+    if (widget.remaining) widget.remaining.textContent = info?.etaText || '—';
+    return;
+  }
+
+  const metrics = computeLiveProgressMetrics(state.live);
+  if (!metrics.shouldShow) {
+    widget.container.hidden = true;
+    if (widget.fill) {
+      widget.fill.style.width = '0%';
+      widget.fill.classList.remove('is-indeterminate');
+      widget.fill.classList.remove('is-recording');
     }
-  });
+    widget.bar?.setAttribute('aria-valuenow', '0');
+    if (widget.percent) widget.percent.textContent = '0%';
+    if (widget.label) widget.label.textContent = '00:00 procesados';
+    if (widget.rate) widget.rate.textContent = 'Esperando audio…';
+    if (widget.remaining) widget.remaining.textContent = 'Restante —';
+    return;
+  }
+
+  widget.container.hidden = false;
+  if (widget.fill) {
+    widget.fill.style.width = `${metrics.percentValue}%`;
+    widget.fill.classList.remove('is-indeterminate');
+    widget.fill.classList.toggle('is-recording', metrics.isActive && metrics.percentValue < 100);
+  }
+  widget.bar?.setAttribute('aria-valuenow', String(metrics.percentValue));
+  if (widget.percent) widget.percent.textContent = `${metrics.percentValue}%`;
+  if (widget.label) widget.label.textContent = metrics.label;
+  if (widget.rate) widget.rate.textContent = metrics.rateText;
+  if (widget.remaining) widget.remaining.textContent = metrics.remainingText;
 }
 
 function buildSegmentsFromEvents(events) {
@@ -2361,6 +2630,19 @@ store.subscribe((state, prev) => {
   }
   if (
     state.stream !== prev.stream ||
+    state.live.duration !== prev.live.duration ||
+    state.live.runtimeSeconds !== prev.live.runtimeSeconds ||
+    state.live.startedAt !== prev.live.startedAt ||
+    state.live.pauseStartedAt !== prev.live.pauseStartedAt ||
+    state.live.totalPausedMs !== prev.live.totalPausedMs ||
+    state.live.status !== prev.live.status ||
+    state.jobs !== prev.jobs ||
+    state.job.detail !== prev.job.detail
+  ) {
+    renderHomeProgress(state);
+  }
+  if (
+    state.stream !== prev.stream ||
     state.live.text !== prev.live.text ||
     state.live.segments !== prev.live.segments
   ) {
@@ -2370,16 +2652,21 @@ store.subscribe((state, prev) => {
     state.stream !== prev.stream ||
     state.live.status !== prev.live.status ||
     state.live.isFinalizing !== prev.live.isFinalizing ||
-    state.live.text !== prev.live.text
+    state.live.text !== prev.live.text ||
+    state.live.error !== prev.live.error
   ) {
     updateHomeStatus(state);
   }
   if (
     state.live.latencyMs !== prev.live.latencyMs ||
     state.live.wpm !== prev.live.wpm ||
-    state.live.droppedChunks !== prev.live.droppedChunks
+    state.live.droppedChunks !== prev.live.droppedChunks ||
+    state.live.pendingChunks !== prev.live.pendingChunks
   ) {
     renderLiveKpis(state.live);
+  }
+  if (state.live.error !== prev.live.error) {
+    renderLiveError(state.live);
   }
   if (state.job.detail !== prev.job.detail || state.job.maxSegments !== prev.job.maxSegments) {
     renderJobDetail(state);
@@ -2868,7 +3155,8 @@ async function handleUploadSubmit(event) {
   const language = elements.upload.language.value || '';
   const model = elements.upload.model.value;
   const modelConfig = getModelConfig(model);
-  const devicePreference = resolveDevicePreference(model, modelConfig.preferredDevice);
+  const selectedDevice = elements.upload.device ? elements.upload.device.value : '';
+  let devicePreference = resolveDevicePreference(model, selectedDevice || modelConfig.preferredDevice);
   const beamValue = Number(elements.upload.beam?.value || modelConfig.recommendedBeam);
   const totalFiles = files.length;
   let completed = 0;
@@ -2876,13 +3164,28 @@ async function handleUploadSubmit(event) {
   elements.upload.feedback.textContent = 'Preparando subida…';
   setUploadProgress(0);
 
+  let prepStatus = null;
   try {
-    await ensureModelReady(model, devicePreference, 'procesar tus archivos');
+    prepStatus = await ensureModelReady(model, devicePreference, 'procesar tus archivos');
   } catch (error) {
     elements.upload.feedback.textContent = error?.message || 'No se pudo preparar el modelo.';
     if (submit) submit.disabled = false;
     resetUploadProgress();
     return;
+  }
+
+  const effectiveDevice = resolveEffectiveDevice(devicePreference, prepStatus);
+  if (effectiveDevice !== devicePreference) {
+    devicePreference = effectiveDevice;
+    if (elements.upload.device) {
+      elements.upload.device.value = effectiveDevice;
+      elements.upload.device.dataset.deviceDirty = 'false';
+      elements.upload.device.dataset.deviceLocked = 'false';
+    }
+    if (!elements.upload.feedback.textContent || elements.upload.feedback.textContent.startsWith('Preparando')) {
+      elements.upload.feedback.textContent = prepStatus?.message
+        || `CUDA no está disponible; se usará ${formatDeviceLabel(effectiveDevice)}.`;
+    }
   }
 
   const updateOverallProgress = (currentCompleted, partial) => {
@@ -3109,11 +3412,62 @@ function renderLiveKpis(liveState) {
     : '—';
   const wpmText = Number.isFinite(liveState.wpm) && liveState.wpm > 0 ? String(liveState.wpm) : '0';
   const droppedText = Number.isFinite(liveState.droppedChunks) ? String(liveState.droppedChunks) : '0';
+  const pendingCount = Number.isFinite(liveState.pendingChunks) && liveState.pendingChunks >= 0
+    ? liveState.pendingChunks
+    : 0;
+  const pendingText = String(pendingCount);
   elements.live.kpis.forEach((node) => {
     const metric = node.dataset.liveKpi;
     if (metric === 'wpm') node.textContent = wpmText;
     if (metric === 'latency') node.textContent = latencyText;
     if (metric === 'dropped') node.textContent = droppedText;
+    if (metric === 'pending') {
+      node.textContent = pendingText;
+      node.classList.toggle('is-active', pendingCount > 0);
+      const labelUnit = pendingCount === 1 ? 'fragmento' : 'fragmentos';
+      const labelText = pendingCount > 0 ? `${pendingCount} ${labelUnit} en cola` : 'Sin fragmentos pendientes';
+      node.setAttribute('aria-label', labelText);
+      node.setAttribute('title', labelText);
+    }
+  });
+}
+
+function renderLiveError(liveState) {
+  const message = typeof liveState?.error === 'string' ? liveState.error.trim() : '';
+  const target = elements.live.error;
+  if (!target) return;
+  if (message) {
+    target.textContent = message;
+    target.hidden = false;
+  } else {
+    target.textContent = '';
+    target.hidden = true;
+  }
+}
+
+function updateLiveQueueMetrics(overrides = {}) {
+  store.setState((prev) => {
+    const pendingChunks = Math.max(0, liveSession.chunkQueue.length + (liveSession.sending ? 1 : 0));
+    let changed = false;
+    const nextLive = { ...prev.live };
+    if (nextLive.pendingChunks !== pendingChunks) {
+      nextLive.pendingChunks = pendingChunks;
+      changed = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'lastChunkEnqueuedAt')) {
+      if (nextLive.lastChunkEnqueuedAt !== overrides.lastChunkEnqueuedAt) {
+        nextLive.lastChunkEnqueuedAt = overrides.lastChunkEnqueuedAt;
+        changed = true;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'lastChunkSentAt')) {
+      if (nextLive.lastChunkSentAt !== overrides.lastChunkSentAt) {
+        nextLive.lastChunkSentAt = overrides.lastChunkSentAt;
+        changed = true;
+      }
+    }
+    if (!changed) return prev;
+    return { ...prev, live: nextLive };
   });
 }
 
@@ -3121,7 +3475,9 @@ function enqueueLiveChunk(blob) {
   if (!blob || !blob.size || !liveSession.sessionId) return;
   const index = liveSession.chunkIndex;
   liveSession.chunkIndex += 1;
-  liveSession.chunkQueue.push({ blob, index, createdAt: Date.now() });
+  const createdAt = Date.now();
+  liveSession.chunkQueue.push({ blob, index, createdAt, attempts: 0 });
+  updateLiveQueueMetrics({ lastChunkEnqueuedAt: createdAt });
   processLiveChunkQueue();
 }
 
@@ -3129,11 +3485,16 @@ async function processLiveChunkQueue() {
   if (liveSession.sending) return;
   if (!liveSession.sessionId) {
     liveSession.chunkQueue = [];
+    updateLiveQueueMetrics();
     return;
   }
   const item = liveSession.chunkQueue.shift();
-  if (!item) return;
+  if (!item) {
+    updateLiveQueueMetrics();
+    return;
+  }
   liveSession.sending = true;
+  updateLiveQueueMetrics();
   const endpoint = `/api/transcriptions/live/sessions/${liveSession.sessionId}/chunk`;
   try {
     const formData = new FormData();
@@ -3154,19 +3515,38 @@ async function processLiveChunkQueue() {
       throw new Error(message);
     }
     const payload = await response.json();
+    updateLiveQueueMetrics({ lastChunkSentAt: Date.now() });
     handleLiveChunkPayload(payload, Date.now() - item.createdAt);
   } catch (error) {
     console.error('Error al enviar fragmento en vivo', error);
-    store.setState((prev) => ({
-      ...prev,
-      live: {
-        ...prev.live,
-        droppedChunks: prev.live.droppedChunks + 1,
-        error: error?.message || 'No se pudo enviar el fragmento en vivo.',
-      },
-    }));
+    const attempts = (item.attempts || 0) + 1;
+    const message = error?.message || 'No se pudo enviar el fragmento en vivo.';
+    if (attempts <= LIVE_CHUNK_MAX_RETRIES && liveSession.sessionId) {
+      item.attempts = attempts;
+      liveSession.chunkQueue.unshift(item);
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          error: `${message} Reintentando (${attempts}/${LIVE_CHUNK_MAX_RETRIES})…`,
+        },
+      }));
+      const backoff = Math.min(LIVE_CHUNK_RETRY_BASE_DELAY_MS * attempts * attempts, LIVE_CHUNK_RETRY_MAX_DELAY_MS);
+      await delay(backoff);
+    } else {
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          droppedChunks: prev.live.droppedChunks + 1,
+          error: message,
+        },
+      }));
+      updateLiveQueueMetrics({ lastChunkSentAt: Date.now() });
+    }
   } finally {
     liveSession.sending = false;
+    updateLiveQueueMetrics();
     if (liveSession.chunkQueue.length) {
       processLiveChunkQueue();
     }
@@ -3263,8 +3643,24 @@ async function startLiveSession() {
     const beamRaw = elements.live.beam?.value || modelConfig.recommendedBeam;
     const beamValue = Number(beamRaw);
     const deviceValue = elements.live.device?.value || null;
-    const resolvedDevicePreference = resolveDevicePreference(modelValue, deviceValue);
-    await ensureModelReady(modelValue, resolvedDevicePreference, 'iniciar la sesión en vivo');
+    let resolvedDevicePreference = resolveDevicePreference(modelValue, deviceValue);
+    const prepStatus = await ensureModelReady(modelValue, resolvedDevicePreference, 'iniciar la sesión en vivo');
+    const effectiveDevicePreference = resolveEffectiveDevice(resolvedDevicePreference, prepStatus);
+    if (effectiveDevicePreference !== resolvedDevicePreference) {
+      resolvedDevicePreference = effectiveDevicePreference;
+      if (elements.live.device) {
+        elements.live.device.value = effectiveDevicePreference;
+        elements.live.device.dataset.deviceDirty = 'false';
+        elements.live.device.dataset.deviceLocked = 'false';
+      }
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          device: effectiveDevicePreference,
+        },
+      }));
+    }
     const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const payload = {
       language: language || undefined,
@@ -3285,7 +3681,16 @@ async function startLiveSession() {
     const sessionInfo = await response.json();
     const mimeType = pickLiveMimeType();
     const options = mimeType ? { mimeType } : undefined;
+    const desiredInterval = Number(elements.live.chunkInterval?.value)
+      || store.getState().live.chunkIntervalMs
+      || initialLiveChunkInterval;
+    const chunkIntervalMs = Number.isFinite(desiredInterval) && desiredInterval > 0
+      ? desiredInterval
+      : DEFAULT_LIVE_CHUNK_INTERVAL_MS;
     const recorder = new MediaRecorder(audioStream, options);
+    if (elements.live.chunkInterval) {
+      elements.live.chunkInterval.value = String(chunkIntervalMs);
+    }
     liveSession.sessionId = sessionInfo.session_id;
     liveSession.mediaStream = audioStream;
     liveSession.recorder = recorder;
@@ -3293,19 +3698,13 @@ async function startLiveSession() {
     liveSession.chunkIndex = 0;
     liveSession.sending = false;
     liveSession.finishing = false;
+    liveSession.chunkIntervalMs = chunkIntervalMs;
+    liveSession.mimeType = mimeType || null;
 
-    recorder.addEventListener('dataavailable', (event) => {
-      if (event.data && event.data.size) {
-        enqueueLiveChunk(event.data);
-      }
-    });
-    recorder.addEventListener('error', (event) => {
-      console.error('MediaRecorder error', event.error);
-      alert('Error al capturar audio en vivo. Se detendrá la sesión.');
-      finishLiveSession(true);
-    });
-
-    recorder.start(LIVE_CHUNK_INTERVAL_MS);
+    preferences.set(LOCAL_KEYS.liveChunkInterval, chunkIntervalMs);
+    attachLiveRecorder(recorder);
+    recorder.start(chunkIntervalMs);
+    updateLiveQueueMetrics({ lastChunkEnqueuedAt: null, lastChunkSentAt: null });
 
     store.setState((prev) => ({
       ...prev,
@@ -3330,6 +3729,10 @@ async function startLiveSession() {
         droppedChunks: 0,
         error: null,
         isFinalizing: false,
+        chunkIntervalMs,
+        pendingChunks: 0,
+        lastChunkEnqueuedAt: null,
+        lastChunkSentAt: null,
       },
     }));
     renderLiveKpis(store.getState().live);
@@ -3385,13 +3788,26 @@ function pauseLiveSession() {
   }));
 }
 
-function resumeLiveSession() {
+async function resumeLiveSession() {
   const state = store.getState().live;
-  if (state.status !== 'paused' || !liveSession.recorder) return;
+  if (state.status !== 'paused') return;
   updatePausedMetrics();
-  if (typeof liveSession.recorder.resume === 'function' && liveSession.recorder.state === 'paused') {
+  const desiredInterval = Number(state.chunkIntervalMs) || DEFAULT_LIVE_CHUNK_INTERVAL_MS;
+  if (
+    liveSession.recorder &&
+    liveSession.sessionId &&
+    Number.isFinite(desiredInterval) &&
+    desiredInterval > 0 &&
+    desiredInterval !== liveSession.chunkIntervalMs
+  ) {
+    const restarted = await restartLiveRecorder(desiredInterval, { keepPaused: true });
+    if (!restarted) return;
+  }
+  const recorder = liveSession.recorder;
+  if (!recorder) return;
+  if (recorder && typeof recorder.resume === 'function' && recorder.state === 'paused') {
     try {
-      liveSession.recorder.resume();
+      recorder.resume();
     } catch (error) {
       console.warn('No se pudo reanudar el MediaRecorder', error);
     }
@@ -3647,6 +4063,43 @@ function setupLiveControls() {
   bind(elements.home.finish, 'click', finishLiveSession);
   bind(elements.live.finish, 'click', finishLiveSession);
 
+  if (elements.live.chunkInterval) {
+    const currentInterval = store.getState().live.chunkIntervalMs || initialLiveChunkInterval;
+    elements.live.chunkInterval.value = String(currentInterval);
+    elements.live.chunkInterval.addEventListener('change', async (event) => {
+      const raw = Number(event.target.value);
+      const value = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LIVE_CHUNK_INTERVAL_MS;
+      preferences.set(LOCAL_KEYS.liveChunkInterval, value);
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          chunkIntervalMs: value,
+        },
+      }));
+      const shouldRestart = Boolean(liveSession.recorder && liveSession.sessionId);
+      if (!shouldRestart) {
+        liveSession.chunkIntervalMs = value;
+        return;
+      }
+      if (value === liveSession.chunkIntervalMs) return;
+      const keepPaused = store.getState().live.status === 'paused';
+      const success = await restartLiveRecorder(value, { keepPaused });
+      if (!success) {
+        const fallback = liveSession.chunkIntervalMs || store.getState().live.chunkIntervalMs || DEFAULT_LIVE_CHUNK_INTERVAL_MS;
+        event.target.value = String(fallback);
+        store.setState((prev) => ({
+          ...prev,
+          live: {
+            ...prev.live,
+            chunkIntervalMs: fallback,
+          },
+        }));
+        preferences.set(LOCAL_KEYS.liveChunkInterval, fallback);
+      }
+    });
+  }
+
   if (elements.live.tailSize) {
     elements.live.tailSize.value = String(store.getState().live.maxSegments);
     elements.live.tailSize.addEventListener('change', (event) => {
@@ -3754,10 +4207,14 @@ function setupDiagnostics() {
 function setupLiveProgressTicker() {
   if (liveProgressTimer) return;
   liveProgressTimer = window.setInterval(() => {
-    const liveState = store.getState().live;
+    const state = store.getState();
+    const liveState = state.live;
     if (!liveState) return;
     if (['recording', 'paused', 'finalizing'].includes(liveState.status)) {
       renderLiveProgress(liveState);
+      if (!state.stream?.jobId) {
+        renderHomeProgress(state);
+      }
     }
   }, 1000);
 }

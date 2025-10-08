@@ -178,3 +178,4 @@ class ModelPreparationStatus(BaseModel):
     progress: int = Field(ge=0, le=100)
     message: str
     error: Optional[str] = None
+    effective_device: Optional[str] = None

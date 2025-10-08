@@ -58,9 +58,14 @@ from ..utils.storage import (
     write_atomic_text,
 )
 from ..whisper_service import (
+    BaseTranscriber,
+    TranscriptionResult,
     get_model_preparation_status,
     get_transcriber,
+    is_cuda_runtime_available,
+    is_cuda_dependency_error,
     request_model_preparation,
+    summarize_cuda_dependency_error,
     serialize_segments,
 )
 from pydub import AudioSegment
@@ -109,6 +114,7 @@ DEVICE_ALIASES = {
     "gpu": "cuda",
     "cuda": "cuda",
     "cpu": "cpu",
+    "auto": "auto",
 }
 
 logger = logging.getLogger(__name__)
@@ -277,10 +283,22 @@ def _resolve_model_choice(value: Optional[str]) -> str:
 
 
 def _resolve_device_choice(value: Optional[str]) -> str:
-    if not value:
-        return settings.whisper_device or "cuda"
-    resolved = DEVICE_ALIASES.get(value.lower())
-    return resolved or settings.whisper_device or "cuda"
+    preferred = (value or settings.whisper_device or "cuda").strip().lower()
+    resolved = DEVICE_ALIASES.get(preferred, preferred)
+    cuda_available = settings.whisper_force_cuda or is_cuda_runtime_available()
+
+    if resolved == "auto":
+        return "cuda" if cuda_available else "cpu"
+
+    if resolved == "cuda" and not cuda_available:
+        logger.warning("CUDA solicitado pero no disponible; se usará CPU.")
+        return "cpu"
+
+    if resolved in {"cuda", "cpu"}:
+        return resolved
+
+    logger.warning("Dispositivo %s no reconocido; se usará %s", value, "GPU" if cuda_available else "CPU")
+    return "cuda" if cuda_available else "cpu"
 
 
 def _model_status_to_schema(
@@ -295,6 +313,7 @@ def _model_status_to_schema(
         progress=info.progress,
         message=info.message,
         error=info.error,
+        effective_device=info.effective_device,
     )
 
 
@@ -667,20 +686,47 @@ def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunk
             "log_prob_threshold": settings.whisper_log_prob_threshold,
         }
         decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
-        try:
-            result = transcriber.transcribe(
+        def _transcribe_live(current_transcriber: BaseTranscriber):
+            return current_transcriber.transcribe(
                 window_path,
                 state.language,
                 beam_size=state.beam_size or settings.whisper_live_beam,
                 decode_options=decode_options,
             )
-        except RuntimeError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        except Exception as exc:  # pragma: no cover - dependerá del runtime
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error al transcribir el fragmento: {exc}",
-            ) from exc
+
+        def _normalize_device(value: Optional[str]) -> str:
+            normalized = (value or "").lower()
+            return "gpu" if normalized in {"cuda", "gpu"} else "cpu"
+
+        try:
+            result = _transcribe_live(transcriber)
+        except Exception as exc:
+            should_retry_cpu = (
+                not settings.whisper_force_cuda
+                and _normalize_device(state.device) == "gpu"
+                and is_cuda_dependency_error(exc)
+            )
+            if should_retry_cpu:
+                logger.warning(
+                    "CUDA no disponible en sesión en vivo; reintentando en CPU: %s",
+                    exc,
+                )
+                state.device = "cpu"
+                transcriber = get_transcriber(state.model_size, state.device)
+                try:
+                    result = _transcribe_live(transcriber)
+                except Exception as retry_exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Error al transcribir el fragmento en CPU: {retry_exc}",
+                    ) from retry_exc
+            else:
+                if isinstance(exc, RuntimeError):
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error al transcribir el fragmento: {exc}",
+                ) from exc
         finally:
             window_file.unlink(missing_ok=True)
 
@@ -783,12 +829,67 @@ def finalize_live_session(
             "log_prob_threshold": settings.whisper_log_prob_threshold,
         }
         decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
-        result = transcriber.transcribe(
-            normalized_audio,
-            resolved_language,
-            beam_size=beam_value,
-            decode_options=decode_options,
+
+        def _normalize_device_label(value: Optional[str], fallback: str) -> str:
+            normalized = (value or "").strip().lower()
+            if normalized in {"cuda", "gpu"}:
+                return "gpu"
+            if normalized == "cpu":
+                return "cpu"
+            if normalized == "auto":
+                return fallback
+            return fallback
+
+        requested_device = _normalize_device_label(resolved_device, "gpu")
+
+        def _determine_effective_device(
+            current_transcriber: BaseTranscriber, default_label: str
+        ) -> str:
+            effective_callable = getattr(current_transcriber, "effective_device", None)
+            if callable(effective_callable):
+                try:
+                    return _normalize_device_label(effective_callable(), default_label)
+                except Exception:  # pragma: no cover - defensive
+                    return default_label
+            return default_label
+
+        def _transcribe_final(current_transcriber: BaseTranscriber):
+            return current_transcriber.transcribe(
+                normalized_audio,
+                resolved_language,
+                beam_size=beam_value,
+                decode_options=decode_options,
+            )
+
+        transcriber_in_use: BaseTranscriber = transcriber
+        used_cpu_fallback = False
+        fallback_reason: Optional[str] = None
+
+        try:
+            result = _transcribe_final(transcriber_in_use)
+        except Exception as exc:
+            should_retry_cpu = (
+                not settings.whisper_force_cuda
+                and requested_device == "gpu"
+                and is_cuda_dependency_error(exc)
+            )
+            if not should_retry_cpu:
+                raise
+            used_cpu_fallback = True
+            fallback_reason = summarize_cuda_dependency_error(exc)
+            logger.warning(
+                "CUDA no disponible al finalizar sesión %s; se usará CPU: %s",
+                session_id,
+                fallback_reason,
+            )
+            transcriber_in_use = get_transcriber(resolved_model, "cpu")
+            result = _transcribe_final(transcriber_in_use)
+
+        effective_device = _determine_effective_device(
+            transcriber_in_use,
+            "cpu" if used_cpu_fallback else requested_device,
         )
+        state.device = effective_device
         sanitized_folder = sanitize_folder_name(payload.destination_folder or "en-vivo")
         final_filename = payload.filename or f"live-session-{session_id}.wav"
         storage_dir = ensure_storage_subdir(f"live-{session_id}")
@@ -800,7 +901,7 @@ def finalize_live_session(
             language=result.language or resolved_language,
             model_size=resolved_model,
             beam_size=beam_value,
-            device_preference=resolved_device,
+            device_preference=effective_device,
             subject=payload.subject,
             output_folder=sanitized_folder,
             status=TranscriptionStatus.COMPLETED.value,
@@ -820,15 +921,19 @@ def finalize_live_session(
         write_atomic_text(transcript_path, transcription.to_txt())
         transcription.transcript_path = str(transcript_path)
         session.commit()
+        finalize_extra = {
+            "chunks": state.chunk_count,
+            "live_session": session_id,
+            "beam_size": beam_value,
+            "device": effective_device,
+        }
+        if fallback_reason:
+            finalize_extra["fallback_reason"] = fallback_reason
         append_debug_event(
             transcription.id,
             "live-finalized",
             "Sesión en vivo finalizada y almacenada",
-            extra={
-                "chunks": state.chunk_count,
-                "live_session": session_id,
-                "beam_size": beam_value,
-            },
+            extra=finalize_extra,
         )
         response = LiveFinalizeResponse(
             session_id=session_id,
@@ -839,7 +944,7 @@ def finalize_live_session(
             output_folder=sanitized_folder,
             transcript_path=transcription.transcript_path,
             model_size=resolved_model,
-            device_preference=resolved_device,
+            device_preference=effective_device,
             language=result.language or resolved_language,
             beam_size=beam_value,
         )
@@ -1042,18 +1147,84 @@ def process_transcription(
             "log_prob_threshold": settings.whisper_log_prob_threshold,
         }
         decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
-        result = transcriber.transcribe(
-            normalized_audio,
-            language or transcription.language,
-            beam_size=effective_beam,
-            decode_options=decode_options,
-            debug_callback=debug_callback,
+        def _normalize_device_label(value: Optional[str], fallback: str) -> str:
+            normalized = (value or "").strip().lower()
+            if normalized in {"cuda", "gpu"}:
+                return "gpu"
+            if normalized == "cpu":
+                return "cpu"
+            if normalized == "auto":
+                return fallback
+            return fallback
+
+        requested_device = _normalize_device_label(resolved_device, "gpu")
+
+        def _determine_effective_device(
+            current_transcriber: BaseTranscriber, default_label: str
+        ) -> str:
+            effective_callable = getattr(current_transcriber, "effective_device", None)
+            if callable(effective_callable):
+                try:
+                    return _normalize_device_label(effective_callable(), default_label)
+                except Exception:  # pragma: no cover - defensive
+                    return default_label
+            return default_label
+
+        def _transcribe_once(current_transcriber: BaseTranscriber) -> TranscriptionResult:
+            return current_transcriber.transcribe(
+                normalized_audio,
+                language or transcription.language,
+                beam_size=effective_beam,
+                decode_options=decode_options,
+                debug_callback=debug_callback,
+            )
+
+        transcriber_in_use: BaseTranscriber = transcriber
+        used_cpu_fallback = False
+        fallback_reason: Optional[str] = None
+
+        try:
+            result = _transcribe_once(transcriber_in_use)
+        except Exception as exc:
+            if (
+                not settings.whisper_force_cuda
+                and requested_device == "gpu"
+                and is_cuda_dependency_error(exc)
+            ):
+                used_cpu_fallback = True
+                fallback_reason = summarize_cuda_dependency_error(exc)
+                append_debug_event(
+                    transcription_id,
+                    "device.fallback",
+                    "CUDA no disponible; reintentando en CPU",
+                    extra={"error": fallback_reason},
+                    level="warning",
+                )
+                transcriber_in_use = get_transcriber(resolved_model, "cpu")
+                result = _transcribe_once(transcriber_in_use)
+            else:
+                raise
+
+        effective_device = _determine_effective_device(
+            transcriber_in_use,
+            "cpu" if used_cpu_fallback else requested_device,
         )
+        if used_cpu_fallback and not fallback_reason:
+            reason_callable = getattr(transcriber_in_use, "last_cuda_failure", None)
+            if callable(reason_callable):
+                try:
+                    fallback_reason = reason_callable()
+                except Exception:  # pragma: no cover - defensive
+                    fallback_reason = None
         completion_extra = {
             "duration": result.duration,
             "runtime_seconds": result.runtime_seconds,
             "segments": len(result.segments),
+            "device": effective_device,
         }
+
+        if used_cpu_fallback and fallback_reason:
+            completion_extra["fallback_reason"] = fallback_reason
 
         with get_session() as session:
             transcription = session.get(Transcription, transcription_id)
@@ -1063,7 +1234,7 @@ def process_transcription(
             transcription.language = result.language or language
             transcription.model_size = resolved_model
             transcription.beam_size = effective_beam
-            transcription.device_preference = resolved_device
+            transcription.device_preference = effective_device
             transcription.duration = result.duration
             transcription.runtime_seconds = result.runtime_seconds
             transcription.speakers = serialize_segments(result.segments)
