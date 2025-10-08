@@ -6,6 +6,7 @@ import re
 import tempfile
 import time
 import wave
+import warnings
 from array import array
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -40,7 +41,46 @@ from pydub import AudioSegment
 from .config import settings
 
 
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_DISABLE_XET_WARNING", "1")
+warnings.filterwarnings(
+    "ignore",
+    message=r"Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed\.",
+    module="huggingface_hub.file_download",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"`huggingface_hub` cache-system uses symlinks by default",
+    module="huggingface_hub.file_download",
+)
+
 logger = logging.getLogger(__name__)
+for _name in ("huggingface_hub", "huggingface_hub.file_download"):
+    logging.getLogger(_name).setLevel(logging.ERROR)
+
+
+def _torch_cuda_available() -> bool:
+    if torch is None:  # pragma: no cover - depends on optional dependency
+        return False
+    try:
+        return bool(torch.cuda.is_available())
+    except Exception:  # pragma: no cover - defensive, torch can raise on misconfiguration
+        return False
+
+
+def _ctranslate_cuda_available() -> bool:
+    if ctranslate2 is None:  # pragma: no cover - optional dependency
+        return False
+    try:
+        return bool(ctranslate2.get_cuda_device_count() > 0)
+    except Exception:  # pragma: no cover - defensive, CTranslate2 can raise
+        return False
+
+
+def is_cuda_runtime_available() -> bool:
+    """Return True when either torch or CTranslate2 can access a CUDA device."""
+
+    return _torch_cuda_available() or _ctranslate_cuda_available()
 
 
 def _torch_cuda_available() -> bool:

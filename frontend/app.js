@@ -441,6 +441,8 @@ const initialLiveChunkInterval = (() => {
   return DEFAULT_LIVE_CHUNK_INTERVAL_MS;
 })();
 
+const modelSelectorContexts = [];
+
 function getModelConfig(value) {
   const normalized = (value || '').toLowerCase();
   return (
@@ -647,8 +649,8 @@ function updateBeamRecommendation(context, { forceValue = false } = {}) {
       context.beam.value = String(config.recommendedBeam);
     }
   }
-  if (context.device && !context.device.dataset.deviceLocked) {
-    context.device.value = config.preferredDevice;
+  if (context.device) {
+    applyDeviceSuggestion(context, { force: forceValue });
   }
 }
 
@@ -674,6 +676,9 @@ function setupModelSelectors() {
 
   contexts.forEach((context) => {
     if (!context.model) return;
+    if (!modelSelectorContexts.includes(context)) {
+      modelSelectorContexts.push(context);
+    }
     populateModelSelect(context.model, context.defaultModel);
     populateBeamSelect(context.beam, context.defaultBeam);
     if (context.beam) {
@@ -686,6 +691,13 @@ function setupModelSelectors() {
             renderLiveStatus(liveState);
           }
         }
+      });
+    }
+    if (context.device) {
+      context.device.dataset.deviceDirty = context.device.dataset.deviceDirty || 'false';
+      context.device.addEventListener('change', () => {
+        context.device.dataset.deviceDirty = 'true';
+        context.device.dataset.deviceLocked = 'true';
       });
     }
     context.model.addEventListener('change', () => {
@@ -719,12 +731,6 @@ function setupModelSelectors() {
     if (current && current !== 'all') {
       elements.library.filterModel.value = current;
     }
-  }
-
-  if (elements.live.device) {
-    elements.live.device.addEventListener('change', () => {
-      elements.live.device.dataset.deviceLocked = 'true';
-    });
   }
 
   const initialLiveState = store.getState().live;
@@ -1059,6 +1065,40 @@ const store = createStore({
   },
 });
 
+function runtimePrefersGpu() {
+  const mode = (store.getState().stats?.mode || '').toLowerCase();
+  if (!mode) return true;
+  if (mode.includes('gpu')) return true;
+  if (mode.includes('cpu')) return false;
+  return true;
+}
+
+function defaultDeviceForModel(modelValue) {
+  if (runtimePrefersGpu()) {
+    return 'gpu';
+  }
+  const config = getModelConfig(modelValue);
+  return normalizeDevicePreference(config?.preferredDevice, 'cpu');
+}
+
+function applyDeviceSuggestion(context, { force = false } = {}) {
+  if (!context?.device || !context.model) return;
+  const dirty = context.device.dataset.deviceDirty === 'true';
+  if (dirty && !force) return;
+  const suggested = defaultDeviceForModel(context.model.value || DEFAULT_MODEL);
+  if (context.device.value !== suggested) {
+    context.device.value = suggested;
+  }
+  context.device.dataset.deviceDirty = 'false';
+  context.device.dataset.deviceLocked = 'false';
+}
+
+function refreshDevicePreferenceSuggestions(options = {}) {
+  modelSelectorContexts.forEach((context) => {
+    applyDeviceSuggestion(context, options);
+  });
+}
+
 function createTailController({ scroller, text, followToggle, returnButton, preferenceKey }) {
   const sentinel = document.createElement('span');
   sentinel.setAttribute('aria-hidden', 'true');
@@ -1266,13 +1306,24 @@ function normalizeDevicePreference(deviceValue, fallbackDevice = 'gpu') {
   const normalized = deviceValue.toLowerCase();
   if (normalized === 'cuda' || normalized === 'gpu') return 'gpu';
   if (normalized === 'cpu') return 'cpu';
+  if (normalized === 'auto') return fallbackDevice;
   return fallbackDevice;
 }
 
 function resolveDevicePreference(modelValue, requestedDevice) {
+  const explicit = (requestedDevice || '').trim();
+  if (explicit) {
+    const normalizedExplicit = normalizeDevicePreference(explicit, runtimePrefersGpu() ? 'gpu' : 'cpu');
+    if (normalizedExplicit === 'cpu' || normalizedExplicit === 'gpu') {
+      return normalizedExplicit;
+    }
+  }
+  if (runtimePrefersGpu()) {
+    return 'gpu';
+  }
   const config = getModelConfig(modelValue);
-  const fallback = config?.preferredDevice || 'gpu';
-  return normalizeDevicePreference(requestedDevice, fallback);
+  const recommended = normalizeDevicePreference(config?.preferredDevice, 'cpu');
+  return recommended === 'gpu' ? 'gpu' : 'cpu';
 }
 
 function delay(ms) {
@@ -1608,6 +1659,7 @@ function renderStats(stats) {
   elements.stats.queue.textContent = stats.queue ?? 0;
   elements.stats.mode.textContent = stats.mode ?? '—';
   elements.stats.model.textContent = stats.model ?? '—';
+  refreshDevicePreferenceSuggestions();
 }
 
 function renderRecent(jobs) {
@@ -2053,14 +2105,16 @@ function computeLiveProgressMetrics(liveState) {
     }
   }
   if (elapsedMs < 0) elapsedMs = 0;
-  const elapsedSeconds = elapsedMs / 1000;
-  const shouldShow = ['recording', 'paused', 'finalizing'].includes(status) || processedSeconds > 0;
+  const elapsedSeconds = Math.max(0, elapsedMs / 1000);
+  const hasAudio = elapsedSeconds > 0 || processedSeconds > 0;
+  const shouldShow = ['recording', 'paused', 'finalizing'].includes(status) || hasAudio;
   if (!shouldShow) {
     return { shouldShow: false, status };
   }
-  const processed = processedSeconds > 0 ? processedSeconds : elapsedSeconds;
-  const ratio = elapsedSeconds > 0 ? Math.min(1, processed / elapsedSeconds) : processed > 0 ? 1 : 0;
+  const effectiveElapsed = Math.max(elapsedSeconds, processedSeconds);
+  const ratio = effectiveElapsed > 0 ? Math.min(1, processedSeconds / effectiveElapsed) : 0;
   const percentValue = Math.round(ratio * 100);
+  const lagSeconds = Math.max(0, elapsedSeconds - processedSeconds);
   let rateText = '';
   if (status === 'paused') {
     rateText = 'Grabación en pausa';
@@ -2068,27 +2122,35 @@ function computeLiveProgressMetrics(liveState) {
     rateText = 'Guardando sesión…';
   } else if (status === 'completed') {
     rateText = 'Sesión finalizada';
-  } else if (elapsedSeconds <= 0 && processedSeconds <= 0) {
+  } else if (!hasAudio) {
     rateText = 'Esperando audio…';
-  } else if (ratio >= 1) {
-    rateText = 'Al día en tiempo real';
+  } else if (lagSeconds <= 1) {
+    rateText = 'Procesando en vivo';
   } else {
-    const lag = Math.max(0, elapsedSeconds - processed);
-    rateText = lag > 1 ? `Retraso ${formatClock(lag)}` : 'Procesando…';
+    rateText = `Retraso ${formatClock(lagSeconds)}`;
   }
-  const remainingText = ratio >= 1
+  const remainingText = !hasAudio
+    ? 'Restante —'
+    : lagSeconds <= 1
     ? 'Sin retraso pendiente'
-    : `Restante ${formatClock(Math.max(0, elapsedSeconds - processed))}`;
+    : `Restante ${formatClock(lagSeconds)}`;
+  const label = processedSeconds > 0
+    ? `${formatClock(processedSeconds)} procesados`
+    : hasAudio
+    ? 'Procesando en vivo…'
+    : '00:00 procesados';
   return {
     shouldShow: true,
     status,
     percentValue,
-    label: `${formatClock(processed)} procesados`,
+    label,
     rateText,
     remainingText,
     ratio,
     processedSeconds,
     elapsedSeconds,
+    lagSeconds,
+    isActive: status === 'recording' && hasAudio,
   };
 }
 
@@ -2109,6 +2171,7 @@ function renderLiveProgress(liveState) {
     if (widget.fill) {
       widget.fill.style.width = '0%';
       widget.fill.classList.remove('is-indeterminate');
+      widget.fill.classList.remove('is-recording');
     }
     widget.bar?.setAttribute('aria-valuenow', '0');
     if (widget.percent) widget.percent.textContent = '0%';
@@ -2121,6 +2184,7 @@ function renderLiveProgress(liveState) {
   if (widget.fill) {
     widget.fill.style.width = `${metrics.percentValue}%`;
     widget.fill.classList.remove('is-indeterminate');
+    widget.fill.classList.toggle('is-recording', metrics.isActive && metrics.percentValue < 100);
   }
   widget.bar?.setAttribute('aria-valuenow', String(metrics.percentValue));
   if (widget.percent) widget.percent.textContent = `${metrics.percentValue}%`;
@@ -2158,6 +2222,7 @@ function renderHomeProgress(state) {
     if (widget.fill) {
       widget.fill.style.width = percentValue != null ? `${percentValue}%` : '28%';
       widget.fill.classList.toggle('is-indeterminate', percentValue == null);
+      widget.fill.classList.remove('is-recording');
     }
     widget.bar?.setAttribute('aria-valuenow', String(percentValue != null ? percentValue : 0));
     if (widget.percent) widget.percent.textContent = percentValue != null ? `${percentValue}%` : '—';
@@ -2165,7 +2230,7 @@ function renderHomeProgress(state) {
     if (widget.label) widget.label.textContent = info?.label || fallbackLabel;
     const statusText = info?.statusText || computeStreamStatusMessage(stream) || fallbackLabel;
     if (widget.rate) widget.rate.textContent = statusText;
-    if (widget.remaining) widget.remaining.textContent = info?.etaText || 'Calculando tiempo restante…';
+    if (widget.remaining) widget.remaining.textContent = info?.etaText || '—';
     return;
   }
 
@@ -2175,6 +2240,7 @@ function renderHomeProgress(state) {
     if (widget.fill) {
       widget.fill.style.width = '0%';
       widget.fill.classList.remove('is-indeterminate');
+      widget.fill.classList.remove('is-recording');
     }
     widget.bar?.setAttribute('aria-valuenow', '0');
     if (widget.percent) widget.percent.textContent = '0%';
@@ -2188,6 +2254,7 @@ function renderHomeProgress(state) {
   if (widget.fill) {
     widget.fill.style.width = `${metrics.percentValue}%`;
     widget.fill.classList.remove('is-indeterminate');
+    widget.fill.classList.toggle('is-recording', metrics.isActive && metrics.percentValue < 100);
   }
   widget.bar?.setAttribute('aria-valuenow', String(metrics.percentValue));
   if (widget.percent) widget.percent.textContent = `${metrics.percentValue}%`;
@@ -3067,7 +3134,8 @@ async function handleUploadSubmit(event) {
   const language = elements.upload.language.value || '';
   const model = elements.upload.model.value;
   const modelConfig = getModelConfig(model);
-  const devicePreference = resolveDevicePreference(model, modelConfig.preferredDevice);
+  const selectedDevice = elements.upload.device ? elements.upload.device.value : '';
+  const devicePreference = resolveDevicePreference(model, selectedDevice || modelConfig.preferredDevice);
   const beamValue = Number(elements.upload.beam?.value || modelConfig.recommendedBeam);
   const totalFiles = files.length;
   let completed = 0;
