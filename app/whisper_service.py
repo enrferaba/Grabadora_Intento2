@@ -59,6 +59,35 @@ for _name in ("huggingface_hub", "huggingface_hub.file_download"):
     logging.getLogger(_name).setLevel(logging.ERROR)
 
 
+CUDA_ERROR_PATTERNS = (
+    "could not locate cudnn",
+    "cudnn",
+    "cublas",
+    "invalid handle",
+    "cannot load symbol",
+    "no cuda gpus are available",
+    "cuda driver",
+    "driver library cannot be found",
+    "nvidia driver on your system is too old",
+)
+
+
+def _is_cuda_dependency_error(exc: Exception) -> bool:
+    message = (str(exc) or "").lower()
+    if not message:
+        return False
+    return any(token in message for token in CUDA_ERROR_PATTERNS)
+
+
+def _summarize_cuda_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        return "CUDA no disponible"
+    if len(message) > 160:
+        return message[:157] + "…"
+    return message
+
+
 def _torch_cuda_available() -> bool:
     if torch is None:  # pragma: no cover - depends on optional dependency
         return False
@@ -81,6 +110,18 @@ def is_cuda_runtime_available() -> bool:
     """Return True when either torch or CTranslate2 can access a CUDA device."""
 
     return _torch_cuda_available() or _ctranslate_cuda_available()
+
+
+def is_cuda_dependency_error(exc: Exception) -> bool:
+    """Expose CUDA dependency detection for callers outside this module."""
+
+    return _is_cuda_dependency_error(exc)
+
+
+def summarize_cuda_dependency_error(exc: Exception) -> str:
+    """Provide a short, user-friendly description of a CUDA failure."""
+
+    return _summarize_cuda_error(exc)
 
 
 DEFAULT_SUPPORTED_FASTER_WHISPER_KWARGS: Set[str] = {
@@ -122,6 +163,7 @@ class ModelPreparationInfo:
     message: str = "Pendiente"
     error: Optional[str] = None
     updated_at: float = field(default_factory=time.time)
+    effective_device: Optional[str] = None
 
 
 _model_progress_lock = Lock()
@@ -146,6 +188,7 @@ def _copy_model_info(info: ModelPreparationInfo) -> ModelPreparationInfo:
         message=info.message,
         error=info.error,
         updated_at=info.updated_at,
+        effective_device=info.effective_device,
     )
 
 
@@ -156,6 +199,7 @@ def _update_model_progress(
     message: str,
     *,
     error: Optional[str] = None,
+    effective_device: Optional[str] = None,
 ) -> ModelPreparationInfo:
     clamped = max(0, min(int(progress), 100))
     with _model_progress_lock:
@@ -165,6 +209,8 @@ def _update_model_progress(
         current.message = message
         current.error = error
         current.updated_at = time.time()
+        if effective_device is not None:
+            current.effective_device = effective_device
         _model_progress[key] = current
         return _copy_model_info(current)
 
@@ -257,7 +303,8 @@ def _prepare_model_task(model_size: str, device: str) -> None:
                 key,
                 "ready",
                 100,
-                f"Modelo {model_size} listo con faster-whisper (sin VAD).",
+                f"Modelo {model_size} listo en CPU con faster-whisper (sin VAD).",
+                effective_device="cpu",
             )
         except Exception as fallback_exc:  # pragma: no cover - depende del runtime
             logger.exception(
@@ -274,12 +321,48 @@ def _prepare_model_task(model_size: str, device: str) -> None:
 
     try:
         callback(5, f"Comprobando caché de {model_size} ({device}).")
-        prepare_transcriber(model_size, device, progress_callback=callback)
+        transcriber = prepare_transcriber(model_size, device, progress_callback=callback)
+        effective_raw: Optional[str]
+        effective_callable = getattr(transcriber, "effective_device", None)
+        if callable(effective_callable):
+            try:
+                effective_raw = effective_callable()
+            except Exception:  # pragma: no cover - defensive
+                effective_raw = None
+        else:
+            effective_raw = None
+
+        def _normalize_effective(value: Optional[str]) -> str:
+            normalized = (value or "").lower()
+            if normalized in {"cuda", "gpu"}:
+                return "gpu"
+            if normalized == "cpu":
+                return "cpu"
+            return device.lower() if device.lower() in {"gpu", "cpu", "cuda"} else "cpu"
+
+        effective_device = _normalize_effective(effective_raw)
+        reason_callable = getattr(transcriber, "last_cuda_failure", None)
+        reason: Optional[str]
+        if callable(reason_callable):
+            try:
+                reason = reason_callable()
+            except Exception:  # pragma: no cover - defensive
+                reason = None
+        else:
+            reason = None
+        label = "GPU" if effective_device == "gpu" else "CPU"
+        if effective_device == "cpu" and device.lower() in {"cuda", "gpu"} and reason:
+            final_message = (
+                f"Modelo {model_size} listo en CPU tras desactivar CUDA ({reason})."
+            )
+        else:
+            final_message = f"Modelo {model_size} listo en {label}."
         _update_model_progress(
             key,
             "ready",
             100,
-            f"Modelo {model_size} listo en {device}.",
+            final_message,
+            effective_device=effective_device,
         )
     except WhisperXVADUnavailableError as exc:
         _prepare_fallback(exc)
@@ -433,6 +516,9 @@ class BaseTranscriber:
         if progress_callback:
             progress_callback(100, "Modelo listo para usar.")
 
+    def effective_device(self) -> Optional[str]:
+        return getattr(self, "device_preference", None)
+
 
 class DummyTranscriber(BaseTranscriber):
     def transcribe(
@@ -468,6 +554,9 @@ class DummyTranscriber(BaseTranscriber):
     ) -> None:  # pragma: no cover - trivial
         if progress_callback:
             progress_callback(100, "Transcriptor simulado listo.")
+
+    def effective_device(self) -> Optional[str]:
+        return "cpu"
 
 
 class WhisperXVADUnavailableError(RuntimeError):
@@ -538,6 +627,9 @@ class WhisperXTranscriber(BaseTranscriber):
         if settings.whisper_language:
             return settings.whisper_language.lower() != "en"
         return not self.model_size.endswith(".en")
+
+    def effective_device(self) -> str:
+        return self._normalize_device(self.device_preference or settings.whisper_device)
 
     def _build_asr_options(self) -> dict:
         """Return WhisperX ASR options compatible with newer faster-whisper versions."""
@@ -1257,6 +1349,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
         self._lock = Lock()
         self._warmed_up = False
         self._supported_kwargs: Optional[Set[str]] = None
+        self._effective_device: str = (device_preference or "cpu").lower()
+        self._last_cuda_failure: Optional[str] = None
 
     def _resolve_device(self) -> str:
         preferred = (self.device_preference or settings.whisper_device or "cpu").lower()
@@ -1419,6 +1513,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
         runtime_cuda_available = torch_available or ctranslate_available
 
         initial_device = self._resolve_device()
+        self._effective_device = initial_device
+        self._last_cuda_failure = None
         if want_cuda and initial_device != "cuda":
             emit(
                 "device.unavailable",
@@ -1488,6 +1584,18 @@ class FasterWhisperTranscriber(BaseTranscriber):
                             },
                             "warning",
                         )
+                        if not settings.whisper_force_cuda and _is_cuda_dependency_error(exc):
+                            summary = _summarize_cuda_error(exc)
+                            self._last_cuda_failure = summary
+                            self._effective_device = "cpu"
+                            _update_model_progress(
+                                progress_key,
+                                "checking",
+                                45,
+                                f"CUDA no disponible ({summary}); preparando CPU…",
+                                error=str(exc),
+                                effective_device="cpu",
+                            )
                     emit(
                         "load-model.retry",
                         "Reintentando carga de modelo faster-whisper",
@@ -1545,10 +1653,20 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 },
                 "warning",
             )
+        self._effective_device = loaded_device or self._effective_device
         if self._model is not None:
             self._warmup(emit)
             if progress_callback:
                 progress_callback(100, f"faster-whisper listo en {self._current_device()}.")
+
+    def effective_device(self) -> str:
+        if self._model is not None:
+            return self._current_device()
+        normalized = (self._effective_device or "cpu").lower()
+        return "cuda" if normalized in {"cuda", "gpu"} else "cpu"
+
+    def last_cuda_failure(self) -> Optional[str]:
+        return self._last_cuda_failure
 
     def _estimate_duration(self, audio_path: Path) -> Optional[float]:
         try:

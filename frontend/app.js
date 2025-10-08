@@ -1326,6 +1326,22 @@ function resolveDevicePreference(modelValue, requestedDevice) {
   return recommended === 'gpu' ? 'gpu' : 'cpu';
 }
 
+function resolveEffectiveDevice(requestedDevice, prepStatus) {
+  const fallbackBase = runtimePrefersGpu() ? 'gpu' : 'cpu';
+  const requestedNormalized = normalizeDevicePreference(requestedDevice, fallbackBase);
+  if (!prepStatus) return requestedNormalized;
+  let effective = normalizeDevicePreference(prepStatus.effective_device, requestedNormalized);
+  if (prepStatus.effective_device == null && prepStatus.message) {
+    const lower = prepStatus.message.toLowerCase();
+    if (lower.includes('cpu')) {
+      effective = 'cpu';
+    } else if (lower.includes('gpu') || lower.includes('cuda')) {
+      effective = 'gpu';
+    }
+  }
+  return effective;
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1429,14 +1445,16 @@ async function ensureModelReady(modelValue, devicePreference, contextMessage) {
   const normalizedDevice = resolveDevicePreference(model, devicePreference);
   const context = contextMessage || 'iniciar la transcripción';
   let overlaySession = null;
+  let finalStatus = null;
   try {
     const initial = await requestModelPreparation(model, normalizedDevice);
+    finalStatus = initial;
     if (initial.status === 'error') {
       throw new Error(initial.message || 'No se pudo preparar el modelo.');
     }
     if (initial.status === 'ready') {
       hideModelPrepOverlay();
-      return true;
+      return initial;
     }
     overlaySession = showModelPrepOverlay(model, normalizedDevice, `Preparando el modelo para ${context}.`);
     updateModelPrepOverlay(initial);
@@ -1451,11 +1469,13 @@ async function ensureModelReady(modelValue, devicePreference, contextMessage) {
         throw new Error('Descarga cancelada por el usuario.');
       }
       status = await fetchModelPreparationStatus(model, normalizedDevice);
+       finalStatus = status;
       updateModelPrepOverlay(status);
-      if (status.status === 'ready') {
+      const progress = Number.isFinite(status?.progress) ? Number(status.progress) : 0;
+      if (status.status === 'ready' || (progress >= 100 && status.status !== 'error')) {
         hideModelPrepOverlay(overlaySession);
         overlaySession = null;
-        return true;
+        return status;
       }
       if (status.status === 'error') {
         throw new Error(status.message || 'No se pudo preparar el modelo.');
@@ -1467,6 +1487,7 @@ async function ensureModelReady(modelValue, devicePreference, contextMessage) {
       hideModelPrepOverlay(overlaySession);
     }
   }
+  return finalStatus;
 }
 
 function resetLiveSessionLocalState() {
@@ -3135,7 +3156,7 @@ async function handleUploadSubmit(event) {
   const model = elements.upload.model.value;
   const modelConfig = getModelConfig(model);
   const selectedDevice = elements.upload.device ? elements.upload.device.value : '';
-  const devicePreference = resolveDevicePreference(model, selectedDevice || modelConfig.preferredDevice);
+  let devicePreference = resolveDevicePreference(model, selectedDevice || modelConfig.preferredDevice);
   const beamValue = Number(elements.upload.beam?.value || modelConfig.recommendedBeam);
   const totalFiles = files.length;
   let completed = 0;
@@ -3143,13 +3164,28 @@ async function handleUploadSubmit(event) {
   elements.upload.feedback.textContent = 'Preparando subida…';
   setUploadProgress(0);
 
+  let prepStatus = null;
   try {
-    await ensureModelReady(model, devicePreference, 'procesar tus archivos');
+    prepStatus = await ensureModelReady(model, devicePreference, 'procesar tus archivos');
   } catch (error) {
     elements.upload.feedback.textContent = error?.message || 'No se pudo preparar el modelo.';
     if (submit) submit.disabled = false;
     resetUploadProgress();
     return;
+  }
+
+  const effectiveDevice = resolveEffectiveDevice(devicePreference, prepStatus);
+  if (effectiveDevice !== devicePreference) {
+    devicePreference = effectiveDevice;
+    if (elements.upload.device) {
+      elements.upload.device.value = effectiveDevice;
+      elements.upload.device.dataset.deviceDirty = 'false';
+      elements.upload.device.dataset.deviceLocked = 'false';
+    }
+    if (!elements.upload.feedback.textContent || elements.upload.feedback.textContent.startsWith('Preparando')) {
+      elements.upload.feedback.textContent = prepStatus?.message
+        || `CUDA no está disponible; se usará ${formatDeviceLabel(effectiveDevice)}.`;
+    }
   }
 
   const updateOverallProgress = (currentCompleted, partial) => {
@@ -3607,8 +3643,24 @@ async function startLiveSession() {
     const beamRaw = elements.live.beam?.value || modelConfig.recommendedBeam;
     const beamValue = Number(beamRaw);
     const deviceValue = elements.live.device?.value || null;
-    const resolvedDevicePreference = resolveDevicePreference(modelValue, deviceValue);
-    await ensureModelReady(modelValue, resolvedDevicePreference, 'iniciar la sesión en vivo');
+    let resolvedDevicePreference = resolveDevicePreference(modelValue, deviceValue);
+    const prepStatus = await ensureModelReady(modelValue, resolvedDevicePreference, 'iniciar la sesión en vivo');
+    const effectiveDevicePreference = resolveEffectiveDevice(resolvedDevicePreference, prepStatus);
+    if (effectiveDevicePreference !== resolvedDevicePreference) {
+      resolvedDevicePreference = effectiveDevicePreference;
+      if (elements.live.device) {
+        elements.live.device.value = effectiveDevicePreference;
+        elements.live.device.dataset.deviceDirty = 'false';
+        elements.live.device.dataset.deviceLocked = 'false';
+      }
+      store.setState((prev) => ({
+        ...prev,
+        live: {
+          ...prev.live,
+          device: effectiveDevicePreference,
+        },
+      }));
+    }
     const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const payload = {
       language: language || undefined,
