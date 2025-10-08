@@ -60,6 +60,7 @@ def collect_metrics(models: Iterable[str], subject: Optional[str]) -> dict:
             "avg_runtime": mean(runtimes) if runtimes else 0.0,
             "avg_chars": mean(text_lengths) if text_lengths else 0.0,
             "throughput": (mean(durations) / mean(runtimes)) if durations and runtimes else 0.0,
+            "rtf": (mean(runtimes) / mean(durations)) if durations and runtimes else 0.0,
         }
     return metrics
 
@@ -69,7 +70,10 @@ def print_table(metrics: dict[str, dict[str, float]]) -> None:
         print("No hay transcripciones completadas que coincidan con los filtros.")
         return
 
-    header = f"{'Modelo':<14} {'# muestras':>10} {'Duración media':>18} {'Runtime medio':>16} {'Chars/seg':>12}"
+    header = (
+        f"{'Modelo':<14} {'# muestras':>10} {'Duración media':>18} "
+        f"{'Runtime medio':>16} {'Chars/seg':>12} {'RTF':>8}"
+    )
     print(header)
     print('-' * len(header))
     for model, values in sorted(metrics.items()):
@@ -78,9 +82,10 @@ def print_table(metrics: dict[str, dict[str, float]]) -> None:
         avg_chars = values.get('avg_chars') or 0.0
         throughput = values.get('throughput') or 0.0
         chars_per_second = (avg_chars / avg_runtime) if avg_runtime else 0.0
+        rtf = values.get('rtf') or 0.0
         print(
             f"{model:<14} {values.get('count', 0):>10} {format_seconds(avg_duration):>18} "
-            f"{format_seconds(avg_runtime):>16} {chars_per_second:>12.2f}"
+            f"{format_seconds(avg_runtime):>16} {chars_per_second:>12.2f} {rtf:>8.3f}"
         )
     print('\nInterpretación: un throughput > 1 implica que el modelo transcribe más rápido que la duración del audio.')
 
