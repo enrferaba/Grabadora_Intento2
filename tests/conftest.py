@@ -10,12 +10,12 @@ import sys
 import typing
 from pathlib import Path
 
-from alembic import command
-from alembic.config import Config
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from alembic import command
+from alembic.config import Config
 
 if sys.version_info >= (3, 12):  # pragma: no cover - test env specific
     _orig_forward_ref_evaluate = typing.ForwardRef._evaluate

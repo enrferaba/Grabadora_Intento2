@@ -4,6 +4,11 @@ Este proyecto utiliza [Alembic](https://alembic.sqlalchemy.org/) para versionar 
 Las instrucciones siguientes cubren escenarios comunes para entornos de desarrollo (SQLite) y producción
 (PostgreSQL).
 
+> **Entornos sin acceso a PyPI:** la CI de la kata incluye un *shim* ligero en `alembic/` que implementa las
+> funciones mínimas (`alembic.command.upgrade`, `alembic.config.Config` y `alembic.op.*`) para ejecutar las
+> migraciones de ejemplo sin depender del paquete oficial. En despliegues reales instala `alembic` con `pip`
+> y podrás sustituir el shim por la librería completa sin cambios en los scripts.
+
 ## Requisitos previos
 
 * Python 3.11 con las dependencias del proyecto instaladas (`pip install -r requirements.txt`).

@@ -3,6 +3,12 @@ from __future__ import annotations
 
 import sys
 import typing
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:  # pragma: no cover - startup helper
+    sys.path.insert(0, str(ROOT))
 
 
 if sys.version_info >= (3, 12):  # pragma: no cover - environment dependent

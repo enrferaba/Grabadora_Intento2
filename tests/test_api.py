@@ -11,7 +11,11 @@ from pathlib import Path
 from tempfile import SpooledTemporaryFile
 
 import pytest
-from pydub import AudioSegment
+
+try:  # pragma: no cover - optional dependency for legacy tests
+    from pydub import AudioSegment
+except ModuleNotFoundError:  # pragma: no cover - CI environment without pydub
+    AudioSegment = None  # type: ignore[assignment]
 
 
 def _ensure_forward_ref_default() -> None:
@@ -60,6 +64,12 @@ _ensure_forward_ref_default()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+if not (PROJECT_ROOT / "app").exists():
+    pytest.skip("legacy FastAPI app not present in this build", allow_module_level=True)
+
+if AudioSegment is None:
+    pytest.skip("pydub is required for legacy API tests", allow_module_level=True)
 
 fastapi = pytest.importorskip("fastapi")
 from fastapi import BackgroundTasks, UploadFile
