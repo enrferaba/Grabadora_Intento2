@@ -10,6 +10,9 @@ import sys
 import typing
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -37,18 +40,23 @@ def _reload_backend_modules() -> None:
     importlib.reload(workers.llm_tasks)
 
 
+def _run_migrations(database_url: str) -> None:
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(cfg, "head")
+
+
 @pytest.fixture(scope="session")
 def backend_setup(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     data_dir = tmp_path_factory.mktemp("data")
     os.environ["DATA_DIR"] = str(data_dir)
-    os.environ["DATABASE_URL"] = f"sqlite+pysqlite:///{data_dir / 'db.sqlite3'}"
+    database_url = f"sqlite+pysqlite:///{data_dir / 'db.sqlite3'}"
+    os.environ["DATABASE_URL"] = database_url
     os.environ["JWT_SECRET"] = "test-secret"
     _reload_backend_modules()
     import backend_sync.main
 
     importlib.reload(backend_sync.main)
-    from backend_sync.database import Base, engine
-
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    _run_migrations(database_url)
     yield None

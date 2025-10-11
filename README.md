@@ -5,25 +5,34 @@
 El repositorio entrega todos los componentes necesarios para ejecutar esa promesa en entornos empresariales: un agente local que procesa audio en tiempo real con Whisper acelerado, un backend de sincronización con FastAPI/SQLAlchemy, workers heurísticos que emulan a los LLM y un `docker-compose` listo para desplegar en on-premises o en la nube privada. Se incluyen scripts de empaquetado, colas persistentes y documentación operativa para acelerar implementaciones pilotas, profesionales y enterprise.
 
 ## Tabla de contenidos
-1. [Arquitectura](#arquitectura)
-2. [Flujo principal](#flujo-principal)
-3. [Agente Local](#agente-local)
-4. [Backend Sync](#backend-sync)
-5. [UI Web y conectores](#ui-web-y-conectores)
-6. [Esquemas de datos](#esquemas-de-datos)
-7. [Endpoints y mensajes](#endpoints-y-mensajes)
-8. [LLM y prompts](#llm-y-prompts)
-9. [Rendimiento](#rendimiento)
-10. [Seguridad y privacidad](#seguridad-y-privacidad)
-11. [Instalación y despliegue](#instalación-y-despliegue)
-12. [Observabilidad](#observabilidad)
-13. [QA y criterios de aceptación](#qa-y-criterios-de-aceptación)
-14. [Roadmap](#roadmap)
-15. [Precios y empaquetado](#precios-y-empaquetado)
-16. [Riesgos y mitigaciones](#riesgos-y-mitigaciones)
-17. [Pseudocódigo clave](#pseudocódigo-clave)
-18. [Checklist para otra IA](#checklist-para-otra-ia)
-19. [Guía de contribución](#guía-de-contribución)
+1. [Puesta en marcha rápida](#puesta-en-marcha-rápida)
+2. [Arquitectura](#arquitectura)
+3. [Flujo principal](#flujo-principal)
+4. [Agente Local](#agente-local)
+5. [Backend Sync](#backend-sync)
+6. [UI Web y conectores](#ui-web-y-conectores)
+7. [Esquemas de datos](#esquemas-de-datos)
+8. [Endpoints y mensajes](#endpoints-y-mensajes)
+9. [LLM y prompts](#llm-y-prompts)
+10. [Rendimiento](#rendimiento)
+11. [Seguridad y privacidad](#seguridad-y-privacidad)
+12. [Instalación y despliegue](#instalación-y-despliegue)
+13. [Observabilidad](#observabilidad)
+14. [QA y criterios de aceptación](#qa-y-criterios-de-aceptación)
+15. [Roadmap](#roadmap)
+16. [Precios y empaquetado](#precios-y-empaquetado)
+17. [Riesgos y mitigaciones](#riesgos-y-mitigaciones)
+18. [Pseudocódigo clave](#pseudocódigo-clave)
+19. [Checklist para otra IA](#checklist-para-otra-ia)
+20. [Guía de contribución](#guía-de-contribución)
+
+## Puesta en marcha rápida
+
+1. Duplica `.env.example` en `.env` y ajusta `DATABASE_URL`, `JWT_SECRET` y el resto de variables según tu entorno (SQLite local o PostgreSQL gestionado).
+2. Instala dependencias y crea la carpeta de datos: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && mkdir -p data`.
+3. Ejecuta las migraciones iniciales con Alembic (`alembic upgrade head`). Consulta [MIGRATION.md](MIGRATION.md) para estrategias de despliegue y migración entre motores.
+4. Levanta los servicios con `uvicorn backend_sync.main:app --reload` o `docker-compose up --build` según prefieras.
+5. Lanza `pytest` para verificar que la instalación quedó consistente antes de exponer el entorno a usuarios.
 
 ## Arquitectura
 
