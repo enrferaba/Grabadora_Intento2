@@ -1,279 +1,301 @@
-# Grabadora Pro
+# Transcripción Local con Sincronización Inteligente
 
-Plataforma moderna para transcribir audios con WhisperX, identificar hablantes, guardar resultados en una base de datos consultable y ofrecer una interfaz web lista para desplegar en Docker.
+> **Promesa al cliente:** “Grabamos la reunión en tu PC, transcribimos localmente en tiempo real, sacamos tareas y resúmenes, y sincronizamos solo texto y metadatos a tu panel y al CRM. Nada de audio sale de tu máquina salvo que tú lo actives”.
 
-## Características principales
+El repositorio entrega todos los componentes necesarios para ejecutar esa promesa en entornos empresariales: un agente local que procesa audio en tiempo real con Whisper acelerado, un backend de sincronización con FastAPI/SQLAlchemy, workers heurísticos que emulan a los LLM y un `docker-compose` listo para desplegar en on-premises o en la nube privada. Se incluyen scripts de empaquetado, colas persistentes y documentación operativa para acelerar implementaciones pilotas, profesionales y enterprise.
 
-- **API FastAPI** con endpoints para subir audios en lote, consultar, descargar y eliminar transcripciones.
-- **Integración con WhisperX** para transcripción rápida y diarización de hablantes: prioriza GPU/CUDA cuando está disponible y cae automáticamente a CPU o al transcriptor simulado en entornos sin aceleración.
-- **Base de datos SQLite / SQLAlchemy** con búsqueda por texto, asignatura y estado.
-- **Generación automática de archivos `.txt`** y estructura extensible para futuros planes premium con IA externa.
-- **Interfaz web** en `/` con selector multimedia animado, validación de audio/video y barra de progreso en tiempo real.
-- **Inicio unificado** que combina subida rápida, transcripción en vivo, vista instantánea con auto-scroll y accesos directos a carpetas y trabajos recientes.
-- **Biblioteca por carpetas** con filtros por etiquetas, estado, número de tema y búsqueda libre para localizar transcripciones rápidas.
-- **Dashboard con métricas en vivo** (totales, completadas, minutos procesados, etc.) y vista estilo ChatGPT con animación adaptativa que escribe según el modelo y el dispositivo usado, desplazando la vista automáticamente.
-- **Beneficios premium simulados** con checkout y confirmación que desbloquean notas IA enriquecidas sin mostrar importes hasta definir tu estrategia comercial.
-- **Selector de planes profesional** con fichas enriquecidas, resumen de cobro paso a paso y diálogo modal listo para conectar con tu pasarela real.
-- **Selector de idioma** con español (predeterminado), inglés y francés, además de autodetección cuando lo necesites.
-- **Autocompletado de carpetas** que recuerda la última carpeta usada, sugiere destinos existentes y sincroniza el modo en vivo con el formulario principal.
-- **Modo estudiante web**: vista ligera con anuncios educativos y ejecución local accesible en `student.html` o desde el botón “Abrir simulador independiente”.
-- **Transcripción en vivo** que captura audio del navegador, permite elegir modelo/dispositivo y convierte la sesión en una transcripción almacenada con sus TXT generados.
-- **Barra de progreso en Inicio y En vivo** que refleja segundos procesados y retraso estimado, con auto-actualización mientras hablas.
-- **Preparación guiada de modelos** con precarga y seguimiento porcentual cuando es necesario descargar Whisper o sus variantes.
-- **Diagnósticos de CUDA** con eventos de fallback detallados y avisos en la Biblioteca para que puedas corregir drivers o forzar la GPU cuando sea necesario.
-- **Inicio de sesión con Google (OAuth 2.0)** listo para conectar con tus credenciales y personalizar la experiencia del dashboard.
-- **Dockerfile y docker-compose** para ejecutar el servicio completo (API + frontend) y posibilidad de habilitar GPU.
-- **Tests con Pytest** que validan el flujo principal usando un transcriptor simulado y comprueban la compatibilidad con las versiones recientes de faster-whisper.
+## Tabla de contenidos
+1. [Puesta en marcha rápida](#puesta-en-marcha-rápida)
+2. [Arquitectura](#arquitectura)
+3. [Flujo principal](#flujo-principal)
+4. [Agente Local](#agente-local)
+5. [Backend Sync](#backend-sync)
+6. [UI Web y conectores](#ui-web-y-conectores)
+7. [Esquemas de datos](#esquemas-de-datos)
+8. [Endpoints y mensajes](#endpoints-y-mensajes)
+9. [LLM y prompts](#llm-y-prompts)
+10. [Rendimiento](#rendimiento)
+11. [Seguridad y privacidad](#seguridad-y-privacidad)
+12. [Instalación y despliegue](#instalación-y-despliegue)
+13. [Observabilidad](#observabilidad)
+14. [QA y criterios de aceptación](#qa-y-criterios-de-aceptación)
+15. [Roadmap](#roadmap)
+16. [Precios y empaquetado](#precios-y-empaquetado)
+17. [Riesgos y mitigaciones](#riesgos-y-mitigaciones)
+18. [Pseudocódigo clave](#pseudocódigo-clave)
+19. [Checklist para otra IA](#checklist-para-otra-ia)
+20. [Guía de contribución](#guía-de-contribución)
 
-## Arquitectura y optimización de modelos
+## Puesta en marcha rápida
 
-- **Orquestación de modelos (`app/whisper_service.py`)**: concentra la inicialización de WhisperX, la detección de idioma y el fallback hacia `faster-whisper` o el transcriptor simulado. Aquí puedes ajustar cachés, tipos de cómputo por dispositivo, beam search y opciones avanzadas (`_build_asr_options`).
-- **Preparación asíncrona y seguimiento (`app/whisper_service.py` + `/api/transcriptions/models/*`)**: `request_model_preparation` usa un `ThreadPoolExecutor` para descargar modelos en segundo plano, expone progreso y errores, y comparte el estado a través de `_model_progress` para que el frontend muestre el avance porcentual antes de iniciar sesiones o subidas.
-- **Selección de modelos en API (`app/routers/transcriptions.py`)**: normaliza aliases y resuelve el dispositivo antes de invocar `get_transcriber`. Si deseas añadir nuevos tamaños o estrategias de balanceo, amplía los diccionarios `SUPPORTED_MODEL_SIZES` y `MODEL_ALIASES`.
-- **Parámetros dinámicos**: la configuración en `app/config.py` se inyecta en el servicio Whisper para fijar hilos, directorios de caché, modo multilingüe o uso forzado de GPU. Puedes sobreescribirla vía variables de entorno sin tocar el código.
-- **Scripts de benchmark (`scripts/benchmark_models.py`)**: útiles para medir los efectos de tus cambios de optimización directamente sobre tus datos históricos.
+1. Duplica `.env.example` en `.env` y ajusta `DATABASE_URL`, `JWT_SECRET` y el resto de variables según tu entorno (SQLite local o PostgreSQL gestionado).
+2. Instala dependencias y crea la carpeta de datos: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && mkdir -p data`.
+3. Ejecuta las migraciones iniciales con Alembic (`alembic upgrade head`). Consulta [MIGRATION.md](MIGRATION.md) para estrategias de despliegue y migración entre motores.
+4. Levanta los servicios con `uvicorn backend_sync.main:app --reload` o `docker-compose up --build` según prefieras.
+5. Lanza `pytest` para verificar que la instalación quedó consistente antes de exponer el entorno a usuarios.
 
-## Requisitos
+## Arquitectura
 
-- Python 3.10 o superior.
-- FFmpeg disponible en la ruta (`apt install ffmpeg` o equivalente).
-- Dependencias de base de datos incluidas (por ejemplo, `aiosqlite` para el driver asíncrono de SQLite).
-- Librerías auxiliares para la interfaz (`aiofiles` para servir los archivos estáticos).
-- Para usar WhisperX real: `torch` compatible y opcionalmente GPU con CUDA.
+| Componente | Tecnologías | Responsabilidad |
+| --- | --- | --- |
+| **Agente Local** | Python 3.11, `faster-whisper`, `numpy`, VAD (`webrtcvad` opcional), SQLite | Captura audio local, segmenta con VAD, ejecuta ASR incremental, crea deltas `{segment.upsert}` y los guarda en una cola duradera con estados `queued/sent/acked`. Exporta Markdown/SRT/JSON al finalizar. |
+| **Backend Sync** | FastAPI, SQLAlchemy 2.0, JWT (`PyJWT`), WebSockets, Postgres/SQLite | Recibe parches por WS, aplica estrategia LWW, persiste transcripciones, expone endpoints REST, coordina workers y conectores. |
+| **Workers LLM** | Python, heurísticas plug-in reemplazables | Resume, extrae acciones con due dates prudentes e identifica temas. Pensados para ejecutarse on-prem o en GPU local cuando se integre un modelo cuantizado (Llama 3 8B / Mistral 7B vía llama.cpp o vLLM). |
+| **UI Web (pendiente)** | SPA React/WS | Consumirá `/sync` para transcripción en vivo, `/transcripts` para listado, `/connectors` para push a CRM/Notion/Trello y `/transcripts/:id/export` para exportaciones. |
 
-## Instalación local
+Principio sagrado: el audio nunca abandona la máquina sin consentimiento explícito. El backend maneja únicamente texto, metadatos y eventos de auditoría.
 
-### Crear entorno virtual
+## Flujo principal
 
-```bash
-python -m venv .venv
-```
+1. El usuario pulsa “Grabar” en el agente (`agent_local.session.LocalAgent`).
+2. Capturamos audio (mono, 16 kHz) y aplicamos VAD con `frame_duration_ms=30`, `min_speech_ms=350`, `min_silence_ms=200` (`agent_local.vad`).
+3. Cada chunk se transcribe con `beam_size=1`, `temperature=[0.0, 0.2]`, `patience=0`, `vad_filter=True`, `word_timestamps=True`, `compression_ratio_threshold=2.6` (`agent_local.asr`).
+4. Se generan deltas `{type:"segment.upsert", transcript_id, segment_id, rev, text, t0, t1, conf}` y se encolan en SQLite con estados (`agent_local.queue`).
+5. El agente envía los parches por WebSocket (`agent_local.sync.SyncClient`) y espera ACK. Si no hay red, la cola persiste y `flush()` reintenta con backoff exponencial al volver la conexión.
+6. El backend (`backend_sync.api.sync_ws`) valida la organización, persiste segmentos (`backend_sync.models.Segment`) y dispara workers (`workers.llm_tasks`).
+7. La UI refleja el streaming mediante WebSocket, permite editar texto/tareas y exportar PDF/Markdown/SRT.
+8. Conectores (`/connectors/{target}/push`) sincronizan notas y acciones con CRM/Notion/Trello.
 
-- **Linux / macOS:** `source .venv/bin/activate`
-- **Windows (PowerShell):** `.\.venv\Scripts\Activate.ps1`
-- **Windows (CMD):** `.\.venv\Scripts\activate.bat`
+## Agente Local
 
-> **Importante (Windows):** si ves advertencias indicando que `pip.exe` o `uvicorn.exe` no están en el PATH, aún no se ha
-> activado el entorno virtual. Actívalo y utiliza siempre `python -m pip` para asegurarte de instalar en la misma versión de
-> Python con la que ejecutarás la aplicación.
+- **Detección de hardware** (`agent_local.hardware.detect_hardware`): prioriza GPU Nvidia (`compute_type="int8_float16"`) o cae a CPU (`int8`).
+- **ASR incremental** (`agent_local.asr.IncrementalTranscriber`): mantiene el modelo cargado durante toda la sesión; usa `faster-whisper` cuando está disponible y un modo simulado cuando no.
+- **VAD híbrido** (`agent_local.vad`): usa `webrtcvad` si está instalado, de lo contrario energía RMS con umbrales configurables.
+- **Cola local** (`agent_local.queue.DeltaQueue`): SQLite con schema `seq`, `payload`, `state`, `created_at`, `updated_at`. Métodos `enqueue`, `mark_sent`, `mark_acked`, `list_pending`, `list_all`.
+- **Sincronización robusta** (`agent_local.sync.SyncClient`): transport plug-and-play (WebSocket real o `TestTransport`). Marca `sent` antes de enviar y `acked` tras respuesta `{type:"ack", seq}`. `flush()` procesa backlog completo.
+- **Exportaciones automáticas** (`agent_local.session.LocalAgent.export_session`): genera `session.md`, `session.srt`, `session.json` con todos los deltas (incluso acked) en `storage_dir/exports/`.
+- **Privacidad**: `AgentConfig.upload_audio=False` por defecto. Las rutas locales se definen por organización.
 
-### Instalar dependencias y preparar la base de datos
-
-```bash
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m scripts.init_db
-```
-
-Para comprobar que todo está listo puedes ejecutar:
-
-```bash
-python -m scripts.doctor
-```
-
-El comando revisa las dependencias clave (FastAPI, SQLAlchemy, WhisperX, etc.) y muestra cómo resolver cualquier ausencia.
-
-## Transcripción en vivo desde el navegador
-
-1. **Permisos de micrófono**: el navegador solicitará acceso la primera vez. Usa Chrome, Edge o Firefox actualizados para aprovechar la API `MediaRecorder`.
-2. **Inicio**: desde el panel “En vivo” elige idioma, modelo y dispositivo. Al pulsar “Iniciar” se crea una sesión (`POST /api/transcriptions/live/sessions`) y comienza a enviarse audio en fragmentos `webm/opus`.
-3. **Preparación del modelo**: si el tamaño seleccionado no está en caché, la interfaz llama a `/api/transcriptions/models/prepare`, muestra el porcentaje descargado y continúa automáticamente cuando llega al 100 %.
-4. **Streaming incremental**: cada chunk se sube a `POST /api/transcriptions/live/sessions/{id}/chunk`. El backend consolida el audio en disco y re-transcribe todo el buffer para ofrecer texto acumulado, segmentos y métricas actualizadas sin perder el historial.
-5. **Pausa y reanudación**: aprovecha los controles del visor para detener la captura sin cerrar la sesión. El TTL de la sesión se renueva con cada actividad, por lo que no expirará mientras sigas hablando.
-6. **Finalización**: al pulsar “Finalizar & guardar” se detiene la grabación, se espera a que se procesen los últimos fragmentos y se invoca `POST /api/transcriptions/live/sessions/{id}/finalize` para crear una transcripción completa con su `.txt`. El historial del visor permanece visible hasta que inicies una nueva sesión.
-7. **Cancelación segura**: si cierras el navegador o hay un error, la interfaz solicita `DELETE /api/transcriptions/live/sessions/{id}` para limpiar memoria y archivos temporales.
-
-## Planes premium y pagos
-
-| Plan | Precio | Dónde se procesa | Incluye | Flujo de pago |
-| --- | --- | --- | --- | --- |
-| **Estudiante Local** | 10 €/mes | Tu propio ordenador | Ejecución ilimitada en local, validación académica y recibos inmediatos en PDF. | Confirma correo educativo, descarga el modelo en tu equipo y autoriza tarjeta, débito o PayPal sin recargos. |
-| **Starter Cloud** | 25 €/mes | Servidores GPU gestionados | 30 h/mes prioritarias, exportaciones enriquecidas y soporte <12 h. | Completa datos de facturación, asigna miembros con GPU y paga con tarjeta, PayPal o SEPA recurrente. |
-| **Pro Teams** | 59 €/mes | Infraestructura dedicada | 120 h/mes, reprocesado large-v3, integraciones y gestor técnico. | Aporta orden de compra, configura límites por equipo y elige tarjeta corporativa, transferencia programada o factura anual. |
-
-Cada botón “Elegir plan” abre un resumen modal con los beneficios, los pasos de cobro y un CTA que enlaza al checkout seguro (`https://pay.grabadora.pro/checkout/{plan}`). El modal bloquea el scroll, puede cerrarse con `Escape` o clic fuera y está listo para inyectar lógica real de pago.
-
-### Copiar y pegar todo el flujo
-
-#### Windows (PowerShell)
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m scripts.init_db
-python -m scripts.doctor
-python -m uvicorn app.main:app --reload
-```
-
-### Consejos para merges sin dolor
-
-Si resuelves a menudo los mismos conflictos en GitHub, puedes pedirle a Git que
-recuerde tus decisiones con `rerere` (reuse recorded resolution). Actívalo una
-sola vez en tu máquina y Git repetirá automáticamente las resoluciones que ya
-conocen:
-
-```bash
-git config --global rerere.enabled true
-git config --global rerere.autoUpdate true
-```
-
-Cuando aparezca un conflicto nuevo, resuélvelo como siempre, ejecuta `git add`
-para marcarlo como solucionado y finaliza el merge/rebase. La próxima vez que
-surja la misma colisión Git propondrá tu solución sin que tengas que revisar el
-archivo manualmente.
-
-#### Linux / macOS
+### Ejecutar solo el agente
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m scripts.init_db
-python -m scripts.doctor
-python -m uvicorn app.main:app --reload
+pip install -r requirements.txt
+python - <<'PY'
+from pathlib import Path
+from agent_local.config import AgentConfig
+from agent_local.session import LocalAgent
+
+config = AgentConfig(
+    transcript_id="tr_demo",
+    org_id="org_demo",
+    storage_dir=Path("./data/local"),
+    websocket_url="ws://localhost:8000/sync",
+    jwt="<TOKEN_JWT>"
+)
+agent = LocalAgent(config)
+# alimentar audio, llamar a agent.process_audio(...) + agent.flush()
+PY
 ```
 
-### Arrancar la API en modo desarrollo
+## Backend Sync
 
-```bash
-python -m uvicorn app.main:app --reload
+- **FastAPI + SQLAlchemy** (`backend_sync/main.py`, `backend_sync/models.py`).
+- **JWT** (`backend_sync/security.py`): `POST /auth/login` genera access y refresh tokens.
+- **Persistencia**: tablas `transcripts`, `segments`, `actions`, `audit_events` (timestamps y trazabilidad completa).
+- **WebSocket `/sync`** (`backend_sync/api/sync_ws.py`): valida JWT, aplica LWW (`segment.rev`), registra auditoría y lanza workers. Soporta `segment.upsert`, `segment.delete`, `meta.update`.
+- **REST** (`backend_sync/api/http.py`):
+  - `POST /transcripts` crea sesiones.
+  - `GET /transcripts/{id}` recupera metadatos.
+  - `GET /transcripts/{id}/summary` devuelve bullets + bloque “Riesgos/Dependencias”.
+  - `GET /transcripts/{id}/actions` sincroniza acciones (`status=open`).
+  - `GET /transcripts/{id}/export?fmt=md|srt|json` exporta texto.
+  - `POST /connectors/{target}/push` deja listo el push a HubSpot, Pipedrive, Notion o Trello.
+- **Workers heurísticos** (`workers/llm_tasks.py`): resumen, extracción de acciones (verbos “enviar/preparar/programar”), clasificación de temas y auditoría.
+- **Servicio Worker** (`workers/service.py`): lazo simple cada 30 s para reconstruir resúmenes y acciones.
+
+## UI Web y conectores
+
+El repositorio expone el contrato para la SPA:
+
+- WebSocket `/sync` para streaming.
+- Endpoints REST descritos arriba para listado, resumen, acciones y export.
+- `POST /connectors/:target/push` para orquestar integraciones HubSpot/Pipedrive/Notion/Trello.
+
+Puedes implementar la SPA con React (tabla virtualizada, filtros por speaker/confianza/keyword, edición inline, botón “Regenerar resumen”). La política de privacidad, retención y selección de modelos se configura mediante endpoints de metadatos (`meta.update`).
+
+## Esquemas de datos
+
+```json
+// Delta agente -> backend
+{
+  "type": "segment.upsert",
+  "seq": 1842,
+  "transcript_id": "tr_7f2",
+  "segment_id": "sg_000123",
+  "rev": 3,
+  "t0": 125.40,
+  "t1": 132.18,
+  "text": "La corona se regula en el título segundo...",
+  "speaker": "S1",
+  "conf": 0.86,
+  "meta": {"lang": "es"}
+}
+
+// Acción detectada por LLM
+{
+  "id": "ac_9a1",
+  "transcript_id": "tr_7f2",
+  "text": "Marta enviará el presupuesto antes del martes",
+  "owner": "Marta",
+  "due": "2025-10-14",
+  "source_span": {"from": 812.2, "to": 835.0},
+  "status": "open"
+}
 ```
 
-La interfaz quedará disponible en http://127.0.0.1:8000/ y la API en http://127.0.0.1:8000/api/transcriptions.
+## Endpoints y mensajes
 
-### Variables de entorno útiles
-
-| Variable | Descripción | Valor por defecto |
+| Método | Ruta | Descripción |
 | --- | --- | --- |
-| `DATABASE_URL` | Cadena de conexión async SQLAlchemy | `sqlite+aiosqlite:///./data/app.db` |
-| `SYNC_DATABASE_URL` | Cadena de conexión síncrona | `sqlite:///./data/app.db` |
-| `STORAGE_DIR` | Carpeta donde se guardan audios | `data/uploads` |
-| `TRANSCRIPTS_DIR` | Carpeta de archivos `.txt` | `data/transcripts` |
-| `WHISPER_MODEL_SIZE` | Modelo WhisperX a usar | `large-v3` |
-| `WHISPER_DEVICE` | `cuda` o `cpu` | `cuda` |
-| `WHISPER_FORCE_CUDA` | Fuerza el uso de CUDA (no cae a CPU si falla) | `false` |
-| `ENABLE_DUMMY_TRANSCRIBER` | Usa transcriptor simulado (ideal para pruebas) | `false` |
-| `HUGGINGFACE_TOKEN` | Token opcional para descargar el VAD de `pyannote/segmentation` | *(vacío)* |
+| `POST` | `/auth/login` | Devuelve `access_token` JWT (15 min) y `refresh_token` (24 h). |
+| `POST` | `/transcripts` | Crea registro de transcripción, retorna `transcript_id`. |
+| `GET` | `/transcripts/{id}` | Recupera metadatos. |
+| `GET` | `/transcripts/{id}/summary` | Resumen en bullets + bloque “Riesgos/Dependencias”. |
+| `GET` | `/transcripts/{id}/actions` | Lista de acciones `status=open`. |
+| `GET` | `/transcripts/{id}/export?fmt=md|srt|json` | Exportaciones.
+| `POST` | `/connectors/{target}/push` | Encola envío a CRM/Notion/Trello. |
+| `WS` | `/sync` | Recibe `segment.upsert|delete`, `meta.update`; responde `ack`, `summary.update`, `actions.upsert` (hookeable). |
 
-## Uso de la API
+## LLM y prompts
 
-- `POST /api/transcriptions`: Subir un audio (`multipart/form-data`) con campos opcionales `language`, `subject`, `model_size` y `device_preference`.
-- `POST /api/transcriptions/batch`: Subida múltiple (`uploads[]`) aplicando la misma configuración a todos los archivos.
-- `GET /api/transcriptions`: Listar y buscar transcripciones (`q`, `status`, `premium_only`).
-- `GET /api/transcriptions/{id}`: Detalle con segmentos y hablantes.
-- `GET /api/transcriptions/{id}/download`: Descarga del `.txt` generado.
-- `DELETE /api/transcriptions/{id}`: Eliminación.
-- `GET /api/transcriptions/health`: Comprobación rápida del servicio.
-- `GET /api/payments/plans`: Listado de planes activos.
-- `POST /api/payments/checkout`: Crea un checkout para un plan y una transcripción concreta.
-- `POST /api/payments/{id}/confirm`: Marca la compra como completada y desbloquea las notas premium.
-- `POST /api/transcriptions/models/prepare`: Garantiza que el modelo seleccionado esté descargado y devuelve el progreso actual.
-- `GET /api/transcriptions/models/status`: Consulta el estado (idle, descargando, listo o error) de un modelo/dispositivo concretos.
+- Modelos locales recomendados: Llama 3 8B o Mistral 7B en Q4_K_M con llama.cpp/vLLM. `workers/llm_tasks.py` expone punto único para reemplazar heurísticas por invocaciones reales.
+- Prompts sugeridos:
+  - `extract_actions`: JSON `{owner?, verb, task, due? ISO, evidence_span}`. Inferencia prudente: `hoy+7` para “esta semana”, `hoy+1` para “mañana”. Confianza <0.65 no genera acción.
+  - `summarize`: 5 bullets, hechos + decisiones + bloque final “Riesgos/Dependencias”.
+  - `crm_note`: nota concisa con contexto, necesidades, próximos pasos.
+- Límite duro 2.5k tokens por lote, ventana deslizante con solape 10 %. Batch cada 30–60 s o 20 segmentos nuevos.
 
-## Modo estudiante en la web
+## Rendimiento
 
-- Desde el panel principal pulsa **“Abrir simulador independiente”** para lanzar `student.html` en una nueva pestaña.
-- La versión educativa sincroniza el texto con el backend cada pocos segundos, escribe con animaciones más pausadas y muestra
-  anuncios discretos entre segmentos.
-- También puedes acceder directamente navegando a `http://localhost:8000/student.html` cuando el servidor esté activo.
+- ASR optimizado: `beam_size=1`, `temperature=[0.0, 0.2]`, `vad_filter=True`, `word_timestamps=True`, chunks 8–12 s.
+- Compute type: GPU → `int8_float16`, CPU → `int8`.
+- Memoria mínima: modelos tiny/base/small funcionan con 8–12 GB RAM y GPU modesta. Medium requiere más VRAM.
+- VAD: `frame_duration_ms=30`, `min_speech_len_ms=350`, `min_silence_ms=200`.
+- Exportación local: `session.md`, `session.srt`, `session.json` por sesión.
+- Garantías QA: RTF ≤ 0.6 en GPU modesta (`small`); ≤ 1.2 en CPU. Latencia delta ≤ 500 ms en LAN; reconexión WS < 3 s.
 
-## Benchmarks desde tu base de datos
+## Seguridad y privacidad
 
-Utiliza el script `scripts/benchmark_models.py` para comparar la duración real de tus transcripciones frente al tiempo de
-ejecución observado. Ejemplos:
+- Audio fuera solo bajo `AgentConfig.upload_audio=True` con cifrado TLS y borrado programado.
+- JWT de corta vida + refresh tokens (`backend_sync/security.py`).
+- TLS recomendado en despliegues productivos. DB cifrada con AES-GCM cuando el cliente lo exija.
+- Auditoría completa (`audit_events`). Política de retención configurable (ejemplo: auto-borrado 90 días).
+- Redacción de PII opcional en logs (hook en workers).
 
-```bash
-python -m scripts.benchmark_models --models large-v2 large-v3
-python -m scripts.benchmark_models --subject historia --export metrics.json
-```
+## Instalación y despliegue
 
-El resultado imprime una tabla con número de muestras, duración media, runtime medio y caracteres/segundo para documentar la
-mejora obtenida al cambiar de modelo.
+### Dependencias
 
-## ¿Problemas descargando el VAD de HuggingFace?
+- Python 3.11+
+- FFmpeg en PATH
+- Opcional: GPU Nvidia + CUDA para aceleración
 
-Si ves errores `401` o `403` al intentar descargar `pyannote/segmentation`, configura la variable de entorno
-`HUGGINGFACE_TOKEN` con tu token personal (`huggingface-cli login`). Cuando no haya token, la aplicación reduce el log a una
-advertencia y continúa con el fallback de faster-whisper para evitar bloqueos.
-
-## Docker
-
-### Construir y ejecutar (CPU)
+### Instalación rápida (desarrollo)
 
 ```bash
-docker compose up --build
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+uvicorn backend_sync.main:app --reload
 ```
 
-El servicio quedará expuesto en http://localhost:8000.
-
-### Ejecutar con GPU
-
-1. Instala [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
-2. Ajusta `docker-compose.gpu.yml` o ejecuta:
+### Docker Compose
 
 ```bash
-docker compose -f docker-compose.yml --profile gpu up --build
+docker compose up --build backend
+# worker opcional: docker compose --profile worker up --build
 ```
 
-> El contenedor ya incluye WhisperX; instala `torch` con soporte CUDA si tu GPU lo requiere.
+Variables clave:
+- `DATABASE_URL` (por defecto `sqlite+pysqlite:///./data/backend.db`).
+- `DATA_DIR` (`./data`).
+- `JWT_SECRET` (cambia en producción).
+- `ASR_AUDIO_UPLOAD` (flag futuro para subir audio en on-demand).
 
-## Pruebas
+### Empaquetado del agente
 
-```bash
-pytest
+- Usa PyInstaller `onefile` sobre `agent_local`.
+- Arranque en bandeja del sistema, auto-actualizaciones vía canal controlado.
+
+## Observabilidad
+
+- Métricas sugeridas: RTF por sesión, latencia de delta, tasa de reconexiones WS, backlog cola local (>500 parches alerta).
+- Trazas: `capture → VAD → ASR → delta → LLM → connectors`, correlacionadas por `transcript_id`.
+- Alertas: caída WS, worker >60 s, backlog cola >500.
+
+## QA y criterios de aceptación
+
+- RTF ≤ 0.6 (`small` GPU), ≤ 1.2 en CPU.
+- Latencia delta ≤ 500 ms LAN, reconexión WS < 3 s.
+- Acciones: precisión ≥ 0.8 en dataset de tareas explícitas.
+- Sin pérdidas: segmentos offline se reenvían al restaurar red (gracias a `DeltaQueue`).
+
+## Roadmap
+
+1. **Fase 1 (0–4 semanas):** Agente + Sync + resumen + tareas + export + conectores Trello/Notion.
+2. **Fase 2 (4–8 semanas):** Conectores CRM, plantillas sectoriales, diarización con embeddings, búsqueda semántica (pg_trgm/Meilisearch).
+3. **Fase 3 (8–12 semanas):** Compliance avanzado, scoring de llamadas, multiorganización, instalador MSI firmado.
+
+## Precios y empaquetado
+
+| Plan | Precio | Audio incluido | Observaciones |
+| --- | --- | --- | --- |
+| Piloto | 990 € setup + 390 €/mes | 20 h/mes | Extra 6 €/h procesada. |
+| Pro | 690 €/mes | 10 usuarios, 60 h/mes | On-prem opcional 1.900 € setup. |
+| Enterprise | Personalizado | SLA dedicado | Soporte y compliance extendido. |
+
+## Riesgos y mitigaciones
+
+- **PCs limitados:** modelos tiny/base + menor frecuencia de workers.
+- **Audio deficiente:** normalización, VAD agresivo, guía de uso.
+- **Conectividad:** cola local robusta + reintentos exponenciales.
+- **PII:** redacción configurable, logging minimalista.
+
+## Pseudocódigo clave
+
+```python
+# Agente Local
+mdl = load_faster_whisper(model="small", device=autodetect())
+ws = connect_ws(url, jwt)
+for chunk in vad_stream(mic_source(), win_ms=30):
+    segs = asr.transcribe(chunk)
+    for s in segs:
+        delta = mk_delta(transcript_id, s)
+        enqueue_local(delta)
+        try_send(ws, delta)
+
+# Backend WS
+@ws.on_message
+def handle(msg):
+    if msg.type == "segment.upsert":
+        upsert_segment(msg.transcript_id, msg.segment_id, msg.rev, msg.payload)
+        ws.send({"type": "ack", "seq": msg.seq})
+        schedule_llm_if_needed(msg.transcript_id)
 ```
 
-Las pruebas activan el transcriptor simulado para validar el ciclo completo sin depender de WhisperX real e incluyen el flujo de pagos premium.
+## Checklist para otra IA
 
-## Contenido premium y notas IA
+- [x] Crear repos `agent_local`, `backend_sync`, `workers`.
+- [x] Captura + VAD + ASR incremental.
+- [x] Cola local SQLite con ACKs y reintentos.
+- [x] WebSocket `/sync` con LWW.
+- [x] Tablas `transcripts`, `segments`, `actions`, `audit_events`.
+- [x] Worker heurístico con prompts descritos.
+- [x] Contrato de UI (streaming, edición, export MD/PDF/SRT, conectores).
+- [x] Métricas y trazas básicas.
+- [x] Docker Compose backend + worker.
+- [x] Política por defecto: no subir audio.
+- [x] Tests automáticos (`pytest`).
 
-Al confirmar una compra, la API genera notas premium automáticamente (`app/utils/notes.py`). El motor actual resume, destaca ideas y propone próximos pasos de manera heurística, listo para que sustituyas la lógica por tu integración favorita (OpenAI, Azure, etc.) cuando habilites cobros reales.
+## Guía de contribución
 
-## Ideas de mejora a corto plazo
+1. Ejecuta `pytest` antes de abrir PR.
+2. Documenta nuevas opciones en este README.
+3. Mantén el código del agente libre de dependencias obligatorias no multiplataforma.
+4. Usa la nomenclatura `segment_id`, `transcript_id`, `rev` en todas las capas para preservar idempotencia.
+5. Aporta métricas de rendimiento cuando modifiques el pipeline ASR/LLM.
 
-- **Persistir filtros personalizados:** guardar en `localStorage` la etiqueta, estado y búsqueda seleccionados en la biblioteca para retomar el contexto al volver a entrar. Esto reduce clics repetitivos cuando trabajas con muchas materias.
-- **Lector de eventos en tiempo real:** exponer un panel cronológico con los `debug_events` más recientes para seguir el progreso sin abrir cada tarjeta. Ayuda a detectar cuellos de botella o fallos de VAD mientras ocurren.
-- **Diagnóstico de dependencias:** detectar avisos como la ausencia de `hf_xet` o la incompatibilidad de `torchaudio` y sugerir la instalación o actualización adecuada desde la interfaz. Prioriza la salud del backend y evita sorpresas en producción.
-- **Acciones masivas en carpetas:** permitir descargar, reintentar o borrar en lote todos los elementos de una carpeta o los que coinciden con un filtro determinado. Acelera la higiene de la biblioteca cuando llegan tandas grandes.
-- **Anotaciones rápidas por asignatura:** guardar notas o recordatorios asociados a cada carpeta/tema para documentar qué falta por repasar. Mantiene el contexto pedagógico en la misma herramienta.
-- **Alertas de calidad en vivo:** añadir métricas de latencia y confianza durante las sesiones de streaming para saber cuándo conviene cambiar de modelo o dispositivo.
-- **Respaldo automático de sesiones en vivo:** subir fragmentos firmados al almacenamiento definitivo mientras se graba para mitigar pérdidas si el navegador se cierra o falla la red.
-- **Resumen incremental por IA:** generar resúmenes parciales conforme se transcribe para dar feedback inmediato a los alumnos y enfocar la revisión en lo importante.
-
-## Estructura de carpetas
-
-```
-app/
-  config.py
-  database.py
-  main.py
-  models.py
-  routers/
-    transcriptions.py
-    payments.py
-  schemas.py
-  utils/
-    storage.py
-    payments.py
-    notes.py
-  whisper_service.py
-frontend/
-  index.html
-  styles.css
-  app.js
-scripts/
-  init_db.py
-tests/
-  test_api.py
-```
-
-## Contribuciones
-
-1. Crea una rama descriptiva.
-2. Añade tests para nuevas funcionalidades.
-3. Ejecuta `pytest` antes de enviar tu PR.
-
-¡Felices transcripciones! 🎙️
+¡Gracias por contribuir a una transcripción privada, veloz y sincronizada!

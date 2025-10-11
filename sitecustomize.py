@@ -1,42 +1,22 @@
-"""Compatibility hooks for third-party dependencies during testing."""
+"""Runtime patches to keep dependencies compatible with Python 3.12."""
 from __future__ import annotations
 
-import inspect
+import sys
 import typing
+from pathlib import Path
 
-ForwardRef = getattr(typing, "ForwardRef", None)
-if ForwardRef is not None and hasattr(ForwardRef, "_evaluate"):
-    try:
-        signature = inspect.signature(ForwardRef._evaluate)
-    except (ValueError, TypeError):
-        signature = None
 
-    if signature and "recursive_guard" in signature.parameters:
-        parameter = signature.parameters["recursive_guard"]
-        if parameter.default is inspect._empty:
-            _original_evaluate = ForwardRef._evaluate
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:  # pragma: no cover - startup helper
+    sys.path.insert(0, str(ROOT))
 
-            accepts_positional = parameter.kind in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            )
-            names = list(signature.parameters.keys())
-            try:
-                index = names.index("recursive_guard")
-            except ValueError:
-                index = -1
 
-            slot = index - 1 if accepts_positional and index > 0 else None
+if sys.version_info >= (3, 12):  # pragma: no cover - environment dependent
+    _orig_forward_ref_evaluate = typing.ForwardRef._evaluate
 
-            def _patched_evaluate(self, *args, **kwargs):
-                if slot is not None and len(args) > slot:
-                    updated_args = list(args)
-                    if updated_args[slot] is None:
-                        updated_args[slot] = set()
-                    kwargs.pop("recursive_guard", None)
-                    return _original_evaluate(self, *updated_args, **kwargs)
+    def _patched_forward_ref_evaluate(self, globalns, localns, type_params=None, *, recursive_guard=None):
+        if recursive_guard is None:
+            recursive_guard = set()
+        return _orig_forward_ref_evaluate(self, globalns, localns, type_params, recursive_guard=recursive_guard)
 
-                kwargs.setdefault("recursive_guard", set())
-                return _original_evaluate(self, *args, **kwargs)
-
-            ForwardRef._evaluate = _patched_evaluate
+    typing.ForwardRef._evaluate = _patched_forward_ref_evaluate

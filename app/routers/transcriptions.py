@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -13,21 +14,34 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Deque, Dict, List, Optional, Set, Tuple
+from typing import (
+    Annotated,
+    Any,
+    AsyncIterator,
+    Deque,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+)
 
+import anyio
 from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
     Form,
     File,
+    Header,
     HTTPException,
     Query,
     Response,
+    Request,
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -133,6 +147,63 @@ LIVE_SILENCE_RATIO_THRESHOLD = 0.30
 LIVE_REPEAT_WINDOW_SECONDS = max(0.0, float(settings.live_repeat_window_seconds))
 LIVE_REPEAT_MAX_DUPLICATES = max(0, int(settings.live_repeat_max_duplicates))
 LIVE_RECENT_TEXT_HISTORY = max(8, (LIVE_REPEAT_MAX_DUPLICATES or 1) * 4)
+LIVE_EVENT_HISTORY_LIMIT = max(32, int(settings.live_event_history_size))
+LIVE_SNAPSHOT_MAX_SEGMENTS = max(1, int(settings.live_snapshot_max_segments))
+LIVE_HEARTBEAT_INTERVAL_SECONDS = max(
+    5.0, float(settings.live_heartbeat_interval_seconds)
+)
+LIVE_EVENT_QUEUE_SIZE = 64
+
+
+@dataclass(frozen=True)
+class LiveEvent:
+    seq: int
+    event: str
+    data_json: str
+    created_at: float
+
+    def as_message(self) -> Dict[str, str]:
+        return {"event": self.event, "id": str(self.seq), "data": self.data_json}
+
+
+def _event_to_sse_bytes(event: LiveEvent) -> bytes:
+    message = event.as_message()
+    data = message.get("data", "")
+    payload = (
+        f"id: {message.get('id', '')}\n"
+        f"event: {message.get('event', '')}\n"
+        f"data: {data}\n\n"
+    )
+    return payload.encode("utf-8")
+
+
+@dataclass(eq=False)
+class LiveSubscriber:
+    id: str
+    queue: "asyncio.Queue[Optional[LiveEvent]]"
+    active: bool = True
+
+    def __hash__(self) -> int:  # pragma: no cover - trivial hash wrapper
+        return hash(self.id)
+
+    def enqueue(self, event: LiveEvent) -> bool:
+        if not self.active:
+            return False
+        try:
+            self.queue.put_nowait(event)
+            return True
+        except asyncio.QueueFull:
+            self.active = False
+            return False
+
+    def close(self) -> None:
+        if not self.active:
+            return
+        self.active = False
+        try:
+            self.queue.put_nowait(None)
+        except asyncio.QueueFull:  # pragma: no cover - defensive
+            pass
 
 
 class AudioRing:
@@ -169,7 +240,9 @@ class AudioRing:
     def end(self) -> float:
         return self.start + self.duration
 
-    def export_window(self, start_time: float, destination: Path) -> Tuple[Path, float, float]:
+    def export_window(
+        self, start_time: float, destination: Path
+    ) -> Tuple[Path, float, float]:
         if len(self._audio) <= 0:
             raise ValueError("No hay audio en el búfer para exportar")
         actual_start = max(start_time, self.start)
@@ -224,7 +297,9 @@ class LiveSessionState:
     last_duration: Optional[float] = None
     last_runtime: Optional[float] = None
     segments: List[dict] = field(default_factory=list)
-    ring: AudioRing = field(default_factory=lambda: AudioRing(LIVE_RING_DURATION_SECONDS))
+    ring: AudioRing = field(
+        default_factory=lambda: AudioRing(LIVE_RING_DURATION_SECONDS)
+    )
     last_t_end: float = 0.0
     user_dictionary: Set[str] = field(default_factory=set)
     suspects: List[Tuple[float, float]] = field(default_factory=list)
@@ -232,10 +307,124 @@ class LiveSessionState:
         default_factory=lambda: deque(maxlen=LIVE_RECENT_TEXT_HISTORY)
     )
     lock: Lock = field(default_factory=Lock)
+    next_seq: int = 1
+    event_history: Deque[LiveEvent] = field(
+        default_factory=lambda: deque(maxlen=LIVE_EVENT_HISTORY_LIMIT)
+    )
+    subscribers: Set[LiveSubscriber] = field(default_factory=set)
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "model_size": self.model_size,
+            "device_preference": self.device,
+            "language": self.language,
+            "beam_size": self.beam_size,
+            "text": self.last_text or "",
+            "segments": _collect_segments_texts(self),
+            "chunk_count": self.chunk_count,
+            "dropped_chunks": self.dropped_chunks,
+            "runtime_seconds": self.last_runtime,
+            "duration": self.last_duration,
+            **_compute_live_metrics(self),
+            "status": _determine_live_status(self),
+        }
+
+    def earliest_seq(self) -> Optional[int]:
+        if not self.event_history:
+            return None
+        return self.event_history[0].seq
+
+    def iter_history(self, after_seq: Optional[int]) -> List[LiveEvent]:
+        if after_seq is None:
+            return list(self.event_history)
+        return [event for event in self.event_history if event.seq > after_seq]
+
+    def make_event(
+        self, event_type: str, payload: Dict[str, Any], *, store: bool = True
+    ) -> LiveEvent:
+        seq = self.next_seq
+        self.next_seq += 1
+        base_payload = {"session_id": self.session_id, **payload, "seq": seq}
+        data_json = json.dumps(base_payload, ensure_ascii=False)
+        event = LiveEvent(
+            seq=seq, event=event_type, data_json=data_json, created_at=time.time()
+        )
+        if store:
+            self.event_history.append(event)
+        return event
+
+    def broadcast_event(
+        self, event_type: str, payload: Dict[str, Any], *, store: bool = True
+    ) -> LiveEvent:
+        event = self.make_event(event_type, payload, store=store)
+        stale: List[LiveSubscriber] = []
+        for subscriber in list(self.subscribers):
+            if not subscriber.enqueue(event):
+                stale.append(subscriber)
+        for subscriber in stale:
+            self.subscribers.discard(subscriber)
+        return event
+
+    def add_subscriber(self) -> LiveSubscriber:
+        subscriber = LiveSubscriber(
+            id=secrets.token_hex(8),
+            queue=asyncio.Queue(maxsize=LIVE_EVENT_QUEUE_SIZE),
+        )
+        self.subscribers.add(subscriber)
+        return subscriber
+
+    def remove_subscriber(self, subscriber: LiveSubscriber) -> None:
+        subscriber.close()
+        self.subscribers.discard(subscriber)
+
+    def close_all_subscribers(self) -> None:
+        for subscriber in list(self.subscribers):
+            subscriber.close()
+        self.subscribers.clear()
 
 
 LIVE_SESSIONS: Dict[str, LiveSessionState] = {}
 LIVE_SESSION_TTL_SECONDS = 3600
+
+
+def _collect_segments_texts(
+    state: LiveSessionState, limit: Optional[int] = None
+) -> List[str]:
+    raw_texts = [
+        (segment.get("text") or "").strip()
+        for segment in state.segments
+        if isinstance(segment, dict)
+    ]
+    trimmed = [text for text in raw_texts if text]
+    max_items = limit or LIVE_SNAPSHOT_MAX_SEGMENTS
+    if max_items:
+        return trimmed[-max_items:]
+    return trimmed
+
+
+def _determine_live_status(state: LiveSessionState) -> str:
+    if state.chunk_count > 0 and (state.last_text or state.segments):
+        return "recording"
+    return "idle"
+
+
+def _compute_live_metrics(state: LiveSessionState) -> Dict[str, Any]:
+    text = state.last_text or ""
+    words = len(text.split()) if text else 0
+    duration = state.last_duration or 0.0
+    wpm = 0
+    if duration > 0 and words > 0:
+        wpm = int(round((words / duration) * 60.0))
+    latency_ms = int(max(0.0, (state.last_runtime or 0.0) * 1000.0))
+    return {
+        "wpm": wpm,
+        "latency_ms": latency_ms,
+        "dropped_chunks": state.dropped_chunks,
+        "chunk_count": state.chunk_count,
+        "runtime_seconds": state.last_runtime,
+        "duration": state.last_duration,
+    }
 
 
 def purge_expired_live_sessions() -> None:
@@ -297,7 +486,11 @@ def _resolve_device_choice(value: Optional[str]) -> str:
     if resolved in {"cuda", "cpu"}:
         return resolved
 
-    logger.warning("Dispositivo %s no reconocido; se usará %s", value, "GPU" if cuda_available else "CPU")
+    logger.warning(
+        "Dispositivo %s no reconocido; se usará %s",
+        value,
+        "GPU" if cuda_available else "CPU",
+    )
     return "cuda" if cuda_available else "cpu"
 
 
@@ -400,7 +593,9 @@ def _transcription_to_srt(transcription: Transcription) -> str:
             entries.append(entry)
     else:
         body = transcription.text or ""
-        paragraphs = [paragraph.strip() for paragraph in body.split("\n") if paragraph.strip()]
+        paragraphs = [
+            paragraph.strip() for paragraph in body.split("\n") if paragraph.strip()
+        ]
         if not paragraphs:
             paragraphs = [body.strip() or "Transcripción en proceso"]
         for index, paragraph in enumerate(paragraphs, start=1):
@@ -430,7 +625,9 @@ def _transcription_to_srt(transcription: Transcription) -> str:
     return "\n".join(entries).strip() + "\n"
 
 
-def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> Optional[AudioSegment]:
+def _merge_live_chunk(
+    state: LiveSessionState, chunk_path: Path
+) -> Optional[AudioSegment]:
     try:
         fmt = _guess_audio_format(chunk_path)
         if fmt:
@@ -496,9 +693,257 @@ def _merge_live_chunk(state: LiveSessionState, chunk_path: Path) -> Optional[Aud
     return segment
 
 
+def _process_live_chunk_sync(
+    state: LiveSessionState, chunk_bytes: bytes, suffix: str
+) -> Tuple[LiveChunkResponse, Dict[str, Any], Optional[Dict[str, Any]], Dict[str, Any]]:
+    with state.lock:
+        index = state.chunk_count
+        chunk_path = state.directory / f"chunk-{index:05d}{suffix}"
+        chunk_path.parent.mkdir(parents=True, exist_ok=True)
+        chunk_path.write_bytes(chunk_bytes)
+        try:
+            try:
+                segment = _merge_live_chunk(state, chunk_path)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            chunk_path.unlink(missing_ok=True)
+
+        if segment is None or len(segment) <= 0:
+            state.chunk_count = index + 1
+            state.dropped_chunks += 1
+            state.last_activity = time.time()
+            response = LiveChunkResponse(
+                session_id=state.session_id,
+                text=state.last_text or "",
+                duration=state.last_duration,
+                runtime_seconds=state.last_runtime,
+                chunk_count=state.chunk_count,
+                model_size=state.model_size,
+                device_preference=state.device,
+                language=state.language,
+                beam_size=state.beam_size,
+                segments=list(state.segments),
+                new_segments=[],
+                new_text=None,
+                dropped_chunks=state.dropped_chunks,
+            )
+            metrics_payload = _compute_live_metrics(state)
+            delta_payload = {
+                "text": state.last_text or "",
+                "new_text": None,
+                "segments": _collect_segments_texts(state),
+                "chunk_count": state.chunk_count,
+                "language": state.language,
+                "model_size": state.model_size,
+                "device_preference": state.device,
+                "beam_size": state.beam_size,
+                "status": _determine_live_status(state),
+                **metrics_payload,
+            }
+            return response, delta_payload, None, metrics_payload
+
+        state.ring.append(segment)
+        window_file = state.directory / "window.wav"
+        try:
+            try:
+                window_start = max(0.0, state.last_t_end - LIVE_WINDOW_OVERLAP_SECONDS)
+                window_path, window_offset, window_end = state.ring.export_window(
+                    window_start, window_file
+                )
+            except ValueError:
+                state.chunk_count = index + 1
+                state.dropped_chunks += 1
+                state.last_activity = time.time()
+                window_file.unlink(missing_ok=True)
+                response = LiveChunkResponse(
+                    session_id=state.session_id,
+                    text=state.last_text or "",
+                    duration=state.last_duration,
+                    runtime_seconds=state.last_runtime,
+                    chunk_count=state.chunk_count,
+                    model_size=state.model_size,
+                    device_preference=state.device,
+                    language=state.language,
+                    beam_size=state.beam_size,
+                    segments=list(state.segments),
+                    new_segments=[],
+                    new_text=None,
+                    dropped_chunks=state.dropped_chunks,
+                )
+                metrics_payload = _compute_live_metrics(state)
+                delta_payload = {
+                    "text": state.last_text or "",
+                    "new_text": None,
+                    "segments": _collect_segments_texts(state),
+                    "chunk_count": state.chunk_count,
+                    "language": state.language,
+                    "model_size": state.model_size,
+                    "device_preference": state.device,
+                    "beam_size": state.beam_size,
+                    "status": _determine_live_status(state),
+                    **metrics_payload,
+                }
+                return response, delta_payload, None, metrics_payload
+
+            transcriber = get_transcriber(state.model_size, state.device)
+            decode_options_raw = {
+                "batch_size": settings.whisper_batch_size,
+                "temperature": 0.0,
+                "condition_on_previous_text": False,
+                "word_timestamps": False,
+                "vad_filter": _should_enable_live_vad(segment),
+                "compression_ratio_threshold": settings.whisper_compression_ratio_threshold,
+                "log_prob_threshold": settings.whisper_log_prob_threshold,
+            }
+            decode_options = {
+                k: v for k, v in decode_options_raw.items() if v is not None
+            }
+
+            def _normalize_device(value: Optional[str]) -> str:
+                normalized = (value or "").lower()
+                return "gpu" if normalized in {"cuda", "gpu"} else "cpu"
+
+            def _transcribe_live(current_transcriber: BaseTranscriber):
+                return current_transcriber.transcribe(
+                    window_path,
+                    state.language,
+                    beam_size=state.beam_size or settings.whisper_live_beam,
+                    decode_options=decode_options,
+                )
+
+            try:
+                result = _transcribe_live(transcriber)
+            except Exception as exc:
+                should_retry_cpu = (
+                    not settings.whisper_force_cuda
+                    and _normalize_device(state.device) == "gpu"
+                    and is_cuda_dependency_error(exc)
+                )
+                if should_retry_cpu:
+                    logger.warning(
+                        "CUDA no disponible en sesión en vivo; reintentando en CPU: %s",
+                        exc,
+                    )
+                    state.device = "cpu"
+                    transcriber = get_transcriber(state.model_size, state.device)
+                    try:
+                        result = _transcribe_live(transcriber)
+                    except Exception as retry_exc:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Error al transcribir el fragmento en CPU: {retry_exc}",
+                        ) from retry_exc
+                else:
+                    if isinstance(exc, RuntimeError):
+                        raise HTTPException(status_code=500, detail=str(exc)) from exc
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Error al transcribir el fragmento: {exc}",
+                    ) from exc
+        finally:
+            window_file.unlink(missing_ok=True)
+
+        state.chunk_count = index + 1
+        appended_parts: List[str] = []
+        new_segments: List[dict] = []
+        epsilon = 1e-3
+        for seg in result.segments:
+            text = (seg.text or "").strip()
+            if not text:
+                continue
+            absolute_start = window_offset + float(seg.start)
+            absolute_end = window_offset + float(seg.end)
+            should_append = True
+            if absolute_end <= state.last_t_end + epsilon:
+                should_append = False
+            else:
+                if state.segments:
+                    prev = state.segments[-1]
+                    if (
+                        prev.get("text") == text
+                        and abs(prev.get("start", 0.0) - absolute_start) < 0.5
+                        and abs(prev.get("end", 0.0) - absolute_end) < 0.5
+                    ):
+                        should_append = False
+                if should_append and LIVE_REPEAT_MAX_DUPLICATES > 0:
+                    repeat_count = sum(
+                        1
+                        for recent_text, recent_start in state.recent_texts
+                        if recent_text == text
+                        and absolute_start - recent_start <= LIVE_REPEAT_WINDOW_SECONDS
+                    )
+                    if repeat_count >= LIVE_REPEAT_MAX_DUPLICATES:
+                        should_append = False
+            state.last_t_end = max(state.last_t_end, absolute_end)
+            if not should_append:
+                continue
+            normalized = {
+                "start": absolute_start,
+                "end": absolute_end,
+                "speaker": seg.speaker,
+                "text": text,
+            }
+            state.segments.append(normalized)
+            state.recent_texts.append((text, absolute_start))
+            new_segments.append(normalized)
+            appended_parts.append(text)
+
+        appended_text = " ".join(appended_parts).strip() or None
+        if appended_text:
+            state.last_text = " ".join(
+                segment.get("text", "").strip() for segment in state.segments
+            ).strip()
+        state.last_duration = max(
+            state.last_duration or 0.0, window_end, state.last_t_end
+        )
+        state.last_runtime = result.runtime_seconds
+        state.language = result.language or state.language
+        state.last_activity = time.time()
+
+        response = LiveChunkResponse(
+            session_id=state.session_id,
+            text=state.last_text or "",
+            duration=state.last_duration,
+            runtime_seconds=state.last_runtime,
+            chunk_count=state.chunk_count,
+            model_size=state.model_size,
+            device_preference=state.device,
+            language=state.language,
+            beam_size=state.beam_size,
+            segments=list(state.segments),
+            new_segments=new_segments,
+            new_text=appended_text,
+            dropped_chunks=state.dropped_chunks,
+        )
+
+        metrics_payload = _compute_live_metrics(state)
+        delta_payload = {
+            "text": state.last_text or "",
+            "new_text": appended_text,
+            "segments": _collect_segments_texts(state),
+            "chunk_count": state.chunk_count,
+            "language": state.language,
+            "model_size": state.model_size,
+            "device_preference": state.device,
+            "beam_size": state.beam_size,
+            "status": _determine_live_status(state),
+            **metrics_payload,
+        }
+        segment_payload = None
+        if new_segments:
+            segment_payload = {
+                "segments": new_segments,
+                "chunk_count": state.chunk_count,
+            }
+
+        return response, delta_payload, segment_payload, metrics_payload
+
+
 def _cleanup_live_session(session_id: str) -> None:
     state = LIVE_SESSIONS.pop(session_id, None)
     if state:
+        state.close_all_subscribers()
         shutil.rmtree(state.directory, ignore_errors=True)
 
 
@@ -520,7 +965,9 @@ def _enqueue_transcription(
         )
     _validate_upload_size(upload)
     if not destination_folder or not destination_folder.strip():
-        raise HTTPException(status_code=400, detail="Debes indicar una carpeta de destino")
+        raise HTTPException(
+            status_code=400, detail="Debes indicar una carpeta de destino"
+        )
     sanitized_folder = sanitize_folder_name(destination_folder)
     resolved_model = _resolve_model_choice(model_size)
     resolved_device = _resolve_device_choice(device_preference)
@@ -581,7 +1028,9 @@ def _enqueue_transcription(
     return transcription
 
 
-@router.post("/live/sessions", response_model=LiveSessionCreateResponse, status_code=201)
+@router.post(
+    "/live/sessions", response_model=LiveSessionCreateResponse, status_code=201
+)
 def create_live_session(payload: LiveSessionCreateRequest) -> LiveSessionCreateResponse:
     purge_expired_live_sessions()
     session_id = secrets.token_urlsafe(12)
@@ -599,6 +1048,7 @@ def create_live_session(payload: LiveSessionCreateRequest) -> LiveSessionCreateR
         audio_path=directory / "stream.wav",
     )
     LIVE_SESSIONS[session_id] = state
+    state.make_event("init", state.snapshot(), store=True)
     return LiveSessionCreateResponse(
         session_id=session_id,
         model_size=resolved_model,
@@ -608,198 +1058,106 @@ def create_live_session(payload: LiveSessionCreateRequest) -> LiveSessionCreateR
     )
 
 
-@router.post("/live/sessions/{session_id}/chunk", response_model=LiveChunkResponse)
-def push_live_chunk(session_id: str, chunk: UploadFile = File(...)) -> LiveChunkResponse:
+@router.get("/live/sessions/{session_id}/events")
+async def stream_live_session_events(
+    session_id: str,
+    request: Request,
+    last_event_query: Optional[int] = Query(default=None, alias="last_event_id"),
+    last_event_header: Optional[str] = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
     purge_expired_live_sessions()
     state = _require_live_session(session_id)
-    data = chunk.file.read()
+    subscriber = state.add_subscriber()
+
+    last_event_id = last_event_query
+    if last_event_id is None and last_event_header:
+        try:
+            last_event_id = int(last_event_header)
+        except (TypeError, ValueError):
+            last_event_id = None
+
+    async def event_publisher() -> AsyncIterator[bytes]:
+        try:
+            backlog = state.iter_history(last_event_id)
+            if not backlog:
+                earliest = state.earliest_seq()
+                if last_event_id is None or (
+                    earliest is not None and last_event_id < (earliest or 0)
+                ):
+                    init_event = state.make_event("init", state.snapshot(), store=False)
+                    yield _event_to_sse_bytes(init_event)
+            else:
+                earliest = state.earliest_seq()
+                if (
+                    last_event_id is not None
+                    and earliest is not None
+                    and last_event_id < earliest - 1
+                ):
+                    init_event = state.make_event("init", state.snapshot(), store=False)
+                    yield _event_to_sse_bytes(init_event)
+                for event in backlog:
+                    yield _event_to_sse_bytes(event)
+
+            while True:
+                try:
+                    if await request.is_disconnected():
+                        break
+                except RuntimeError:
+                    # The connection scope is gone; treat as disconnect.
+                    break
+                try:
+                    event = await asyncio.wait_for(
+                        subscriber.queue.get(), timeout=LIVE_HEARTBEAT_INTERVAL_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    heartbeat_event = state.make_event(
+                        "heartbeat", {"timestamp": time.time()}, store=False
+                    )
+                    yield _event_to_sse_bytes(heartbeat_event)
+                    continue
+                except asyncio.CancelledError:
+                    break
+                if event is None:
+                    break
+                yield _event_to_sse_bytes(event)
+        finally:
+            state.remove_subscriber(subscriber)
+
+    return StreamingResponse(event_publisher(), media_type="text/event-stream")
+
+
+@router.post("/live/sessions/{session_id}/chunk", response_model=LiveChunkResponse)
+async def push_live_chunk(
+    session_id: str, chunk: UploadFile = File(...)
+) -> LiveChunkResponse:
+    purge_expired_live_sessions()
+    state = _require_live_session(session_id)
+    data = await chunk.read()
+    await chunk.close()
     if not data:
         raise HTTPException(status_code=400, detail="El fragmento está vacío")
     suffix = Path(chunk.filename or "").suffix or ".webm"
-    index = state.chunk_count
-    chunk_path = state.directory / f"chunk-{index:05d}{suffix}"
-    chunk_path.write_bytes(data)
-    chunk.file.close()
-    with state.lock:
-        try:
-            segment = _merge_live_chunk(state, chunk_path)
-        except RuntimeError as exc:
-            chunk_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        finally:
-            chunk_path.unlink(missing_ok=True)
-        if segment is None or len(segment) <= 0:
-            state.chunk_count = index + 1
-            state.dropped_chunks += 1
-            state.last_activity = time.time()
-            return LiveChunkResponse(
-                session_id=session_id,
-                text=state.last_text or "",
-                duration=state.last_duration,
-                runtime_seconds=state.last_runtime,
-                chunk_count=state.chunk_count,
-                model_size=state.model_size,
-                device_preference=state.device,
-                language=state.language,
-                beam_size=state.beam_size,
-                segments=list(state.segments),
-                new_segments=[],
-                new_text=None,
-                dropped_chunks=state.dropped_chunks,
-            )
-        state.ring.append(segment)
-        window_file = state.directory / "window.wav"
-        try:
-            window_start = max(0.0, state.last_t_end - LIVE_WINDOW_OVERLAP_SECONDS)
-            window_path, window_offset, window_end = state.ring.export_window(
-                window_start, window_file
-            )
-        except ValueError:
-            state.chunk_count = index + 1
-            state.dropped_chunks += 1
-            state.last_activity = time.time()
-            window_file.unlink(missing_ok=True)
-            return LiveChunkResponse(
-                session_id=session_id,
-                text=state.last_text or "",
-                duration=state.last_duration,
-                runtime_seconds=state.last_runtime,
-                chunk_count=state.chunk_count,
-                model_size=state.model_size,
-                device_preference=state.device,
-                language=state.language,
-                beam_size=state.beam_size,
-                segments=list(state.segments),
-                new_segments=[],
-                new_text=None,
-                dropped_chunks=state.dropped_chunks,
-            )
-
-        transcriber = get_transcriber(state.model_size, state.device)
-        decode_options_raw = {
-            "batch_size": settings.whisper_batch_size,
-            "temperature": 0.0,
-            "condition_on_previous_text": False,
-            "word_timestamps": False,
-            "vad_filter": _should_enable_live_vad(segment),
-            "compression_ratio_threshold": settings.whisper_compression_ratio_threshold,
-            "log_prob_threshold": settings.whisper_log_prob_threshold,
-        }
-        decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
-        def _transcribe_live(current_transcriber: BaseTranscriber):
-            return current_transcriber.transcribe(
-                window_path,
-                state.language,
-                beam_size=state.beam_size or settings.whisper_live_beam,
-                decode_options=decode_options,
-            )
-
-        def _normalize_device(value: Optional[str]) -> str:
-            normalized = (value or "").lower()
-            return "gpu" if normalized in {"cuda", "gpu"} else "cpu"
-
-        try:
-            result = _transcribe_live(transcriber)
-        except Exception as exc:
-            should_retry_cpu = (
-                not settings.whisper_force_cuda
-                and _normalize_device(state.device) == "gpu"
-                and is_cuda_dependency_error(exc)
-            )
-            if should_retry_cpu:
-                logger.warning(
-                    "CUDA no disponible en sesión en vivo; reintentando en CPU: %s",
-                    exc,
-                )
-                state.device = "cpu"
-                transcriber = get_transcriber(state.model_size, state.device)
-                try:
-                    result = _transcribe_live(transcriber)
-                except Exception as retry_exc:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Error al transcribir el fragmento en CPU: {retry_exc}",
-                    ) from retry_exc
-            else:
-                if isinstance(exc, RuntimeError):
-                    raise HTTPException(status_code=500, detail=str(exc)) from exc
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error al transcribir el fragmento: {exc}",
-                ) from exc
-        finally:
-            window_file.unlink(missing_ok=True)
-
-        state.chunk_count = index + 1
-        appended_parts: List[str] = []
-        new_segments: List[dict] = []
-        epsilon = 1e-3
-        for seg in result.segments:
-            text = (seg.text or "").strip()
-            if not text:
-                continue
-            absolute_start = window_offset + float(seg.start)
-            absolute_end = window_offset + float(seg.end)
-            should_append = True
-            if absolute_end <= state.last_t_end + epsilon:
-                should_append = False
-            else:
-                if state.segments:
-                    prev = state.segments[-1]
-                    if (
-                        prev.get("text") == text
-                        and abs(prev.get("start", 0.0) - absolute_start) < 0.5
-                        and abs(prev.get("end", 0.0) - absolute_end) < 0.5
-                    ):
-                        should_append = False
-                if should_append and LIVE_REPEAT_MAX_DUPLICATES > 0:
-                    repeat_count = sum(
-                        1
-                        for recent_text, recent_start in state.recent_texts
-                        if recent_text == text
-                        and absolute_start - recent_start <= LIVE_REPEAT_WINDOW_SECONDS
-                    )
-                    if repeat_count >= LIVE_REPEAT_MAX_DUPLICATES:
-                        should_append = False
-            state.last_t_end = max(state.last_t_end, absolute_end)
-            if not should_append:
-                continue
-            normalized = {
-                "start": absolute_start,
-                "end": absolute_end,
-                "speaker": seg.speaker,
-                "text": text,
-            }
-            state.segments.append(normalized)
-            state.recent_texts.append((text, absolute_start))
-            new_segments.append(normalized)
-            appended_parts.append(text)
-
-        appended_text = " ".join(appended_parts).strip() or None
-        if appended_text:
-            state.last_text = " ".join(segment.get("text", "").strip() for segment in state.segments).strip()
-        state.last_duration = max(state.last_duration or 0.0, window_end, state.last_t_end)
-        state.last_runtime = result.runtime_seconds
-        state.language = result.language or state.language
-        state.last_activity = time.time()
-    return LiveChunkResponse(
-        session_id=session_id,
-        text=state.last_text or "",
-        duration=state.last_duration,
-        runtime_seconds=state.last_runtime,
-        chunk_count=state.chunk_count,
-        model_size=state.model_size,
-        device_preference=state.device,
-        language=state.language,
-        beam_size=state.beam_size,
-        segments=list(state.segments),
-        new_segments=new_segments,
-        new_text=appended_text,
-        dropped_chunks=state.dropped_chunks,
+    (
+        response,
+        delta_payload,
+        segment_payload,
+        metrics_payload,
+    ) = await anyio.to_thread.run_sync(
+        _process_live_chunk_sync,
+        state,
+        data,
+        suffix,
     )
+    state.broadcast_event("delta", delta_payload)
+    if segment_payload and segment_payload.get("segments"):
+        state.broadcast_event("segment", segment_payload)
+    state.broadcast_event("metrics", metrics_payload)
+    return response
 
 
-@router.post("/live/sessions/{session_id}/finalize", response_model=LiveFinalizeResponse)
+@router.post(
+    "/live/sessions/{session_id}/finalize", response_model=LiveFinalizeResponse
+)
 def finalize_live_session(
     session_id: str,
     payload: LiveFinalizeRequest,
@@ -808,10 +1166,14 @@ def finalize_live_session(
     state = _require_live_session(session_id)
     with state.lock:
         if not state.audio_path.exists():
-            raise HTTPException(status_code=400, detail="No se capturó audio en la sesión en vivo")
+            raise HTTPException(
+                status_code=400, detail="No se capturó audio en la sesión en vivo"
+            )
         state.last_activity = time.time()
         resolved_model = _resolve_model_choice(payload.model_size or state.model_size)
-        resolved_device = _resolve_device_choice(payload.device_preference or state.device)
+        resolved_device = _resolve_device_choice(
+            payload.device_preference or state.device
+        )
         resolved_language = payload.language or state.language
         if payload.beam_size is not None:
             state.beam_size = payload.beam_size
@@ -981,7 +1343,9 @@ def create_transcription(
     upload: UploadFile = File(...),
     language: Optional[str] = Form(default=None),
     subject: Optional[str] = Form(default=None),
-    destination_folder: str = Form(..., description="Carpeta obligatoria dentro de transcripts_dir"),
+    destination_folder: str = Form(
+        ..., description="Carpeta obligatoria dentro de transcripts_dir"
+    ),
     model_size: Optional[str] = Form(default=None),
     device_preference: Optional[str] = Form(default=None),
     beam_size: Annotated[Optional[int], Form()] = None,
@@ -1019,7 +1383,9 @@ def create_batch_transcriptions(
     session: Session = Depends(_get_session),
 ) -> BatchTranscriptionCreateResponse:
     if not uploads:
-        raise HTTPException(status_code=400, detail="Debes adjuntar al menos un archivo")
+        raise HTTPException(
+            status_code=400, detail="Debes adjuntar al menos un archivo"
+        )
 
     responses: List[TranscriptionCreateResponse] = []
     for upload in uploads:
@@ -1056,14 +1422,22 @@ def process_transcription(
     resolved_device = _resolve_device_choice(device_preference)
     transcriber = get_transcriber(resolved_model, resolved_device)
 
-    def debug_callback(stage: str, message: str, extra: Optional[Dict[str, object]], level: str = "info") -> None:
+    def debug_callback(
+        stage: str,
+        message: str,
+        extra: Optional[Dict[str, object]],
+        level: str = "info",
+    ) -> None:
         append_debug_event(transcription_id, stage, message, extra=extra, level=level)
         if stage == "transcribe.segment" and extra:
             partial_text = str(extra.get("partial_text") or "").strip()
             if partial_text:
                 with get_session() as update_session:
                     partial = update_session.get(Transcription, transcription_id)
-                    if partial is not None and (partial.text or "").strip() != partial_text:
+                    if (
+                        partial is not None
+                        and (partial.text or "").strip() != partial_text
+                    ):
                         partial.text = partial_text
                         update_session.commit()
 
@@ -1096,9 +1470,7 @@ def process_transcription(
         assert stored_path is not None
         audio_path = Path(stored_path)
         if not audio_path.exists():
-            message = (
-                "El archivo original ya no está disponible; la transcripción se canceló o eliminó."
-            )
+            message = "El archivo original ya no está disponible; la transcripción se canceló o eliminó."
             with get_session() as session:
                 transcription = session.get(Transcription, transcription_id)
                 if transcription is not None:
@@ -1147,6 +1519,7 @@ def process_transcription(
             "log_prob_threshold": settings.whisper_log_prob_threshold,
         }
         decode_options = {k: v for k, v in decode_options_raw.items() if v is not None}
+
         def _normalize_device_label(value: Optional[str], fallback: str) -> str:
             normalized = (value or "").strip().lower()
             if normalized in {"cuda", "gpu"}:
@@ -1170,7 +1543,9 @@ def process_transcription(
                     return default_label
             return default_label
 
-        def _transcribe_once(current_transcriber: BaseTranscriber) -> TranscriptionResult:
+        def _transcribe_once(
+            current_transcriber: BaseTranscriber,
+        ) -> TranscriptionResult:
             return current_transcriber.transcribe(
                 normalized_audio,
                 language or transcription.language,
@@ -1306,7 +1681,9 @@ def list_transcriptions(
 
 
 @router.get("/{transcription_id}", response_model=TranscriptionDetail)
-def get_transcription(transcription_id: int, session: Session = Depends(_get_session)) -> TranscriptionDetail:
+def get_transcription(
+    transcription_id: int, session: Session = Depends(_get_session)
+) -> TranscriptionDetail:
     transcription = _get_transcription_or_404(session, transcription_id)
     return TranscriptionDetail.from_orm(transcription)
 
@@ -1359,7 +1736,9 @@ def download_transcription_logs(
 
 
 @router.get("/{transcription_id}/download")
-def download_transcription(transcription_id: int, session: Session = Depends(_get_session)) -> FileResponse:
+def download_transcription(
+    transcription_id: int, session: Session = Depends(_get_session)
+) -> FileResponse:
     transcription = _get_transcription_or_404(session, transcription_id)
     txt_path = (
         Path(transcription.transcript_path)
@@ -1406,7 +1785,9 @@ def download_transcription_srt(
 
 
 @router.delete("/{transcription_id}", status_code=204, response_class=Response)
-def delete_transcription(transcription_id: int, session: Session = Depends(_get_session)) -> Response:
+def delete_transcription(
+    transcription_id: int, session: Session = Depends(_get_session)
+) -> Response:
     transcription = session.get(Transcription, transcription_id)
     if not transcription:
         raise HTTPException(status_code=404, detail="Transcripción no encontrada")

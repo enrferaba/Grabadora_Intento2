@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     live_window_overlap_seconds: float = 2.0
     live_repeat_window_seconds: float = 12.0
     live_repeat_max_duplicates: int = 3
+    live_event_history_size: int = 512
+    live_snapshot_max_segments: int = 200
+    live_heartbeat_interval_seconds: float = 15.0
 
     enable_dummy_transcriber: bool = False
 

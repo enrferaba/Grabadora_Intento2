@@ -11,7 +11,11 @@ from pathlib import Path
 from tempfile import SpooledTemporaryFile
 
 import pytest
-from pydub import AudioSegment
+
+try:  # pragma: no cover - optional dependency for legacy tests
+    from pydub import AudioSegment
+except ModuleNotFoundError:  # pragma: no cover - CI environment without pydub
+    AudioSegment = None  # type: ignore[assignment]
 
 
 def _ensure_forward_ref_default() -> None:
@@ -37,7 +41,9 @@ def _ensure_forward_ref_default() -> None:
         param_index = param_names.index("recursive_guard")
     except ValueError:
         param_index = -1
-    positional_slot = param_index - 1 if accepts_positional and param_index > 0 else None
+    positional_slot = (
+        param_index - 1 if accepts_positional and param_index > 0 else None
+    )
 
     def _patched(self, *args, **kwargs):
         if positional_slot is not None and len(args) > positional_slot:
@@ -59,6 +65,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+if not (PROJECT_ROOT / "app").exists():
+    pytest.skip("legacy FastAPI app not present in this build", allow_module_level=True)
+
+if AudioSegment is None:
+    pytest.skip("pydub is required for legacy API tests", allow_module_level=True)
+
 fastapi = pytest.importorskip("fastapi")
 from fastapi import BackgroundTasks, UploadFile
 
@@ -71,7 +83,9 @@ def _make_upload(
     buffer = SpooledTemporaryFile()
     buffer.write(data)
     buffer.seek(0)
-    return UploadFile(file=buffer, filename=filename, headers={"content-type": content_type})
+    return UploadFile(
+        file=buffer, filename=filename, headers={"content-type": content_type}
+    )
 
 
 def _make_silent_wav_bytes(duration_ms: int = 250) -> bytes:
@@ -133,11 +147,14 @@ def test_transcription_lifecycle(test_env):
     from app.database import get_session
     from app.models import Transcription, TranscriptionStatus
     from app.routers import transcriptions
+
     background = BackgroundTasks()
     upload = _make_upload("sample.wav")
 
     with get_session() as session:
-        tables = session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        tables = session.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table'")
+        )
         assert any(row[0] == "transcriptions" for row in tables)
         response = transcriptions.create_transcription(
             background_tasks=background,
@@ -164,7 +181,10 @@ def test_transcription_lifecycle(test_env):
         if detail.status is TranscriptionStatus.COMPLETED:
             assert detail.runtime_seconds is not None
         assert detail.debug_events is not None and len(detail.debug_events) >= 1
-        assert detail.debug_events[-1].stage in {"processing-complete", "processing-error"}
+        assert detail.debug_events[-1].stage in {
+            "processing-complete",
+            "processing-error",
+        }
         assert detail.output_folder == "historia-clase"
         assert detail.transcript_path is not None
 
@@ -182,7 +202,9 @@ def test_transcription_lifecycle(test_env):
         )
         assert listing.total >= 1
         assert listing.results[0].debug_events is not None
-        download = transcriptions.download_transcription(transcription_id, session=session)
+        download = transcriptions.download_transcription(
+            transcription_id, session=session
+        )
         assert download.status_code == 200
         transcriptions.delete_transcription(transcription_id, session=session)
 
@@ -210,7 +232,10 @@ def test_reject_non_media_upload(test_env):
         )
 
     assert excinfo.value.status_code == 400
-    assert "audio" in excinfo.value.detail.lower() or "video" in excinfo.value.detail.lower()
+    assert (
+        "audio" in excinfo.value.detail.lower()
+        or "video" in excinfo.value.detail.lower()
+    )
 
 
 def test_live_chunk_merge_normalizes_audio(tmp_path):
@@ -227,11 +252,15 @@ def test_live_chunk_merge_normalizes_audio(tmp_path):
     )
 
     first_chunk = tmp_path / "chunk-1.wav"
-    AudioSegment.silent(duration=400, frame_rate=44_100).set_channels(1).export(first_chunk, format="wav")
+    AudioSegment.silent(duration=400, frame_rate=44_100).set_channels(1).export(
+        first_chunk, format="wav"
+    )
     transcriptions._merge_live_chunk(state, first_chunk)
 
     second_chunk = tmp_path / "chunk-2.wav"
-    AudioSegment.silent(duration=600, frame_rate=48_000).set_channels(2).export(second_chunk, format="wav")
+    AudioSegment.silent(duration=600, frame_rate=48_000).set_channels(2).export(
+        second_chunk, format="wav"
+    )
     transcriptions._merge_live_chunk(state, second_chunk)
 
     combined = AudioSegment.from_file(state.audio_path, format="wav")
@@ -255,7 +284,9 @@ def test_prepare_model_status_endpoint(test_env):
     assert status_payload.status == "ready"
     assert status_payload.progress == 100
 
-    snapshot = transcriptions.get_model_status(model_size="tiny", device_preference="cpu")
+    snapshot = transcriptions.get_model_status(
+        model_size="tiny", device_preference="cpu"
+    )
     assert snapshot.status == "ready"
     assert snapshot.progress == 100
 
@@ -317,7 +348,9 @@ def test_batch_upload_and_payment_flow(test_env):
         assert purchase_detail.extra_metadata is not None
 
     with get_session() as session:
-        transcription_detail = transcriptions.get_transcription(first_id, session=session)
+        transcription_detail = transcriptions.get_transcription(
+            first_id, session=session
+        )
         assert transcription_detail.premium_enabled is True
         assert transcription_detail.premium_notes
 
@@ -330,14 +363,18 @@ def test_live_transcription_session(test_env):
     from app.schemas import LiveFinalizeRequest, LiveSessionCreateRequest
 
     session_response = transcriptions.create_live_session(
-        LiveSessionCreateRequest(language="es", model_size="small", device_preference="cpu")
+        LiveSessionCreateRequest(
+            language="es", model_size="small", device_preference="cpu"
+        )
     )
     session_id = session_response.session_id
     assert session_id
 
     chunk_bytes = _make_silent_wav_bytes()
     upload = _make_upload("chunk.wav", data=chunk_bytes, content_type="audio/wav")
-    chunk_result = transcriptions.push_live_chunk(session_id=session_id, chunk=upload)
+    chunk_result = asyncio.run(
+        transcriptions.push_live_chunk(session_id=session_id, chunk=upload)
+    )
     assert chunk_result.session_id == session_id
     assert chunk_result.chunk_count == 1
 
@@ -346,13 +383,20 @@ def test_live_transcription_session(test_env):
 
         finalize = transcriptions.finalize_live_session(
             session_id=session_id,
-            payload=LiveFinalizeRequest(destination_folder="en-vivo", subject="Sesión demo"),
+            payload=LiveFinalizeRequest(
+                destination_folder="en-vivo", subject="Sesión demo"
+            ),
             session=session,
         )
         assert finalize.transcription_id is not None
-        detail = transcriptions.get_transcription(finalize.transcription_id, session=session)
+        detail = transcriptions.get_transcription(
+            finalize.transcription_id, session=session
+        )
         assert detail.output_folder == "en-vivo"
-        assert detail.status in {TranscriptionStatus.COMPLETED, TranscriptionStatus.FAILED}
+        assert detail.status in {
+            TranscriptionStatus.COMPLETED,
+            TranscriptionStatus.FAILED,
+        }
 
     assert session_id not in transcriptions.LIVE_SESSIONS
 
@@ -400,8 +444,7 @@ def test_frontend_mount_available(test_env):
 
     app = create_app()
     assert any(
-        isinstance(route, Mount) and route.path in {"", "/"}
-        for route in app.routes
+        isinstance(route, Mount) and route.path in {"", "/"} for route in app.routes
     )
 
 
