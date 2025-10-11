@@ -142,6 +142,9 @@ const DEFAULT_LIVE_CHUNK_INTERVAL_MS = 1000;
 const LIVE_CHUNK_MAX_RETRIES = 3;
 const LIVE_CHUNK_RETRY_BASE_DELAY_MS = 250;
 const LIVE_CHUNK_RETRY_MAX_DELAY_MS = 4000;
+const LIVE_SSE_BASE_DELAY_MS = 1000;
+const LIVE_SSE_MAX_DELAY_MS = 15000;
+const LIVE_SSE_JITTER_MS = 500;
 
 const PROMPT_TEXT = `Implementa sin desviar los siguientes puntos críticos en Grabadora Pro:\n\n1. Tema claro/oscuro con persistencia en localStorage y botón en el header.\n2. Formulario de subida que envíe multipart/form-data a POST /api/transcriptions (campo upload, destination_folder, language, model_size) con barra de progreso y manejo de 413.\n3. Al completar una subida, refrescar métricas básicas, mantener la cola local y avisar al usuario.\n4. Tail en vivo fijo al final con botón Volver al final y controles accesibles (pantalla completa, A+/A−).\n5. Biblioteca maestro-detalle con árbol de carpetas, filtros y breadcrumbs Inicio / Biblioteca / {Carpeta}.\n6. Detalle de proceso con streaming incremental, copiar texto y descargas .txt/.srt desde la API.\n7. Planes premium visibles (Estudiante, Starter, Pro) con características y CTA.\n8. Estados vacíos, errores accionables y toasts para eventos clave (inicio/fin/error).`;
 
@@ -1048,6 +1051,8 @@ const store = createStore({
     pendingChunks: 0,
     lastChunkEnqueuedAt: null,
     lastChunkSentAt: null,
+    chunkCount: 0,
+    lastSegmentMeta: [],
   },
   job: {
     detail: null,
@@ -1201,6 +1206,263 @@ const liveSession = {
   chunkIntervalMs: null,
   mimeType: null,
 };
+
+const liveEventStream = {
+  source: null,
+  sessionId: null,
+  lastSeq: 0,
+  attempts: 0,
+  reconnectTimer: null,
+};
+
+function closeLiveEventStream() {
+  if (liveEventStream.reconnectTimer) {
+    window.clearTimeout(liveEventStream.reconnectTimer);
+    liveEventStream.reconnectTimer = null;
+  }
+  if (liveEventStream.source) {
+    try {
+      liveEventStream.source.close();
+    } catch (error) {
+      console.warn('No se pudo cerrar EventSource en vivo', error);
+    }
+    liveEventStream.source = null;
+  }
+  liveEventStream.sessionId = null;
+  liveEventStream.lastSeq = 0;
+  liveEventStream.attempts = 0;
+}
+
+function scheduleLiveStreamReconnect() {
+  if (!liveEventStream.sessionId) return;
+  if (liveEventStream.reconnectTimer) return;
+  liveEventStream.attempts = Math.min(liveEventStream.attempts + 1, 8);
+  const backoff = Math.min(
+    LIVE_SSE_BASE_DELAY_MS * 2 ** (liveEventStream.attempts - 1),
+    LIVE_SSE_MAX_DELAY_MS,
+  );
+  const jitter = Math.random() * LIVE_SSE_JITTER_MS;
+  liveEventStream.reconnectTimer = window.setTimeout(() => {
+    liveEventStream.reconnectTimer = null;
+    attachLiveEventSource();
+  }, backoff + jitter);
+}
+
+function attachLiveEventSource() {
+  if (!liveEventStream.sessionId) return;
+  if (liveEventStream.source) {
+    liveEventStream.source.close();
+    liveEventStream.source = null;
+  }
+  const params = liveEventStream.lastSeq
+    ? `?last_event_id=${encodeURIComponent(liveEventStream.lastSeq)}`
+    : '';
+  const url = `/api/transcriptions/live/sessions/${liveEventStream.sessionId}/events${params}`;
+  const source = new EventSource(url);
+  liveEventStream.source = source;
+  source.addEventListener('open', () => {
+    liveEventStream.attempts = 0;
+    if (liveEventStream.reconnectTimer) {
+      window.clearTimeout(liveEventStream.reconnectTimer);
+      liveEventStream.reconnectTimer = null;
+    }
+  });
+  source.addEventListener('error', () => {
+    if (liveEventStream.source === source) {
+      liveEventStream.source = null;
+    }
+    try {
+      source.close();
+    } catch (error) {
+      console.warn('EventSource error al cerrar', error);
+    }
+    scheduleLiveStreamReconnect();
+  });
+  ['init', 'delta', 'segment', 'metrics', 'heartbeat'].forEach((type) => {
+    source.addEventListener(type, handleLiveEventMessage);
+  });
+}
+
+function connectLiveStream(sessionId) {
+  if (!sessionId) return;
+  if (liveEventStream.sessionId !== sessionId) {
+    if (liveEventStream.source) {
+      liveEventStream.source.close();
+      liveEventStream.source = null;
+    }
+    if (liveEventStream.reconnectTimer) {
+      window.clearTimeout(liveEventStream.reconnectTimer);
+      liveEventStream.reconnectTimer = null;
+    }
+    liveEventStream.sessionId = sessionId;
+    liveEventStream.lastSeq = 0;
+    liveEventStream.attempts = 0;
+  }
+  attachLiveEventSource();
+}
+
+function handleLiveEventMessage(event) {
+  if (!event?.data) return;
+  let payload;
+  try {
+    payload = JSON.parse(event.data);
+  } catch (error) {
+    console.warn('No se pudo parsear evento SSE', error, event.data);
+    return;
+  }
+  if (payload?.session_id && liveEventStream.sessionId && payload.session_id !== liveEventStream.sessionId) {
+    return;
+  }
+  const seq = Number(payload?.seq ?? event?.lastEventId ?? event?.id);
+  if (Number.isFinite(seq)) {
+    if (seq <= liveEventStream.lastSeq) {
+      return;
+    }
+    if (liveEventStream.lastSeq && seq > liveEventStream.lastSeq + 1) {
+      console.warn('Saltos en la secuencia de eventos SSE', {
+        previous: liveEventStream.lastSeq,
+        current: seq,
+        type: event.type,
+      });
+    }
+    liveEventStream.lastSeq = seq;
+  }
+  switch (event.type) {
+    case 'init':
+      applyLiveInit(payload);
+      break;
+    case 'delta':
+      applyLiveDelta(payload);
+      break;
+    case 'segment':
+      applyLiveSegment(payload);
+      break;
+    case 'metrics':
+      applyLiveMetrics(payload);
+      break;
+    case 'heartbeat':
+    default:
+      break;
+  }
+}
+
+function applyLiveInit(payload) {
+  if (!payload) return;
+  const segmentTexts = Array.isArray(payload.segments)
+    ? payload.segments.filter((text) => typeof text === 'string' && text.trim())
+    : [];
+  store.setState((prev) => {
+    const prevLive = prev.live || {};
+    const maxSegments = prevLive.maxSegments || segmentTexts.length;
+    const trimmedSegments = segmentTexts.slice(-maxSegments);
+    return {
+      ...prev,
+      live: {
+        ...prevLive,
+        sessionId: payload.session_id || prevLive.sessionId,
+        status: payload.status || prevLive.status || 'recording',
+        text: typeof payload.text === 'string' ? payload.text : prevLive.text,
+        segments: trimmedSegments.length ? trimmedSegments : prevLive.segments,
+        language: payload.language ?? prevLive.language,
+        model: payload.model_size ?? prevLive.model,
+        device: payload.device_preference ?? prevLive.device,
+        beam: payload.beam_size ?? prevLive.beam,
+        duration: Number.isFinite(payload.duration) ? payload.duration : prevLive.duration,
+        runtimeSeconds: Number.isFinite(payload.runtime_seconds)
+          ? payload.runtime_seconds
+          : prevLive.runtimeSeconds,
+        wpm: Number.isFinite(payload.wpm) ? payload.wpm : prevLive.wpm,
+        latencyMs: Number.isFinite(payload.latency_ms) ? payload.latency_ms : prevLive.latencyMs,
+        droppedChunks: Number.isFinite(payload.dropped_chunks)
+          ? payload.dropped_chunks
+          : prevLive.droppedChunks,
+        chunkCount: Number.isFinite(payload.chunk_count)
+          ? payload.chunk_count
+          : prevLive.chunkCount,
+        lastChunkAt: Date.now(),
+        error: null,
+      },
+    };
+  });
+}
+
+function applyLiveDelta(payload) {
+  if (!payload) return;
+  const segmentTexts = Array.isArray(payload.segments)
+    ? payload.segments.filter((text) => typeof text === 'string' && text.trim())
+    : [];
+  store.setState((prev) => {
+    const prevLive = prev.live || {};
+    const maxSegments = prevLive.maxSegments || segmentTexts.length;
+    const trimmedSegments = segmentTexts.slice(-maxSegments);
+    const combinedText = typeof payload.text === 'string' && payload.text.trim()
+      ? payload.text
+      : prevLive.text;
+    return {
+      ...prev,
+      live: {
+        ...prevLive,
+        sessionId: payload.session_id || prevLive.sessionId,
+        status: payload.status || prevLive.status,
+        text: combinedText,
+        segments: trimmedSegments.length ? trimmedSegments : prevLive.segments,
+        language: payload.language ?? prevLive.language,
+        model: payload.model_size ?? prevLive.model,
+        device: payload.device_preference ?? prevLive.device,
+        beam: payload.beam_size ?? prevLive.beam,
+        duration: Number.isFinite(payload.duration) ? payload.duration : prevLive.duration,
+        runtimeSeconds: Number.isFinite(payload.runtime_seconds)
+          ? payload.runtime_seconds
+          : prevLive.runtimeSeconds,
+        wpm: Number.isFinite(payload.wpm) ? payload.wpm : prevLive.wpm,
+        latencyMs: Number.isFinite(payload.latency_ms) ? payload.latency_ms : prevLive.latencyMs,
+        droppedChunks: Number.isFinite(payload.dropped_chunks)
+          ? payload.dropped_chunks
+          : prevLive.droppedChunks,
+        chunkCount: Number.isFinite(payload.chunk_count)
+          ? payload.chunk_count
+          : prevLive.chunkCount,
+        lastChunkAt: Date.now(),
+      },
+    };
+  });
+}
+
+function applyLiveSegment(payload) {
+  if (!payload) return;
+  const segments = Array.isArray(payload.segments) ? payload.segments : [];
+  if (!segments.length) return;
+  store.setState((prev) => ({
+    ...prev,
+    live: {
+      ...prev.live,
+      lastSegmentMeta: segments,
+    },
+  }));
+}
+
+function applyLiveMetrics(payload) {
+  if (!payload) return;
+  store.setState((prev) => ({
+    ...prev,
+    live: {
+      ...prev.live,
+      wpm: Number.isFinite(payload.wpm) ? payload.wpm : prev.live.wpm,
+      latencyMs: Number.isFinite(payload.latency_ms) ? payload.latency_ms : prev.live.latencyMs,
+      droppedChunks: Number.isFinite(payload.dropped_chunks)
+        ? payload.dropped_chunks
+        : prev.live.droppedChunks,
+      duration: Number.isFinite(payload.duration) ? payload.duration : prev.live.duration,
+      runtimeSeconds: Number.isFinite(payload.runtime_seconds)
+        ? payload.runtime_seconds
+        : prev.live.runtimeSeconds,
+      chunkCount: Number.isFinite(payload.chunk_count)
+        ? payload.chunk_count
+        : prev.live.chunkCount,
+      lastChunkAt: Date.now(),
+    },
+  }));
+}
 
 let liveProgressTimer = null;
 const LIVE_CHUNK_MIME_TYPES = [
@@ -1511,6 +1773,7 @@ function resetLiveSessionLocalState() {
   liveSession.chunkIntervalMs = null;
   liveSession.mimeType = null;
   updateLiveQueueMetrics({ lastChunkEnqueuedAt: null, lastChunkSentAt: null });
+  closeLiveEventStream();
 }
 
 async function discardRemoteLiveSession(sessionId) {
@@ -3623,6 +3886,10 @@ function handleLiveChunkPayload(payload, uploadLatencyMs) {
         droppedChunks: Number.isFinite(payload?.dropped_chunks)
           ? payload.dropped_chunks
           : previous.droppedChunks,
+        chunkCount: Number.isFinite(payload?.chunk_count)
+          ? payload.chunk_count
+          : previous.chunkCount,
+        lastSegmentMeta: segments.length ? segments : previous.lastSegmentMeta,
         error: null,
       },
     };
@@ -3733,8 +4000,11 @@ async function startLiveSession() {
         pendingChunks: 0,
         lastChunkEnqueuedAt: null,
         lastChunkSentAt: null,
+        chunkCount: 0,
+        lastSegmentMeta: [],
       },
     }));
+    connectLiveStream(sessionInfo.session_id);
     renderLiveKpis(store.getState().live);
   } catch (error) {
     console.error('No se pudo iniciar la sesión en vivo', error);

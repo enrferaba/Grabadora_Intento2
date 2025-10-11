@@ -1,29 +1,25 @@
 services:
-  grabadora:
+  backend:
     build: .
+    command: uvicorn backend_sync.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
     environment:
-      - ENABLE_DUMMY_TRANSCRIBER=${ENABLE_DUMMY_TRANSCRIBER:-true}
-      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
-      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-base}
-      - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-300}
+      - DATABASE_URL=sqlite+pysqlite:///./data/backend.db
+      - DATA_DIR=/app/data
+      - JWT_SECRET=${JWT_SECRET:-change-me}
 
-  grabadora-gpu:
+  worker:
     build: .
-    ports:
-      - "8000:8000"
+    command: python -m workers.service
     volumes:
       - ./data:/app/data
     environment:
-      - ENABLE_DUMMY_TRANSCRIBER=${ENABLE_DUMMY_TRANSCRIBER:-false}
-      - WHISPER_DEVICE=cuda
-      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-large-v2}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
-    profiles: [gpu]
+      - DATABASE_URL=sqlite+pysqlite:///./data/backend.db
+      - DATA_DIR=/app/data
+      - JWT_SECRET=${JWT_SECRET:-change-me}
+    depends_on:
+      - backend
+    profiles: [worker]
